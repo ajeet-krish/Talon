@@ -1,0 +1,10 @@
+build/
+plots/
+__pycache__/
+.pytest_cache/
+.venv/
+dist/
+*.so
+.DS_Store
+CMakeFiles/
+cmake-build-*/
