@@ -56,6 +56,7 @@ endif()
 if(BUILD_TESTS)
     enable_testing()
     add_executable(talon_tests
+        cpp/tests/test_controller.cpp
         cpp/tests/test_dynamics.cpp
         cpp/tests/test_wind.cpp
     )

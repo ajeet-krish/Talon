@@ -2,12 +2,16 @@
 #include <pybind11/pybind11.h>
 
 #include "talon/constants.hpp"
+#include "talon/controller.hpp"
 #include "talon/dynamics.hpp"
 #include "talon/types.hpp"
 #include "talon/wind.hpp"
 
 namespace py = pybind11;
 
+using talon::CascadedController;
+using talon::ControlCommand;
+using talon::ControlGains;
 using talon::DrydenWind;
 using talon::Quaternion;
 using talon::State;
@@ -15,7 +19,9 @@ using talon::VehicleParams;
 using talon::Vec3;
 
 PYBIND11_MODULE(_core, m) {
-    m.doc() = "Talon C++ computational kernel: rigid-body dynamics, wind, constants.";
+    m.doc() =
+        "Talon C++ computational kernel: rigid-body dynamics, wind, cascaded "
+        "PD autopilot, constants.";
 
     // Constants (single source of truth: cpp/include/talon/constants.hpp).
     m.attr("MASS") = talon::MASS;
@@ -111,4 +117,57 @@ PYBIND11_MODULE(_core, m) {
         .def("reset", &DrydenWind::reset,
              "Re-seed the generator and zero the wind state.")
         .def("wind", &DrydenWind::wind, "Current wind state in NED (m/s).");
+
+    py::class_<ControlGains>(m, "ControlGains")
+        .def(py::init<>())
+        .def_readwrite("kp_pos", &ControlGains::kp_pos,
+                       "Position P gains ((m/s^2) per m)")
+        .def_readwrite("kd_pos", &ControlGains::kd_pos,
+                       "Velocity D gains ((m/s^2) per m/s)")
+        .def_readwrite("kp_att", &ControlGains::kp_att,
+                       "Attitude P gains ((N*m) per rad)")
+        .def_readwrite("kd_att", &ControlGains::kd_att,
+                       "Rate D gains ((N*m) per rad/s)")
+        .def_static("defaults", &ControlGains::defaults,
+                    "Analytically derived Crazyflie-class starting gains "
+                    "documented in cpp/include/talon/controller.hpp.")
+        .def("__repr__", [](const ControlGains& g) {
+            return "ControlGains(kp_pos=[" + std::to_string(g.kp_pos.x()) +
+                   ", " + std::to_string(g.kp_pos.y()) + ", " +
+                   std::to_string(g.kp_pos.z()) + "])";
+        });
+
+    py::class_<ControlCommand>(m, "ControlCommand")
+        .def(py::init<>())
+        .def_readwrite("collective_thrust", &ControlCommand::collective_thrust,
+                       "Collective thrust (N, along -body-z)")
+        .def_readwrite("moment", &ControlCommand::moment,
+                       "Body-frame moment (N*m)")
+        .def("__repr__", [](const ControlCommand& c) {
+            return "ControlCommand(collective_thrust=" +
+                   std::to_string(c.collective_thrust) + ")";
+        });
+
+    py::class_<CascadedController>(m, "CascadedController")
+        .def(py::init<const ControlGains&, const VehicleParams&>(),
+             py::arg("gains"), py::arg("params") = VehicleParams{},
+             "Cascaded PD autopilot (position outer loop, attitude inner "
+             "loop; see cpp/include/talon/controller.hpp for conventions).")
+        .def("step", &CascadedController::step,
+             py::arg("estimated_state"), py::arg("pos_desired"),
+             py::arg("vel_desired"), py::arg("yaw_desired"), py::arg("dt"),
+             "One controller update. pos/vel desired in NED, yaw in rad; "
+             "dt is the caller's control period (reserved for future "
+             "estimator-coupled terms).")
+        .def("reset", &CascadedController::reset,
+             "Clear internal state (desired rates, telemetry).")
+        .def("set_omega_desired", &CascadedController::set_omega_desired,
+             py::arg("omega_desired"),
+             "Desired body rate for the inner loop (rad/s); zero by default.")
+        .def("last_a_des", &CascadedController::last_a_des,
+             "Last gravity-compensated thrust-accel command (NED, m/s^2).")
+        .def("last_attitude_error", &CascadedController::last_attitude_error,
+             "Last attitude error vector (dimensionless).")
+        .def("thrust_max", &CascadedController::thrust_max,
+             "Thrust saturation limit (N): 4 * mass * gravity.");
 }

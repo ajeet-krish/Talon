@@ -14,6 +14,7 @@ cmake -B build && cmake --build build -j   # builds talon_tests and src/talon/_c
 cd build && ./talon_tests                  # C++ unit tests
 cd .. && uv sync                           # Python environment
 uv run pytest tests/                       # Python tests
+uv run python sims/scenario_hover.py       # Phase 2: 60 s closed-loop hover with motor lag
 ```
 
 Run CMake from `uv run` (or with the virtualenv active) so the extension is
