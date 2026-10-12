@@ -4,6 +4,7 @@
 #include "talon/constants.hpp"
 #include "talon/controller.hpp"
 #include "talon/dynamics.hpp"
+#include "talon/ekf.hpp"
 #include "talon/types.hpp"
 #include "talon/wind.hpp"
 
@@ -13,6 +14,9 @@ using talon::CascadedController;
 using talon::ControlCommand;
 using talon::ControlGains;
 using talon::DrydenWind;
+using talon::EKFConfig;
+using talon::EKFNominalState;
+using talon::Ekf;
 using talon::Quaternion;
 using talon::State;
 using talon::VehicleParams;
@@ -21,7 +25,7 @@ using talon::Vec3;
 PYBIND11_MODULE(_core, m) {
     m.doc() =
         "Talon C++ computational kernel: rigid-body dynamics, wind, cascaded "
-        "PD autopilot, constants.";
+        "PD autopilot, MEKF state estimator, constants.";
 
     // Constants (single source of truth: cpp/include/talon/constants.hpp).
     m.attr("MASS") = talon::MASS;
@@ -170,4 +174,108 @@ PYBIND11_MODULE(_core, m) {
              "Last attitude error vector (dimensionless).")
         .def("thrust_max", &CascadedController::thrust_max,
              "Thrust saturation limit (N): 4 * mass * gravity.");
+
+    py::class_<EKFConfig>(m, "EKFConfig")
+        .def(py::init<>())
+        .def_readwrite("accel_noise_density", &EKFConfig::accel_noise_density,
+                       "Continuous accel noise density (m/s^2/sqrt(Hz))")
+        .def_readwrite("gyro_noise_density", &EKFConfig::gyro_noise_density,
+                       "Continuous gyro noise density (rad/s/sqrt(Hz))")
+        .def_readwrite("accel_bias_walk", &EKFConfig::accel_bias_walk,
+                       "Accel bias random walk (m/s^2/sqrt(s))")
+        .def_readwrite("gyro_bias_walk", &EKFConfig::gyro_bias_walk,
+                       "Gyro bias random walk (rad/s/sqrt(s))")
+        .def_readwrite("gps_pos_noise", &EKFConfig::gps_pos_noise,
+                       "GPS horizontal position 1-sigma (m)")
+        .def_readwrite("gps_pos_noise_vertical",
+                       &EKFConfig::gps_pos_noise_vertical,
+                       "GPS vertical position 1-sigma (m)")
+        .def_readwrite("gps_vel_noise", &EKFConfig::gps_vel_noise,
+                       "GPS velocity 1-sigma (m/s)")
+        .def_readwrite("innovation_gate_chi2", &EKFConfig::innovation_gate_chi2,
+                       "Chi-square innovation gate (6 DOF)")
+        .def_readwrite("init_pos_std", &EKFConfig::init_pos_std,
+                       "Initial position std (m)")
+        .def_readwrite("init_vel_std", &EKFConfig::init_vel_std,
+                       "Initial velocity std (m/s)")
+        .def_readwrite("init_att_std", &EKFConfig::init_att_std,
+                       "Initial attitude std (rad)")
+        .def_readwrite("init_gyro_bias_std", &EKFConfig::init_gyro_bias_std,
+                       "Initial gyro bias std (rad/s)")
+        .def_readwrite("init_accel_bias_std", &EKFConfig::init_accel_bias_std,
+                       "Initial accel bias std (m/s^2)");
+
+    py::class_<EKFNominalState>(m, "EKFNominalState")
+        .def(py::init<>())
+        .def_readwrite("position", &EKFNominalState::position,
+                       "NED position [n, e, d] (m)")
+        .def_readwrite("velocity", &EKFNominalState::velocity,
+                       "NED velocity (m/s)")
+        .def_readwrite("attitude", &EKFNominalState::attitude,
+                       "Body-to-NED Hamilton quaternion")
+        .def_readwrite("gyro_bias", &EKFNominalState::gyro_bias,
+                       "Gyro bias (rad/s, body)")
+        .def_readwrite("accel_bias", &EKFNominalState::accel_bias,
+                       "Accel bias (m/s^2, body)")
+        .def("__repr__", [](const EKFNominalState& s) {
+            return "EKFNominalState(position=[" +
+                   std::to_string(s.position.x()) + ", " +
+                   std::to_string(s.position.y()) + ", " +
+                   std::to_string(s.position.z()) + "])";
+        });
+
+    py::class_<Ekf>(m, "Ekf")
+        .def(py::init<const EKFConfig&>(), py::arg("config") = EKFConfig{},
+             "15-state multiplicative error-state KF (MEKF). Error state "
+             "ordering [dp(3), dv(3), dtheta(3), dbg(3), dba(3)]; body-frame "
+             "(right) attitude error q_true = q_est (x) dq (see "
+             "cpp/include/talon/ekf.hpp).")
+        .def("initialize", &Ekf::initialize, py::arg("initial"),
+             "Set the nominal state and P to the configured initial "
+             "covariances.")
+        .def("initialize_level", &Ekf::initialize_level, py::arg("position"),
+             py::arg("velocity"), py::arg("yaw") = 0.0,
+             "Initialize level (roll = pitch = 0, yaw as given) from the "
+             "assumed stationary specific force [0, 0, -g].")
+        .def("initialize_from_accel", &Ekf::initialize_from_accel,
+             py::arg("position"), py::arg("velocity"), py::arg("accel_body"),
+             py::arg("yaw") = 0.0,
+             "Initialize, leveling roll/pitch from a stationary "
+             "body-frame specific force measurement.")
+        .def("predict", &Ekf::predict, py::arg("accel_meas"),
+             py::arg("gyro_meas"), py::arg("dt"),
+             "IMU propagation (every DT_IMU). accel_meas is the body "
+             "specific force (hover reads [0, 0, -g]); gyro_meas the body "
+             "rate.")
+        .def("update", &Ekf::update, py::arg("gps_position"),
+             py::arg("gps_velocity"),
+             "GPS position/velocity update in NED (every DT_GPS). Returns "
+             "True if accepted, False if gated out (state unchanged).")
+        .def("nominal", &Ekf::nominal,
+             py::return_value_policy::reference_internal,
+             "Nominal EKF state (reference into the filter).")
+        .def("covariance", &Ekf::covariance,
+             "15x15 covariance matrix as a numpy array (copy).")
+        .def("last_innovation", &Ekf::last_innovation,
+             "Last GPS innovation [dp(3), dv(3)] (6-vector).")
+        .def("last_innovation_chi2", &Ekf::last_innovation_chi2,
+             "Chi-square of the last GPS innovation.")
+        .def("last_update_accepted", &Ekf::last_update_accepted,
+             "Whether the last GPS update passed the innovation gate.")
+        .def("mutable_nominal", &Ekf::mutable_nominal,
+             py::return_value_policy::reference_internal,
+             "Mutable reference to the nominal state (fault-injection hook).")
+        .def("mutable_covariance", &Ekf::mutable_covariance,
+             py::return_value_policy::reference_internal,
+             "Mutable reference to the covariance (fault-injection hook).")
+        .def("estimated_body_rates", &Ekf::estimated_body_rates,
+             py::arg("gyro_meas"),
+             "Bias-corrected body rates gyro_meas - gyro_bias (for the "
+             "State.angular_rate view fed to the controller).")
+        .def("__repr__", [](const Ekf& ekf) {
+            const EKFNominalState& s = ekf.nominal();
+            return "Ekf(position=[" + std::to_string(s.position.x()) + ", " +
+                   std::to_string(s.position.y()) + ", " +
+                   std::to_string(s.position.z()) + "])";
+        });
 }

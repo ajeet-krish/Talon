@@ -58,6 +58,7 @@ if(BUILD_TESTS)
     add_executable(talon_tests
         cpp/tests/test_controller.cpp
         cpp/tests/test_dynamics.cpp
+        cpp/tests/test_ekf.cpp
         cpp/tests/test_wind.cpp
     )
     target_link_libraries(talon_tests PRIVATE talon_headers GTest::gtest_main)
