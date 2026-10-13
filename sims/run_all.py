@@ -6,6 +6,7 @@ Usage (from the repository root):
     uv run python sims/run_all.py
     uv run python sims/run_all.py --monte-carlo   # + Monte Carlo sweep
     uv run python sims/run_all.py --skip-video    # skip docs/videos/ export
+    uv run python sims/run_all.py --skip-fingerprint  # skip Sprint 2.5 art
 
 What it does, in order:
 
@@ -48,13 +49,22 @@ What it does, in order:
    histories (_run_waypoints_with_capture). Skipped with --skip-video or
    TALON_SKIP_VIDEO=1; each video is wrapped so a failure only logs a
    warning and never fails the validation.
-8. Writes plots/validation_report.md (markdown table: Test, Target,
+8. Exports the Sprint 2.5 data-art flight fingerprints via
+   talon.plotting: a radar-polygon fingerprint (plots/fingerprint.png
+   landscape + fingerprint_square.png) built from the SIL histories and
+   the parsed scenario metrics, plus a 3D trajectory poster
+   (plots/trajectory_poster.png from the gps_outage circuit). The
+   portfolio copies land in docs/portfolio/ (fingerprint.png and
+   trajectory_poster.svg). Skipped with --skip-fingerprint or
+   TALON_SKIP_FINGERPRINT=1; each file is wrapped so a failure only
+   logs a warning and never fails the validation.
+9. Writes plots/validation_report.md (markdown table: Test, Target,
    Achieved, Pass) and prints the same summary to stdout.
-9. With --monte-carlo (default off): after the main validation, runs the
-   Sprint 2.2 Monte Carlo sweep over the waypoint circuit
-   (sims/monte_carlo.py) with n_runs from the TALON_MC_RUNS environment
-   variable (default 10) and writes plots/monte_carlo_report.md plus
-   plots/monte_carlo_summary.png.
+10. With --monte-carlo (default off): after the main validation, runs the
+    Sprint 2.2 Monte Carlo sweep over the waypoint circuit
+    (sims/monte_carlo.py) with n_runs from the TALON_MC_RUNS environment
+    variable (default 10) and writes plots/monte_carlo_report.md plus
+    plots/monte_carlo_summary.png.
 
 Exit status: 0 when every scenario main() returned 0 (their internal
 acceptance asserts already ran), 1 otherwise.
@@ -73,6 +83,7 @@ from contextlib import redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -114,9 +125,11 @@ from talon.plotting import (  # noqa: E402
     plot_control_effort,
     plot_cross_track_error,
     plot_ekf_convergence,
+    plot_flight_fingerprint,
     plot_position_error,
     plot_state_machine,
     plot_trajectory_3d,
+    plot_trajectory_poster,
     plot_wind_response,
 )
 from talon.types import FlightPhase  # noqa: E402
@@ -124,9 +137,16 @@ from talon.types import FlightPhase  # noqa: E402
 PLOTS_DIR = REPO_ROOT / "plots"
 JSON_DIR = PLOTS_DIR / "json"
 VIDEOS_DIR = REPO_ROOT / "docs" / "videos"
+PORTFOLIO_DIR = REPO_ROOT / "docs" / "portfolio"
 REPORT_PATH = PLOTS_DIR / "validation_report.md"
 MC_REPORT_PATH = PLOTS_DIR / "monte_carlo_report.md"
 MC_PLOT_PATH = PLOTS_DIR / "monte_carlo_summary.png"
+
+# Sprint 2.5 fingerprint windows/points (mirrors the scenario hover
+# definitions: home at the origin, hover altitude 10 m).
+FINGERPRINT_HOVER_POINT = np.array([0.0, 0.0, -10.0])
+FINGERPRINT_HOVER_WINDOW_S = 20.0
+FINGERPRINT_WIND_WINDOW_S = 30.0
 
 # Transient excluded from cross-track statistics (matches
 # scenario_waypoints: the initial capture transient).
@@ -368,6 +388,224 @@ def _export_videos(
             paths.append(path)
         except Exception as exc:  # noqa: BLE001 - warn, never fail validation
             print(f"WARNING: video export failed for {name}: {exc}")
+    return paths
+
+
+def _rms(values: np.ndarray) -> float | None:
+    """Root-mean-square of a sample vector; None for an empty vector."""
+    if values.size == 0:
+        return None
+    return float(np.sqrt(np.mean(np.square(values))))
+
+
+def _last_window(result: SILResult, seconds: float) -> np.ndarray:
+    """Boolean mask of the samples in the last ``seconds`` of the run."""
+    if result.time_s.size == 0:
+        return np.zeros(0, dtype=bool)
+    t_end = float(result.time_s[-1])
+    return result.time_s >= t_end - seconds
+
+
+def _build_fingerprint_metrics(
+    gps_result: SILResult,
+    wind_result: SILResult,
+    emergency_result: SILResult,
+    parsed: dict[str, dict[str, float | None]],
+    step_metrics: dict[str, float],
+) -> dict[str, dict[str, float | None]]:
+    """Sprint 2.5 fingerprint metrics, one dict per scenario.
+
+    Every scenario dict carries all eight fingerprint keys (the ones
+    plot_flight_fingerprint specs); a metric that does not apply to the
+    scenario or has no samples is None and its spoke is skipped:
+
+    - hover_drift: RMS of ||truth - hover_point|| over the last 20 s
+      (hover_point = [0, 0, -10] m, the takeoff/hover altitude);
+    - ekf_rmse: sqrt(mean(||ekf - truth||^2)) over the whole run;
+    - mean/max e_ct: from result.e_ct when the run flew a WAYPOINT leg;
+    - wind_rms: RMS of truth-vs-hover error over the last 30 s, wind
+      scenario only (the scenario's own acceptance window);
+    - outage_growth: growth of |ekf - truth| over the 4 s GPS blackout,
+      i.e. error at the outage end minus error at the outage start
+      (matches the scenario_gps_outage growth definition; can be
+      negative when the error shrinks), gps_outage only;
+    - emergency_delay: detection delay, i.e. the time of the first
+      EMERGENCY phase entry minus the fault-injection time, emergency
+      scenario only (matches the printed detect_delay and the 1 s bound);
+    - rise_time: the shared 1 m position-step rise time (vehicle-level,
+      identical on every polygon).
+    The waypoints scenario has no SILResult (standalone loop), so its
+    polygon is built from the parsed stdout metrics and skipped when
+    none of them could be parsed.
+    """
+
+    def _base(result: SILResult) -> dict[str, float | None]:
+        metrics: dict[str, float | None] = {
+            "hover_drift_m": None,
+            "rise_time_s": float(step_metrics["rise_time_s"]),
+            "ekf_rmse_m": None,
+            "mean_e_ct_m": None,
+            "max_e_ct_m": None,
+            "wind_rms_m": None,
+            "outage_growth_m": None,
+            "emergency_delay_s": None,
+        }
+        if result.time_s.size:
+            drift = np.linalg.norm(
+                result.truth_position - FINGERPRINT_HOVER_POINT, axis=1
+            )
+            metrics["hover_drift_m"] = _rms(
+                drift[_last_window(result, FINGERPRINT_HOVER_WINDOW_S)]
+            )
+            err = np.linalg.norm(
+                result.ekf_position - result.truth_position, axis=1
+            )
+            metrics["ekf_rmse_m"] = float(np.sqrt(np.mean(np.square(err))))
+        if result.e_ct.size:
+            metrics["mean_e_ct_m"] = float(np.mean(result.e_ct))
+            metrics["max_e_ct_m"] = float(np.max(result.e_ct))
+        return metrics
+
+    gps_metrics = _base(gps_result)
+    outage_start = scenario_gps_outage.OUTAGE_START_S
+    outage_end = outage_start + scenario_gps_outage.OUTAGE_DURATION_S
+    if gps_result.time_s.size:
+        # Growth delta, matching scenario_gps_outage.main(): the error at
+        # the outage end minus the error at the outage start (NOT the
+        # absolute end-of-outage error). Indexing mirrors the scenario:
+        # last sample at or before each boundary time. A negative growth
+        # (error shrank across the outage) is kept as-is; the fingerprint
+        # normalizer treats any value <= 0 as beating the 5.0 m spec
+        # (ratio capped at _FINGERPRINT_R_MAX).
+        i_start = int(
+            np.searchsorted(gps_result.time_s, outage_start, side="right")
+            - 1
+        )
+        i_end = int(
+            np.searchsorted(gps_result.time_s, outage_end, side="right") - 1
+        )
+        i_start = int(np.clip(i_start, 0, gps_result.time_s.size - 1))
+        i_end = int(np.clip(i_end, 0, gps_result.time_s.size - 1))
+        err_start = float(
+            np.linalg.norm(
+                gps_result.ekf_position[i_start]
+                - gps_result.truth_position[i_start]
+            )
+        )
+        err_end = float(
+            np.linalg.norm(
+                gps_result.ekf_position[i_end]
+                - gps_result.truth_position[i_end]
+            )
+        )
+        gps_metrics["outage_growth_m"] = err_end - err_start
+
+    wind_metrics = _base(wind_result)
+    if wind_result.time_s.size:
+        hover_err = np.linalg.norm(
+            wind_result.truth_position - FINGERPRINT_HOVER_POINT, axis=1
+        )
+        wind_metrics["wind_rms_m"] = _rms(
+            hover_err[_last_window(wind_result, FINGERPRINT_WIND_WINDOW_S)]
+        )
+
+    emergency_metrics = _base(emergency_result)
+    emergency_times = [
+        t
+        for t, phase in emergency_result.phase_timeline
+        if phase is FlightPhase.EMERGENCY
+    ]
+    if emergency_times:
+        emergency_metrics["emergency_delay_s"] = (
+            float(emergency_times[0]) - scenario_emergency.INJECT_S
+        )
+
+    metrics: dict[str, dict[str, float | None]] = {
+        "gps_outage": gps_metrics,
+        "wind": wind_metrics,
+        "emergency": emergency_metrics,
+    }
+
+    waypoints = parsed.get("waypoints", {})
+    wp_values = {
+        key: waypoints.get(src)
+        for key, src in (
+            ("ekf_rmse_m", "ekf_rmse_m"),
+            ("mean_e_ct_m", "mean_e_ct_m"),
+            ("max_e_ct_m", "max_e_ct_m"),
+        )
+    }
+    if any(value is not None for value in wp_values.values()):
+        metrics["waypoints"] = {
+            "hover_drift_m": None,
+            "rise_time_s": float(step_metrics["rise_time_s"]),
+            **wp_values,
+            "wind_rms_m": None,
+            "outage_growth_m": None,
+            "emergency_delay_s": None,
+        }
+    return metrics
+
+
+def _export_fingerprints(
+    metrics: dict[str, dict[str, float | None]],
+    gps_result: SILResult,
+    _emergency_result: SILResult,
+) -> list[str]:
+    """Write the Sprint 2.5 fingerprint deliverables (Sprint 2.5).
+
+    plots/fingerprint.png (landscape) + fingerprint_square.png (square),
+    plots/trajectory_poster.png (square, gps_outage circuit), and the
+    docs/portfolio/ copies (fingerprint.png landscape +
+    trajectory_poster.svg). ``_emergency_result`` is accepted for
+    signature symmetry with the other exporters and reserved for a
+    second poster (the leading underscore marks it intentionally
+    unused). A failure only logs a warning: fingerprint export
+    must never fail the validation driver.
+    """
+    jobs: list[tuple[str, Callable[[], str]]] = [
+        (
+            "fingerprint.png",
+            lambda: plot_flight_fingerprint(
+                metrics, PLOTS_DIR / "fingerprint.png", aspect="landscape"
+            ),
+        ),
+        (
+            "fingerprint_square.png",
+            lambda: plot_flight_fingerprint(
+                metrics, PLOTS_DIR / "fingerprint_square.png", aspect="square"
+            ),
+        ),
+        (
+            "trajectory_poster.png",
+            lambda: plot_trajectory_poster(
+                gps_result, PLOTS_DIR / "trajectory_poster.png",
+                aspect="square",
+            ),
+        ),
+        (
+            "portfolio/fingerprint.png",
+            lambda: plot_flight_fingerprint(
+                metrics, PORTFOLIO_DIR / "fingerprint.png", aspect="landscape"
+            ),
+        ),
+        (
+            "portfolio/trajectory_poster.svg",
+            lambda: plot_trajectory_poster(
+                gps_result, PORTFOLIO_DIR / "trajectory_poster.svg",
+                aspect="square",
+            ),
+        ),
+    ]
+    paths: list[str] = []
+    for name, job in jobs:
+        try:
+            path = job()
+            size_kb = Path(path).stat().st_size / 1024.0
+            print(f"  {name} written ({size_kb:.1f} KB)")
+            paths.append(path)
+        except Exception as exc:  # noqa: BLE001 - warn, never fail validation
+            print(f"WARNING: fingerprint export failed for {name}: {exc}")
     return paths
 
 
@@ -687,7 +925,13 @@ def _write_report(rows: list[ReportRow], plot_paths: list[str]) -> Path:
         "",
     ]
     for path in plot_paths:
-        lines.append(f"- `{Path(path).name}`")
+        # Repo-relative when possible so plots/fingerprint.png and the
+        # docs/portfolio/ copy read as distinct entries.
+        try:
+            display: str | Path = Path(path).resolve().relative_to(REPO_ROOT)
+        except ValueError:
+            display = Path(path).name
+        lines.append(f"- `{display}`")
     lines += [
         "",
         "Plot scenario assignment: trajectory / position error / EKF",
@@ -711,6 +955,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "skip the docs/videos/ cinematic export (also honored via "
             "the TALON_SKIP_VIDEO environment variable)"
+        ),
+    )
+    parser.add_argument(
+        "--skip-fingerprint",
+        action="store_true",
+        help=(
+            "skip the Sprint 2.5 fingerprint/poster export (also honored "
+            "via the TALON_SKIP_FINGERPRINT environment variable)"
         ),
     )
     parser.add_argument(
@@ -897,6 +1149,34 @@ def main() -> int:
     else:
         print("exporting flight videos to docs/videos/ ...", flush=True)
         _export_videos(gps_result, wind_result, emergency_result)
+
+    # Sprint 2.5 fingerprints + poster, after videos and before the
+    # report so their paths can be listed in the Plots section. Wrapped
+    # inside _export_fingerprints: never fails validation.
+    skip_fingerprint = args.skip_fingerprint or os.environ.get(
+        "TALON_SKIP_FINGERPRINT", ""
+    ) not in ("", "0")
+    if skip_fingerprint:
+        print(
+            "skipping fingerprint export "
+            "(--skip-fingerprint / TALON_SKIP_FINGERPRINT)"
+        )
+    else:
+        print("exporting flight fingerprints to plots/ + docs/portfolio/"
+              " ...", flush=True)
+        fingerprint_metrics = _build_fingerprint_metrics(
+            gps_result, wind_result, emergency_result, parsed, step_metrics
+        )
+        growth = fingerprint_metrics["gps_outage"]["outage_growth_m"]
+        if growth is not None:
+            print(
+                "fingerprint outage_growth_m: "
+                f"{growth:.3f} m "
+                "(err at outage end minus err at outage start)"
+            )
+        plot_paths += _export_fingerprints(
+            fingerprint_metrics, gps_result, emergency_result
+        )
     rows = _build_report(
         codes,
         parsed,
@@ -919,7 +1199,11 @@ def main() -> int:
     print()
     print(f"plots written to {PLOTS_DIR}/:")
     for path in plot_paths:
-        print(f"  {Path(path).name}")
+        try:
+            display = Path(path).resolve().relative_to(REPO_ROOT)
+        except ValueError:
+            display = Path(path).name
+        print(f"  {display}")
     print(f"report written to {report_path}")
     print(
         f"summary: {passed}/{len(rows)} checks passed, "

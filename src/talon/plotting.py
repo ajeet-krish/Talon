@@ -26,8 +26,10 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
+from mpl_toolkits.mplot3d import art3d
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from talon.mavlink_sil import SILResult
@@ -545,6 +547,265 @@ def plot_wind_response(result: SILResult, path: str | Path) -> str:
     return _save(fig, path)
 
 
+# ---------------------------------------------------------------------------
+# Sprint 2.5: data-art flight fingerprints (portfolio deliverables).
+# ---------------------------------------------------------------------------
+
+# Acceptance bound per fingerprint metric. The fingerprint radius is
+# spec / achieved, so the 1.0x ring is exactly on-spec and values inside
+# the ring beat the bound.
+_METRIC_SPEC: dict[str, float] = {
+    "hover_drift_m": 0.05,
+    "rise_time_s": 2.5,
+    "ekf_rmse_m": 2.0,
+    "mean_e_ct_m": 1.0,
+    "max_e_ct_m": 3.0,
+    "wind_rms_m": 0.25,
+    "outage_growth_m": 5.0,
+    "emergency_delay_s": 1.0,
+}
+
+# Short circumference labels, keyed like _METRIC_SPEC (matplotlib mathtext
+# where it reads better on a radial spoke).
+_METRIC_LABELS: dict[str, str] = {
+    "hover_drift_m": "hover drift (m)",
+    "rise_time_s": "rise time (s)",
+    "ekf_rmse_m": "EKF RMSE (m)",
+    "mean_e_ct_m": "mean $e_{ct}$ (m)",
+    "max_e_ct_m": "max $e_{ct}$ (m)",
+    "wind_rms_m": "wind RMS (m)",
+    "outage_growth_m": "outage growth (m)",
+    "emergency_delay_s": "emergency delay (s)",
+}
+
+# Radius clamp: a scenario beating spec by more than 2x saturates at the
+# outer edge so one runaway metric cannot squash every other spoke.
+_FINGERPRINT_R_MAX = 2.0
+# Poster/fingerprint output: fixed dpi and figsizes so the PNG pixel
+# dimensions are exact (figsize * dpi, no tight bbox rounding).
+_POSTER_DPI = 150
+_ASPECT_FIGSIZE: dict[str, tuple[float, float]] = {
+    "landscape": (8.0, 4.18),  # x150 dpi -> 1200 x 627 px
+    "square": (7.2, 7.2),  # x150 dpi -> 1080 x 1080 px
+}
+
+
+def _save_fixed(fig: Figure, path: str | Path) -> str:
+    """Save at fixed dpi WITHOUT tight bbox so pixel size is exact.
+
+    The house _save() relies on savefig.bbox=tight, whose trimmed output
+    size varies with content; the fingerprint tests pin exact pixel
+    dimensions, so these deliverables temporarily restore the default
+    full-figure bbox ("standard" normalizes to None inside rcParams).
+    """
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with plt.rc_context({"savefig.bbox": "standard"}):
+        fig.savefig(out, dpi=_POSTER_DPI)
+    plt.close(fig)
+    return str(out)
+
+
+def _blend(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    """Pre-multiply translucent RGB against the white axes background.
+
+    Duplicated from talon.animation (private there; importing it would
+    pull the video stack into plotting and risk an import cycle). Opaque
+    RGBA keeps matplotlib's 3D painters sort from misordering faded
+    trail segments.
+    """
+    blended = rgb * alpha[:, None] + (1.0 - alpha[:, None])
+    return np.concatenate([blended, np.ones((alpha.size, 1))], axis=1)
+
+
+def _sample_phase_rgb(
+    times: np.ndarray, timeline: list[tuple[float, object]]
+) -> np.ndarray:
+    """Per-sample trail base RGB, colored by the phase active at the sample.
+
+    The phase at any control sample is the last timeline entry at or
+    before that sample's time; unknown phase names fall back to gray.
+    Mirrors talon.animation._sample_phase_colors (same duplication
+    rationale as _blend above).
+    """
+    if not timeline:
+        return np.tile(np.array([0.6, 0.6, 0.6]), (times.size, 1))
+    tl_times = np.array([t for t, _ in timeline], dtype=np.float64)
+    idx = np.clip(
+        np.searchsorted(tl_times, times, side="right") - 1,
+        0,
+        len(timeline) - 1,
+    )
+    rgb = np.empty((times.size, 3), dtype=np.float64)
+    for i, entry in enumerate(idx):
+        color = PHASE_COLORS.get(timeline[entry][1].value, "#999999")
+        rgb[i] = to_rgba(color)[:3]
+    return rgb
+
+
+def plot_flight_fingerprint(
+    metrics: dict[str, dict[str, float | None]],
+    path: str | Path,
+    *,
+    aspect: str = "landscape",
+) -> str:
+    """Radar-polygon flight fingerprint: one polygon per scenario.
+
+    ``metrics`` maps scenario name -> {metric key -> achieved value};
+    the eight metric keys are those in the module's fingerprint spec,
+    each with its acceptance bound as the reference. Radius is
+    spec / achieved clamped to [0, 2], so the 1.0x ring is exactly
+    on-spec and values INSIDE the ring beat the bound. A None value
+    (metric does not apply to that scenario) skips the spoke and the
+    polygon closes over the remaining spokes. Edge colors cycle the
+    Wong palette; fills are alpha 0.15. ``aspect`` is "landscape"
+    (1200 x 627 px at 150 dpi) or "square" (1080 x 1080 px).
+    """
+    apply_wong_theme()
+    fig = plt.figure(figsize=_ASPECT_FIGSIZE[aspect])
+    ax = fig.add_subplot(111, projection="polar")
+    # Room for the circumference metric labels and the radial tick text.
+    fig.subplots_adjust(left=0.14, right=0.86, top=0.86, bottom=0.16)
+
+    metric_names = tuple(_METRIC_SPEC)
+    angles = np.linspace(0.0, 2.0 * np.pi, len(metric_names), endpoint=False)
+    for k, (scenario, values) in enumerate(metrics.items()):
+        spokes: list[float] = []
+        used: list[float] = []
+        for angle, metric in zip(angles, metric_names):
+            achieved = values.get(metric)
+            if achieved is None:
+                continue
+            spec = _METRIC_SPEC[metric]
+            if achieved > 0.0:
+                ratio = spec / achieved
+            else:  # achieved == 0 beats spec as far as the ring cares
+                ratio = _FINGERPRINT_R_MAX
+            spokes.append(float(np.clip(ratio, 0.0, _FINGERPRINT_R_MAX)))
+            used.append(float(angle))
+        if not spokes:  # scenario with no computable metric: no polygon
+            continue
+        # Close the polygon by repeating the first vertex.
+        spokes.append(spokes[0])
+        used.append(used[0])
+        color = WONG_PALETTE[k % len(WONG_PALETTE)]
+        ax.plot(used, spokes, color=color, linewidth=1.6, label=scenario)
+        ax.fill(used, spokes, color=color, alpha=0.15, linewidth=0)
+
+    # First spoke at the top, clockwise, like a compass rose.
+    ax.set_theta_zero_location("N")
+    ax.set_theta_direction(-1)
+    ax.set_ylim(0.0, _FINGERPRINT_R_MAX)
+    ax.set_yticks([0.5, 1.0, 1.5])
+    ax.set_yticklabels(["0.5x", "1.0x (spec)", "1.5x"], fontsize=7)
+    ax.set_xticks(angles)
+    ax.set_xticklabels(
+        [_METRIC_LABELS[m] for m in metric_names], fontsize=8
+    )
+    if metrics:
+        ax.legend(loc="center", fontsize=8)
+    ax.set_title(
+        "Flight fingerprint (radius = spec / achieved; 1.0x ring = spec)",
+        pad=14,
+        fontsize=10,
+    )
+    return _save_fixed(fig, path)
+
+
+def plot_trajectory_poster(
+    result: SILResult,
+    path: str | Path,
+    *,
+    aspect: str = "square",
+    title: str | None = None,
+) -> str:
+    """Static 3D trajectory poster for portfolios (Sprint 2.5).
+
+    Altitude-above-home framing like the other 3D plots, with a
+    phase-colored comet trail (Line3DCollection of consecutive samples,
+    per-segment alpha aging 0.2 -> 1.0, pre-blended against white so 3D
+    painters sort never misorders it), vermillion waypoint triangles, an
+    orange home star, and a green start circle. ``aspect`` is "square"
+    (1080 x 1080 px) or "landscape" (1200 x 627 px); a ".svg" path
+    suffix saves vector SVG instead of PNG. ``title`` defaults to a
+    phase-sequence title derived from the timeline. Returns the path.
+    """
+    apply_wong_theme()
+    fig = plt.figure(figsize=_ASPECT_FIGSIZE[aspect])
+    if result.time_s.size == 0:
+        return _empty(fig, "no trajectory samples", path)
+    ax = fig.add_subplot(111, projection="3d")
+
+    north = result.truth_position[:, 0]
+    east = result.truth_position[:, 1]
+    alt = _altitude_above_home(result)
+    points = np.column_stack([north, east, alt])
+
+    # Phase-colored comet trail (see _blend / _sample_phase_rgb above).
+    rgb = _sample_phase_rgb(result.time_s, result.phase_timeline)
+    if points.shape[0] >= 2:
+        segments = np.stack([points[:-1], points[1:]], axis=1)
+        alphas = np.linspace(0.2, 1.0, segments.shape[0])
+        trail = art3d.Line3DCollection(segments, linewidths=1.8)
+        trail.set_colors(_blend(rgb[1:], alphas))
+        ax.add_collection(trail)
+
+    ax.scatter(
+        north[:1],
+        east[:1],
+        alt[:1],
+        color=WONG_PALETTE[3],
+        marker="o",
+        s=55,
+        label="Start",
+        depthshade=False,
+    )
+    if result.waypoints_ned.size:
+        home_d = float(result.home_ned[2]) if result.home_ned.size else 0.0
+        ax.scatter(
+            result.waypoints_ned[:, 0],
+            result.waypoints_ned[:, 1],
+            home_d - result.waypoints_ned[:, 2],
+            color=WONG_PALETTE[6],
+            marker="^",
+            s=60,
+            label="Waypoints",
+            depthshade=False,
+        )
+    if result.home_ned.size:
+        ax.scatter(
+            [result.home_ned[0]],
+            [result.home_ned[1]],
+            [0.0],
+            color=WONG_PALETTE[1],
+            marker="*",
+            s=120,
+            label="Home",
+            depthshade=False,
+        )
+
+    mins = points.min(axis=0)
+    maxs = points.max(axis=0)
+    span = np.maximum(maxs - mins, 1.0)
+    pad = 0.05 * span
+    ax.set_xlim(mins[0] - pad[0], maxs[0] + pad[0])
+    ax.set_ylim(mins[1] - pad[1], maxs[1] + pad[1])
+    ax.set_zlim(mins[2] - pad[2], maxs[2] + pad[2])
+    ax.set_box_aspect(tuple(span))
+    ax.view_init(elev=25.0, azim=-60.0)
+    ax.set_xlabel("North (m)")
+    ax.set_ylabel("East (m)")
+    ax.set_zlabel("Altitude (m)")
+    if title is None:
+        phases = " -> ".join(
+            dict.fromkeys(phase.value for _, phase in result.phase_timeline)
+        )
+        title = f"Talon flight: {phases}" if phases else "Talon flight"
+    ax.set_title(title, fontsize=11)
+    ax.legend(loc="upper left", fontsize=8)
+    return _save_fixed(fig, path)
+
+
 __all__ = [
     "PHASE_COLORS",
     "PHASE_ORDER",
@@ -553,8 +814,10 @@ __all__ = [
     "plot_control_effort",
     "plot_cross_track_error",
     "plot_ekf_convergence",
+    "plot_flight_fingerprint",
     "plot_position_error",
     "plot_state_machine",
     "plot_trajectory_3d",
+    "plot_trajectory_poster",
     "plot_wind_response",
 ]
