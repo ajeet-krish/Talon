@@ -39,6 +39,8 @@ from .battery import BatteryConfig, BatteryModel, BatteryState
 from .controller import CascadedController, ControlCommand, ControlGains
 from .ekf import EKFConfig, EKFNominalState, Ekf
 from .guidance import GuidanceDiagnostics, NLGLConfig, NLGLGuidance
+from .mavlink_codec import MavlinkCodec
+from .mavlink_sil import SILConfig, SILResult, SILRunner
 from .mission import WaypointMission
 from .sensors import (
     GPSConfig,
@@ -48,7 +50,8 @@ from .sensors import (
     gps_velocity_ned,
     specific_force_from_velocity,
 )
-from .types import Waypoint
+from .state_machine import FlightPhaseMachine, PhaseTransition, Telemetry
+from .types import FlightPhase, Waypoint
 
 __all__ = [
     "AIR_DENSITY",
@@ -68,6 +71,8 @@ __all__ = [
     "ControlGains",
     "DrydenWind",
     "Ekf",
+    "FlightPhase",
+    "FlightPhaseMachine",
     "GPSConfig",
     "GRAVITY",
     "GuidanceDiagnostics",
@@ -80,11 +85,17 @@ __all__ = [
     "MOTOR_KF",
     "MOTOR_KM",
     "MOTOR_TIME_CONST",
+    "MavlinkCodec",
     "NLGLConfig",
     "NLGLGuidance",
+    "PhaseTransition",
     "Quaternion",
+    "SILConfig",
+    "SILResult",
+    "SILRunner",
     "SensorSuite",
     "State",
+    "Telemetry",
     "VEHICLE_AREA",
     "VehicleParams",
     "Waypoint",
