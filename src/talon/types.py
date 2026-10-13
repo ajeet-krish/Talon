@@ -57,11 +57,17 @@ class GPSMeasurement:
 
 @dataclass(slots=True)
 class Waypoint:
-    """Navigation target in NED (m)."""
+    """Navigation target in NED (m).
+
+    radius is the horizontal acceptance radius (m): a mission advances to
+    the next waypoint when the vehicle is within radius of ``position``
+    (horizontal plane only; altitude is handled by the guidance channel).
+    """
 
     position: NDArray[np.float64]
     speed: float = 5.0
     heading: float = 0.0
+    radius: float = 2.0
 
     def __post_init__(self) -> None:
         self.position = np.asarray(self.position, dtype=np.float64)

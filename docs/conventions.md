@@ -89,7 +89,8 @@ so sequences are reproducible on a given platform.
 ## Motor model
 
 - X-configuration mixing, with `l = arm_length / sqrt(2)` and
-  `c = MOTOR_KM / MOTOR_KF`:
+  `c = MOTOR_KM / MOTOR_KF = 0.015 m` (the prop-drag yaw moment arm,
+  realistic for a 15 cm quadrotor):
 
 ```
 [T ]   [  1   1   1   1 ] [f1]
@@ -105,7 +106,10 @@ so sequences are reproducible on a given platform.
 f_actual += (f_cmd - f_actual) * (1 - exp(-dt / tau))
 ```
 
-- Actual forces are clamped at zero: motors cannot produce negative thrust.
+- Actual forces are clamped to `[0, MOTOR_KF * M_MAX^2]`: motors cannot
+  produce negative thrust or exceed max RPM. The clamp accepts the
+  resulting moment error rather than redistributing it (real-actuator
+  behavior).
 
 ## Integration
 

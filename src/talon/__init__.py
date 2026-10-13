@@ -35,8 +35,11 @@ except ImportError as exc:  # pragma: no cover - exercised only on unbuilt check
         "same Python interpreter)."
     ) from exc
 
+from .battery import BatteryConfig, BatteryModel, BatteryState
 from .controller import CascadedController, ControlCommand, ControlGains
 from .ekf import EKFConfig, EKFNominalState, Ekf
+from .guidance import GuidanceDiagnostics, NLGLConfig, NLGLGuidance
+from .mission import WaypointMission
 from .sensors import (
     GPSConfig,
     IMUConfig,
@@ -45,10 +48,14 @@ from .sensors import (
     gps_velocity_ned,
     specific_force_from_velocity,
 )
+from .types import Waypoint
 
 __all__ = [
     "AIR_DENSITY",
     "ARM_LENGTH",
+    "BatteryConfig",
+    "BatteryModel",
+    "BatteryState",
     "DRAG_COEFF",
     "DT",
     "DT_CONTROL",
@@ -63,6 +70,7 @@ __all__ = [
     "Ekf",
     "GPSConfig",
     "GRAVITY",
+    "GuidanceDiagnostics",
     "IXX",
     "IYY",
     "IZZ",
@@ -72,11 +80,15 @@ __all__ = [
     "MOTOR_KF",
     "MOTOR_KM",
     "MOTOR_TIME_CONST",
+    "NLGLConfig",
+    "NLGLGuidance",
     "Quaternion",
     "SensorSuite",
     "State",
     "VEHICLE_AREA",
     "VehicleParams",
+    "Waypoint",
+    "WaypointMission",
     "gps_to_ned",
     "gps_velocity_ned",
     "hover_thrust",

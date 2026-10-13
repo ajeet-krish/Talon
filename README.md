@@ -1,4 +1,4 @@
-# Talon
+# Talon: Single-Vehicle UAV Autopilot & Path Follower
 
 Talon is a single-vehicle UAV autopilot for a 1.5 kg Crazyflie-class
 quadrotor: a full guidance, navigation, and control stack with a header-only

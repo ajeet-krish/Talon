@@ -29,9 +29,15 @@ inline Vec3 vee(const Mat3& s) {
 // closes I * phi_ddot + kd_att * phi_dot + kp_att * phi = 0 per axis, so
 //   kp_att = I * omega_a^2,  kd_att = 2 * zeta_a * I * omega_a.
 // Defaults: roll/pitch omega_a ~ 58.7 rad/s (~9.3 Hz, zeta_a ~ 1.1) for
-// IXX = IYY = 2.32e-3; yaw softer at omega_a ~ 31.4 rad/s (zeta_a ~ 0.4) for
-// IZZ = 4.05e-3. These are analytically derived starting points; the closed
-// loop hover and step-response tests define the acceptance envelope.
+// IXX = IYY = 2.32e-3; yaw softer at omega_a ~ 10 rad/s (~1.6 Hz,
+// zeta_a ~ 0.8) for IZZ = 4.05e-3. The yaw axis is set by the physical yaw
+// authority, not by a time-scale argument: with the realistic drag arm
+// c_tau = MOTOR_KM / MOTOR_KF = 0.015 m, the hover-thrust yaw envelope is
+// only c_tau * m * g ~ 0.22 N*m, so kp_att.z = 0.4 already commands
+// ~0.21 N*m at a 30 deg error (saturation-limited). The yaw rise-time
+// spec is therefore relaxed relative to roll/pitch (which stay < 0.3 s);
+// these are analytically derived starting points and the closed-loop
+// hover and step-response tests define the acceptance envelope.
 struct ControlGains {
     Vec3 kp_pos;  // position P gains: (m/s^2) per m of position error
     Vec3 kd_pos;  // velocity D gains: (m/s^2) per m/s of velocity error
@@ -123,10 +129,15 @@ inline ControlGains ControlGains::defaults() {
     // Outer loop: omega_n = 2 rad/s, zeta = 0.75 -> kp = 4, kd = 3.
     g.kp_pos = Vec3(4.0, 4.0, 4.0);
     g.kd_pos = Vec3(3.0, 3.0, 3.0);
-    // Inner loop: roll/pitch (I = 2.32e-3) omega_a ~ 58.7 rad/s, zeta ~ 1.1;
-    // yaw (I = 4.05e-3) omega_a ~ 31.4 rad/s, zeta ~ 0.4 (softer).
-    g.kp_att = Vec3(8.0, 8.0, 4.0);
-    g.kd_att = Vec3(0.3, 0.3, 0.1);
+    // Inner loop: roll/pitch (I = 2.32e-3) omega_a ~ 58.7 rad/s, zeta ~ 1.1.
+    // Yaw (I = 4.05e-3) is capped by the physical yaw envelope: with the
+    // realistic drag arm c_tau = MOTOR_KM / MOTOR_KF = 0.015 m, a pure-yaw
+    // hover maneuver can deliver at most c_tau * m * g ~ 0.22 N*m, so
+    // kp_att.z = 0.4 (omega_a ~ 9.9 rad/s, zeta ~ 0.8) already commands
+    // ~0.21 N*m at a 30 deg error and saturates beyond that; larger gains
+    // only deepen saturation without adding real authority.
+    g.kp_att = Vec3(8.0, 8.0, 0.4);
+    g.kd_att = Vec3(0.3, 0.3, 0.064);
     return g;
 }
 

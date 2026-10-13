@@ -14,7 +14,7 @@ inline constexpr double IZZ = 4.05e-3;
 
 // Motors
 inline constexpr double MOTOR_KF = 1.28e-6;      // thrust coeff: N / (rad/s)^2
-inline constexpr double MOTOR_KM = 5.96e-3;      // yaw moment coeff: N*m / (rad/s)^2
+inline constexpr double MOTOR_KM = 1.92e-8;      // yaw drag coeff: N*m / (rad/s)^2
 inline constexpr double MOTOR_TIME_CONST = 0.02; // first-order lag time constant, s
 
 // Aerodynamics
