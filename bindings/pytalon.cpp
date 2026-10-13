@@ -126,10 +126,14 @@ PYBIND11_MODULE(_core, m) {
         .def(py::init<>())
         .def_readwrite("kp_pos", &ControlGains::kp_pos,
                        "Position P gains ((m/s^2) per m)")
+        .def_readwrite("ki_pos", &ControlGains::ki_pos,
+                       "Position I gains ((m/s^2) per m*s)")
         .def_readwrite("kd_pos", &ControlGains::kd_pos,
                        "Velocity D gains ((m/s^2) per m/s)")
         .def_readwrite("kp_att", &ControlGains::kp_att,
                        "Attitude P gains ((N*m) per rad)")
+        .def_readwrite("ki_att", &ControlGains::ki_att,
+                       "Attitude I gains ((N*m) per rad*s)")
         .def_readwrite("kd_att", &ControlGains::kd_att,
                        "Rate D gains ((N*m) per rad/s)")
         .def_static("defaults", &ControlGains::defaults,
@@ -161,10 +165,10 @@ PYBIND11_MODULE(_core, m) {
              py::arg("estimated_state"), py::arg("pos_desired"),
              py::arg("vel_desired"), py::arg("yaw_desired"), py::arg("dt"),
              "One controller update. pos/vel desired in NED, yaw in rad; "
-             "dt is the caller's control period (reserved for future "
-             "estimator-coupled terms).")
+             "dt is the control period (drives the position integrator "
+             "with back-calculation anti-windup on thrust saturation).")
         .def("reset", &CascadedController::reset,
-             "Clear internal state (desired rates, telemetry).")
+             "Clear internal state (integral, desired rates, telemetry).")
         .def("set_omega_desired", &CascadedController::set_omega_desired,
              py::arg("omega_desired"),
              "Desired body rate for the inner loop (rad/s); zero by default.")
@@ -172,6 +176,8 @@ PYBIND11_MODULE(_core, m) {
              "Last gravity-compensated thrust-accel command (NED, m/s^2).")
         .def("last_attitude_error", &CascadedController::last_attitude_error,
              "Last attitude error vector (dimensionless).")
+        .def("integral_position", &CascadedController::integral_position,
+             "Current position-error integrator state (NED, m*s).")
         .def("thrust_max", &CascadedController::thrust_max,
              "Thrust saturation limit (N): 4 * mass * gravity.");
 

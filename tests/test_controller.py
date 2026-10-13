@@ -77,12 +77,16 @@ def test_control_command_defaults() -> None:
 
 
 def test_closed_loop_hover_ten_seconds() -> None:
-    # 10 s hover at 10 m altitude (NED z = -10); final error < 0.05 m.
+    # Hover at 10 m altitude (NED z = -10); final error < 0.05 m. The
+    # initial 10 m step saturates thrust and winds the (Sprint 2.1)
+    # position integral, whose back-calculation-bounded unwind has
+    # tau_i = kp/ki = 13.3 s, so the run matches the C++ acceptance
+    # window of 60 s instead of a shorter PD-era settling time.
     gains = ControlGains.defaults()
     params = VehicleParams()
     pos_desired = np.array([0.0, 0.0, -10.0])
     final, _ = _closed_loop(
-        State(), gains, params, pos_desired, np.zeros(3), 0.0, 10.0
+        State(), gains, params, pos_desired, np.zeros(3), 0.0, 60.0
     )
     error = pos_desired - np.asarray(final.position)
     assert np.max(np.abs(error)) < 0.05
@@ -121,6 +125,64 @@ def test_yaw_tracking_thirty_degrees() -> None:
     yaw = math.atan2(rot[1, 0], rot[0, 0])
     assert abs(yaw - 30.0 * _DEG) < 2.0 * _DEG
     assert np.linalg.norm(np.asarray(final.position)) < 0.02
+
+
+def test_ki_pos_exposed_on_gains() -> None:
+    # Sprint 2.1: defaults() ships with position integral gain
+    # (tau_i = kp/ki = 13.3 s) and a zeroed attitude integral placeholder.
+    gains = ControlGains.defaults()
+    np.testing.assert_allclose(np.asarray(gains.ki_pos), [0.3, 0.3, 0.3])
+    np.testing.assert_array_equal(np.asarray(gains.ki_att), np.zeros(3))
+
+
+def test_integral_position_accessor() -> None:
+    # A single step with non-zero position error must accumulate the
+    # integrator; reset() must clear it.
+    gains = ControlGains.defaults()
+    params = VehicleParams()
+    controller = CascadedController(gains, params)
+    state = State()
+    pos_des = np.array([1.0, -0.5, -2.0])
+    np.testing.assert_array_equal(
+        np.asarray(controller.integral_position()), np.zeros(3)
+    )
+    controller.step(state, pos_des, np.zeros(3), 0.0, DT)
+    integral = np.asarray(controller.integral_position())
+    np.testing.assert_allclose(integral, pos_des * DT)
+    assert np.linalg.norm(integral) > 0.0
+    controller.reset()
+    np.testing.assert_array_equal(
+        np.asarray(controller.integral_position()), np.zeros(3)
+    )
+
+
+def test_wind_rejection_sse() -> None:
+    # 60 s hover at 10 m under a constant 3 m/s North wind, mirroring the
+    # C++ WindRejectionZeroSSError pattern at the 200 Hz plant rate with
+    # instantaneous motors: the position integral must null the drag-bias
+    # steady-state error, |x error| < 0.05 m over the last 10 s.
+    gains = ControlGains.defaults()
+    params = VehicleParams()
+    controller = CascadedController(gains, params)
+    pos_desired = np.array([0.0, 0.0, -10.0])
+    wind_ned = np.array([3.0, 0.0, 0.0])
+    state = State()
+    positions: list[np.ndarray] = []
+    n_steps = round(60.0 / DT)
+    for _ in range(n_steps):
+        cmd = controller.step(state, pos_desired, np.zeros(3), 0.0, DT)
+        state = propagate(
+            state,
+            cmd.collective_thrust,
+            np.asarray(cmd.moment),
+            wind_ned,
+            DT,
+            params,
+        )
+        positions.append(np.asarray(state.position))
+    xs = np.array([p[0] for p in positions])
+    window = round(10.0 / DT)
+    assert np.max(np.abs(xs[-window:])) < 0.05
 
 
 def test_thrust_saturation_insane_command_no_nan() -> None:

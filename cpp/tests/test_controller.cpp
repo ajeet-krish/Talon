@@ -59,7 +59,8 @@ ClosedLoopRun run_closed_loop(const State& initial,
                               const Vec3& vel_desired,
                               double yaw_desired,
                               double duration,
-                              bool lock_position = false) {
+                              bool lock_position = false,
+                              const Vec3& wind_ned = Vec3::Zero()) {
     ClosedLoopRun run;
     CascadedController controller(gains, params);
     State state = initial;
@@ -70,7 +71,7 @@ ClosedLoopRun run_closed_loop(const State& initial,
         const ControlCommand cmd = controller.step(
             state, pos_desired, vel_desired, yaw_desired, talon::DT);
         state = talon::propagate(state, cmd.collective_thrust, cmd.moment,
-                                 Vec3::Zero(), talon::DT, params);
+                                 wind_ned, talon::DT, params);
         if (lock_position) {
             // Attitude-loop tests: pin the translation so the position PD
             // holds a constant lateral acceleration command while the
@@ -209,13 +210,95 @@ TEST(Controller, ClosedLoopPositionStep) {
     EXPECT_LT(s.velocity.norm(), 0.05);
 }
 
+TEST(Controller, WindRejectionZeroSSError) {
+    // 60 s hover at 10 m under a constant 3 m/s North wind. The position
+    // integral (ki_pos = 0.3, tau_i = 13.3 s) must null the drag-bias
+    // steady-state error that pure PD leaves behind: |x error| < 0.05 m
+    // over the last 10 s of the run.
+    const VehicleParams params;
+    const ControlGains gains = ControlGains::defaults();
+    const Vec3 pos_desired(0.0, 0.0, -10.0);
+    const Vec3 wind_ned(3.0, 0.0, 0.0);
+
+    const ClosedLoopRun run = run_closed_loop(
+        State{}, gains, params, pos_desired, Vec3::Zero(), 0.0, 60.0,
+        /*lock_position=*/false, wind_ned);
+
+    const size_t window = static_cast<size_t>(10.0 / talon::DT);
+    for (size_t i = run.positions.size() - window; i < run.positions.size();
+         ++i) {
+        EXPECT_LT(std::abs(pos_desired.x() - run.positions[i].x()), 0.05);
+    }
+}
+
+TEST(Controller, AntiWindupBoundedIntegral) {
+    // 20 m north position step saturates thrust transiently; the
+    // back-calculation anti-windup must keep the position integrator from
+    // winding up unboundedly: ||integral|| < 5.0 m*s and the vehicle lands
+    // within 1 m of the 20 m target after 30 s. Driven with a visible
+    // controller so integral_position() can be read at the end.
+    const VehicleParams params;
+    const ControlGains gains = ControlGains::defaults();
+    const Vec3 pos_desired(20.0, 0.0, 0.0);
+
+    CascadedController controller(gains, params);
+    State state;
+    const int steps = static_cast<int>(30.0 / talon::DT);
+    for (int i = 0; i < steps; ++i) {
+        const ControlCommand cmd = controller.step(
+            state, pos_desired, Vec3::Zero(), 0.0, talon::DT);
+        state = talon::propagate(state, cmd.collective_thrust, cmd.moment,
+                                 Vec3::Zero(), talon::DT, params);
+    }
+    EXPECT_LT(controller.integral_position().norm(), 5.0);
+    EXPECT_LT(std::abs(state.position.x() - 20.0), 1.0);
+}
+
+TEST(Controller, ClosedLoopPositionStepRegression) {
+    // Regression pin for the Sprint 2.1 integral addition: the 1 m north
+    // step acceptance envelope (rise < 2 s, overshoot < 10%, SSE < 0.05 m)
+    // must hold with the defaults() gains, which now include ki_pos = 0.3.
+    const VehicleParams params;
+    const ControlGains gains = ControlGains::defaults();
+
+    const ClosedLoopRun run = run_closed_loop(
+        State{}, gains, params, Vec3(1.0, 0.0, 0.0), Vec3::Zero(), 0.0, 12.0);
+
+    double rise_time = -1.0;
+    double peak_x = -1e9;
+    for (size_t i = 0; i < run.positions.size(); ++i) {
+        const double x = run.positions[i].x();
+        if (rise_time < 0.0 && x >= 0.9) {
+            rise_time = static_cast<double>(i) * talon::DT;
+        }
+        if (x > peak_x) {
+            peak_x = x;
+        }
+    }
+    EXPECT_GT(rise_time, 0.0);
+    EXPECT_LT(rise_time, 2.0);
+    EXPECT_LT(peak_x, 1.1);
+
+    const State& s = run.final_state;
+    EXPECT_LT(std::abs(s.position.x() - 1.0), 0.05);
+    EXPECT_LT(std::abs(s.position.y()), 0.05);
+    EXPECT_LT(std::abs(s.position.z()), 0.05);
+    EXPECT_LT(s.velocity.norm(), 0.05);
+}
+
 TEST(Controller, ClosedLoopAttitudeStepRollTenDegrees) {
     // Command a 10 deg roll with the position pinned at the origin (so the
     // outer loop holds a constant lateral acceleration command and the test
     // measures the inner-loop step response). Rise time to 90% < 0.3 s,
     // overshoot < 15%, steady state at the commanded 10 deg.
     const VehicleParams params;
-    const ControlGains gains = ControlGains::defaults();
+    ControlGains gains = ControlGains::defaults();
+    // Sprint 2.1: pin the outer-loop integral to zero here. The pinned
+    // position makes the position error constant, which winds the (new)
+    // position integrator and turns the constant lateral acceleration
+    // command into a ramp; the inner-loop step response is unaffected by
+    // ki_pos, so zeroing it restores this test's constant-command premise.
+    gains.ki_pos = Vec3::Zero();
     const double d = params.gravity * std::tan(10.0 * kDeg) / gains.kp_pos.y();
 
     const ClosedLoopRun run = run_closed_loop(

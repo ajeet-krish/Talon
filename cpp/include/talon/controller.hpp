@@ -13,12 +13,14 @@ inline Vec3 vee(const Mat3& s) {
     return Vec3(s(2, 1), s(0, 2), s(1, 0));
 }
 
-// Cascaded PD autopilot gains (Beard & McLain Ch. 6 cascaded-loop design,
+// Cascaded PID autopilot gains (Beard & McLain Ch. 6 cascaded-loop design,
 // adapted to the Talon NED convention of docs/conventions.md).
 //
-// Outer loop (position PD, kinematic acceleration command):
-//   a_cmd = kp_pos .* (p_des - p) + kd_pos .* (v_des - v)
-// is a second-order loop with natural frequency omega_n and damping zeta:
+// Outer loop (position PID, kinematic acceleration command):
+//   a_cmd = kp_pos .* (p_des - p) + kd_pos .* (v_des - v) + ki_pos .* I
+//   I     = integral of (p_des - p) dt, back-calculation anti-windup
+// is a third-order loop; the proportional-derivative part sets the
+// natural frequency omega_n and damping zeta:
 //   kp_pos = omega_n^2,  kd_pos = 2 * zeta * omega_n.
 // Defaults use omega_n = 2 rad/s (~0.3 Hz bandwidth) and zeta = 0.75, which
 // keeps the outer loop ~25x slower than the inner attitude loop (classic
@@ -40,8 +42,10 @@ inline Vec3 vee(const Mat3& s) {
 // hover and step-response tests define the acceptance envelope.
 struct ControlGains {
     Vec3 kp_pos;  // position P gains: (m/s^2) per m of position error
+    Vec3 ki_pos;  // position I gains: (m/s^2) per m*s of position error
     Vec3 kd_pos;  // velocity D gains: (m/s^2) per m/s of velocity error
     Vec3 kp_att;  // attitude P gains: (N*m) per rad of attitude error
+    Vec3 ki_att;  // attitude I gains: (N*m) per rad*s of attitude error
     Vec3 kd_att;  // rate D gains: (N*m) per rad/s of rate error
 
     static ControlGains defaults();
@@ -54,17 +58,26 @@ struct ControlCommand {
     Vec3 moment = Vec3::Zero();      // N*m, body frame
 };
 
-// Cascaded PD position/attitude autopilot (Beard & McLain Ch. 6 outer/inner
+// Cascaded PID position/attitude autopilot (Beard & McLain Ch. 6 outer/inner
 // loop split; attitude error from Lee et al. geometric tracking control),
 // specialized to the Talon NED + Hamilton-quaternion conventions:
 //
 //   a_cmd_ned = kp_pos .* (p_des - p) + kd_pos .* (v_des - v)
+//             + ki_pos .* integral(p_des - p, t) dt
 //   a_des     = [0, 0, g] - a_cmd_ned        (gravity-compensated thrust accel)
 //   T         = clamp(mass * ||a_des||, 0, T_MAX)
 //   z_b_des   = a_des / ||a_des||            (level at hover: [0, 0, 1])
 //   R_des     = attitude from z_b_des and yaw_desired (Lee et al. construction)
 //   e_att     = 0.5 * vee(R_err^T - R_err), R_err = R_des^T R_actual
 //   M         = kp_att .* e_att + kd_att .* (omega_des - omega)
+//
+// The position integrator uses back-calculation anti-windup (Astrom): while
+// thrust is saturated, the integral is scaled by lambda = T_MAX / T_unsat so
+// the integrator "forgets" exactly the portion of the error that the plant
+// could not track. This bounds the unwind transient after a saturation event
+// (e.g. a large position step or a strong gust) without clipping the
+// integrator discontinuously. ki_att exists in ControlGains for API symmetry
+// but is unused until attitude integral action lands (Sprint 2.2).
 //
 // Sign notes (both forced by closed-loop stability under the Talon thrust
 // convention T along -body-z):
@@ -78,23 +91,25 @@ struct ControlCommand {
 //    as Lee's M = -k_R * e_R: positive e_att (vehicle needs to roll toward
 //    desired) produces positive Mx.
 //
-// Phase 2 simplifications: no integral action, no omega x (I*omega)
-// gyroscopic feedforward, no rate feedforward (omega_des defaults to zero;
-// set_omega_desired() is the hook for Phase 4+ guidance feedforward). The
-// controller is memoryless, so dt is currently unused but kept for API
-// stability with later estimator-coupled terms.
+// Phase 2 simplifications: no omega x (I*omega) gyroscopic feedforward, no
+// rate feedforward (omega_desired defaults to zero; set_omega_desired() is
+// the hook for Phase 4+ guidance feedforward), no attitude integral (ki_att
+// is exposed but unused). The position integrator consumes dt each step.
 class CascadedController {
 public:
     CascadedController(const ControlGains& gains, const VehicleParams& params);
 
     // estimated_state: EKF output in later phases; truth in Phase 2 tests.
     // pos_desired, vel_desired in NED (m, m/s); yaw_desired in rad.
+    // dt is the caller's control period; the position integrator accumulates
+    // pos_error * dt with back-calculation anti-windup on thrust saturation.
     ControlCommand step(const State& estimated_state,
                         const Vec3& pos_desired,
                         const Vec3& vel_desired,
                         double yaw_desired, double dt);
 
-    // Clear all internal state (omega_desired, last-command telemetry).
+    // Clear all internal state (integral, omega_desired, last-command
+    // telemetry).
     void reset();
 
     // Desired body rate for the inner loop (rad/s, body frame). Defaults to
@@ -103,9 +118,12 @@ public:
 
     // Telemetry from the most recent step(): gravity-compensated
     // thrust-acceleration command in NED (m/s^2) and attitude error vector
-    // (dimensionless, ~radians for small errors).
+    // (dimensionless, ~radians for small errors). integral_position() is the
+    // current position-error integrator state (m*s, NED), scaled by the
+    // anti-windup back-calculation while thrust is saturated.
     const Vec3& last_a_des() const { return last_a_des_; }
     const Vec3& last_attitude_error() const { return last_attitude_error_; }
+    const Vec3& integral_position() const { return integral_pos_; }
 
     // Thrust saturation limit (N): 4 * mass * gravity, i.e. a 4g
     // thrust-to-weight cap. The raw physical motor limit
@@ -120,6 +138,7 @@ private:
     VehicleParams params_;
     double thrust_max_;
     Vec3 omega_desired_;
+    Vec3 integral_pos_;
     Vec3 last_a_des_;
     Vec3 last_attitude_error_;
 };
@@ -127,8 +146,12 @@ private:
 inline ControlGains ControlGains::defaults() {
     ControlGains g;
     // Outer loop: omega_n = 2 rad/s, zeta = 0.75 -> kp = 4, kd = 3.
+    // Integral gain sets tau_i = kp/ki = 13.3 s: slow enough not to eat the
+    // PD loop's phase margin, fast enough to null steady-state wind drift.
     g.kp_pos = Vec3(4.0, 4.0, 4.0);
     g.kd_pos = Vec3(3.0, 3.0, 3.0);
+    g.ki_pos = Vec3(0.3, 0.3, 0.3);  // tau_i = kp/ki = 13.3 s
+    g.ki_att = Vec3(0.0, 0.0, 0.0);
     // Inner loop: roll/pitch (I = 2.32e-3) omega_a ~ 58.7 rad/s, zeta ~ 1.1.
     // Yaw (I = 4.05e-3) is capped by the physical yaw envelope: with the
     // realistic drag arm c_tau = MOTOR_KM / MOTOR_KF = 0.015 m, a pure-yaw
@@ -147,6 +170,7 @@ inline CascadedController::CascadedController(const ControlGains& gains,
       params_(params),
       thrust_max_(4.0 * params.mass * params.gravity),
       omega_desired_(Vec3::Zero()),
+      integral_pos_(Vec3::Zero()),
       last_a_des_(Vec3::Zero()),
       last_attitude_error_(Vec3::Zero()) {}
 
@@ -155,13 +179,15 @@ inline ControlCommand CascadedController::step(const State& estimated_state,
                                                const Vec3& vel_desired,
                                                double yaw_desired,
                                                double dt) {
-    (void)dt;  // memoryless PD in Phase 2; kept for API stability
-
-    // Outer loop: kinematic acceleration command in NED.
+    // Outer loop: kinematic acceleration command in NED, with position
+    // integral action for zero steady-state error under constant
+    // disturbances (e.g. wind drag bias).
     const Vec3 pos_error = pos_desired - estimated_state.position;
     const Vec3 vel_error = vel_desired - estimated_state.velocity;
+    integral_pos_ += pos_error * dt;
     const Vec3 a_cmd = gains_.kp_pos.cwiseProduct(pos_error) +
-                       gains_.kd_pos.cwiseProduct(vel_error);
+                       gains_.kd_pos.cwiseProduct(vel_error) +
+                       gains_.ki_pos.cwiseProduct(integral_pos_);
 
     // Gravity-compensated thrust-acceleration command. Thrust acts along
     // -body-z, so the thrust acceleration is -a_des and z_b_des = a_des
@@ -170,8 +196,14 @@ inline ControlCommand CascadedController::step(const State& estimated_state,
     last_a_des_ = a_des;
 
     const double a_norm = a_des.norm();
-    double thrust = params_.mass * a_norm;
-    thrust = std::clamp(thrust, 0.0, thrust_max_);
+    const double thrust_unsat = params_.mass * a_norm;
+    double thrust = std::clamp(thrust_unsat, 0.0, thrust_max_);
+    // Back-calculation anti-windup (Astrom): scale integral by saturation
+    // ratio so the integrator forgets the untrackable portion of the error.
+    if (thrust_unsat > thrust_max_ && a_norm > 1e-12) {
+        const double lambda = thrust_max_ / thrust_unsat;
+        integral_pos_ *= lambda;
+    }
 
     // Desired body-z, guarded against the free-fall degenerate case a_des ~ 0
     // (position PD can briefly command exactly -g in vertical braking).
@@ -216,6 +248,7 @@ inline ControlCommand CascadedController::step(const State& estimated_state,
 
 inline void CascadedController::reset() {
     omega_desired_.setZero();
+    integral_pos_.setZero();
     last_a_des_.setZero();
     last_attitude_error_.setZero();
 }
