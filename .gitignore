@@ -10,3 +10,5 @@ dist/
 .DS_Store
 CMakeFiles/
 cmake-build-*/
+node_modules/
+*.tsbuildinfo

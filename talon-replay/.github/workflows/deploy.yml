@@ -1,0 +1,54 @@
+# Deploy the talon-replay app to GitHub Pages.
+#
+# talon-replay lives in the Talon monorepo, so build steps run from the
+# talon-replay/ subdirectory and only replay changes trigger the deploy.
+# Pages serves the app under /talon-replay/ (see base in vite.config.ts);
+# the full URL depends on the final repo name.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "talon-replay/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: talon-replay/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+        working-directory: talon-replay
+      - name: Build
+        run: npm run build
+        working-directory: talon-replay
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: talon-replay/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

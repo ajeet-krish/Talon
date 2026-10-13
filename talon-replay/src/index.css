@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-panel font-sans text-ink antialiased;
+  }
+
+  /* Visible keyboard focus everywhere, tuned to the signal cyan. */
+  :focus-visible {
+    outline: 2px solid #26b8d9;
+    outline-offset: 1px;
+  }
+}
+
+/*
+ * Scrubber: the range input spans the whole segment bar so the entire
+ * track is a drag surface. The thumb is a thin cyan playhead bar that
+ * reads as part of the phase timeline, not a separate widget.
+ */
+.scrubber {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+}
+
+.scrubber::-webkit-slider-runnable-track {
+  height: 100%;
+  background: transparent;
+}
+
+.scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 3px;
+  height: 24px;
+  margin-top: 2px;
+  border: none;
+  border-radius: 1.5px;
+  background: #26b8d9;
+  box-shadow: 0 0 6px rgba(38, 184, 217, 0.8);
+}
+
+.scrubber::-moz-range-track {
+  height: 100%;
+  background: transparent;
+}
+
+.scrubber::-moz-range-thumb {
+  width: 3px;
+  height: 24px;
+  border: none;
+  border-radius: 1.5px;
+  background: #26b8d9;
+  box-shadow: 0 0 6px rgba(38, 184, 217, 0.8);
+}
+
+/* Tabular figures for every mono data readout. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
