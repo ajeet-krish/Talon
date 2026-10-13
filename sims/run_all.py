@@ -5,6 +5,7 @@ Usage (from the repository root):
 
     uv run python sims/run_all.py
     uv run python sims/run_all.py --monte-carlo   # + Monte Carlo sweep
+    uv run python sims/run_all.py --skip-video    # skip docs/videos/ export
 
 What it does, in order:
 
@@ -41,9 +42,15 @@ What it does, in order:
    emergency) as schema 1.0 JSON documents into plots/json/ via
    talon.export_json (Sprint 2.3). The export is wrapped so a failure
    only logs a warning and never fails the validation.
-7. Writes plots/validation_report.md (markdown table: Test, Target,
+7. Renders four cinematic 3D flight videos into docs/videos/ via
+   talon.animation (Sprint 2.4): gps_outage, wind, emergency from the
+   SIL re-runs, and waypoints from the Phase 4 circuit re-captured with
+   histories (_run_waypoints_with_capture). Skipped with --skip-video or
+   TALON_SKIP_VIDEO=1; each video is wrapped so a failure only logs a
+   warning and never fails the validation.
+8. Writes plots/validation_report.md (markdown table: Test, Target,
    Achieved, Pass) and prints the same summary to stdout.
-8. With --monte-carlo (default off): after the main validation, runs the
+9. With --monte-carlo (default off): after the main validation, runs the
    Sprint 2.2 Monte Carlo sweep over the waypoint circuit
    (sims/monte_carlo.py) with n_runs from the TALON_MC_RUNS environment
    variable (default 10) and writes plots/monte_carlo_report.md plus
@@ -96,6 +103,10 @@ from talon import (  # noqa: E402
     VehicleParams,
     propagate,
 )
+from talon.animation import (  # noqa: E402
+    _run_waypoints_with_capture,
+    export_flight_video,
+)
 from talon.export_json import export_sil_result_json  # noqa: E402
 from talon.mavlink_sil import SILConfig, SILResult  # noqa: E402
 from talon.motors import MotorModel, forward_mix  # noqa: E402
@@ -112,6 +123,7 @@ from talon.types import FlightPhase  # noqa: E402
 
 PLOTS_DIR = REPO_ROOT / "plots"
 JSON_DIR = PLOTS_DIR / "json"
+VIDEOS_DIR = REPO_ROOT / "docs" / "videos"
 REPORT_PATH = PLOTS_DIR / "validation_report.md"
 MC_REPORT_PATH = PLOTS_DIR / "monte_carlo_report.md"
 MC_PLOT_PATH = PLOTS_DIR / "monte_carlo_summary.png"
@@ -321,6 +333,41 @@ def _export_sil_json(
             paths.append(path)
         except Exception as exc:  # noqa: BLE001 - warn, never fail validation
             print(f"WARNING: JSON export failed for {name}: {exc}")
+    return paths
+
+
+def _export_videos(
+    gps_result: SILResult, wind_result: SILResult, emergency_result: SILResult
+) -> list[str]:
+    """Render the four cinematic flight videos (Sprint 2.4).
+
+    Writes docs/videos/{gps_outage,wind,emergency,waypoints}.mp4: the
+    three SILRunner-backed scenarios plus the Phase 4 waypoint circuit
+    (re-captured with histories via the animation adapter). A failure
+    only logs a warning: video export must never fail the validation
+    driver.
+    """
+    print("capturing waypoint-circuit history for the video ...", flush=True)
+    waypoints_result = _run_waypoints_with_capture()
+    paths: list[str] = []
+    for name, result in (
+        ("gps_outage", gps_result),
+        ("wind", wind_result),
+        ("emergency", emergency_result),
+        ("waypoints", waypoints_result),
+    ):
+        t0 = time.perf_counter()
+        try:
+            path = export_flight_video(result, VIDEOS_DIR / f"{name}.mp4")
+            elapsed = time.perf_counter() - t0
+            size_mb = Path(path).stat().st_size / (1024.0 * 1024.0)
+            print(
+                f"  {Path(path).name} written "
+                f"({size_mb:.2f} MB, {elapsed:.1f} s wall)"
+            )
+            paths.append(path)
+        except Exception as exc:  # noqa: BLE001 - warn, never fail validation
+            print(f"WARNING: video export failed for {name}: {exc}")
     return paths
 
 
@@ -659,6 +706,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Talon Phase 6 validation driver."
     )
     parser.add_argument(
+        "--skip-video",
+        action="store_true",
+        help=(
+            "skip the docs/videos/ cinematic export (also honored via "
+            "the TALON_SKIP_VIDEO environment variable)"
+        ),
+    )
+    parser.add_argument(
         "--monte-carlo",
         action="store_true",
         help=(
@@ -830,10 +885,18 @@ def main() -> int:
     print("SIL re-run: emergency (plot: state machine) ...", flush=True)
     emergency_result = scenario_emergency.run_scenario()
 
-    # 6. Plots, JSON export (Sprint 2.3), + report.
+    # 6. Plots, JSON export (Sprint 2.3), videos (Sprint 2.4), + report.
     plot_paths = _generate_plots(gps_result, wind_result, emergency_result)
     print("exporting SIL JSON to plots/json/ ...", flush=True)
     _export_sil_json(gps_result, wind_result, emergency_result)
+    skip_video = args.skip_video or os.environ.get(
+        "TALON_SKIP_VIDEO", ""
+    ) not in ("", "0")
+    if skip_video:
+        print("skipping video export (--skip-video / TALON_SKIP_VIDEO)")
+    else:
+        print("exporting flight videos to docs/videos/ ...", flush=True)
+        _export_videos(gps_result, wind_result, emergency_result)
     rows = _build_report(
         codes,
         parsed,
