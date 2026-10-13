@@ -208,10 +208,27 @@ class SILResult:
     """Numpy histories + logs from one SILRunner.run() call.
 
     Histories are sampled at the CONTROL rate (100 Hz) except
-    gps_update_times (one entry per ACCEPTED GPS update, at 10 Hz).
+    gps_update_times (one entry per ACCEPTED GPS update, at 10 Hz) and
+    e_ct / e_ct_times / e_ct_leg (one entry per WAYPOINT-phase control
+    tick, since cross-track error only exists while a leg is flown).
     phase_timeline is the list of (sim_time, phase) CHANGE events; the
     phase at any control sample is the last timeline entry at or before
     that sample's time.
+
+    Phase 6 plotting extensions (all appended, defaulting, so existing
+    constructor call sites stay valid):
+
+    - home_ned: launch point (NED, m); waypoints_ned: mission waypoints
+      (M, 3) or empty when the run had no mission.
+    - command_thrust / command_moment: the ACTUAL lagged, mixed collective
+      thrust (N) and body moments (N*m) applied to the plant each control
+      tick (post motor-lag + mixer clamp, what the vehicle really felt).
+    - wind_ned: total wind (turbulence + steady) at each control tick.
+    - position_var: EKF position covariance DIAGONAL (P[0,0], P[1,1],
+      P[2,2]) in m^2, for 3-sigma envelopes in plots.
+    - gyro_bias / accel_bias: EKF bias estimates (body frame).
+    - e_ct_times / e_ct_leg: sim time and mission leg index of each
+      e_ct sample (e_ct itself is |cross-track|, sampled in WAYPOINT).
     """
 
     time_s: ArrayF
@@ -226,6 +243,36 @@ class SILResult:
     gps_skipped: int
     gps_gated: int
     metrics: dict
+    home_ned: ArrayF = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+    waypoints_ned: ArrayF = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=np.float64)
+    )
+    command_thrust: ArrayF = field(
+        default_factory=lambda: np.zeros(0, dtype=np.float64)
+    )
+    command_moment: ArrayF = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=np.float64)
+    )
+    wind_ned: ArrayF = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=np.float64)
+    )
+    position_var: ArrayF = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=np.float64)
+    )
+    gyro_bias: ArrayF = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=np.float64)
+    )
+    accel_bias: ArrayF = field(
+        default_factory=lambda: np.zeros((0, 3), dtype=np.float64)
+    )
+    e_ct_times: ArrayF = field(
+        default_factory=lambda: np.zeros(0, dtype=np.float64)
+    )
+    e_ct_leg: ArrayF = field(
+        default_factory=lambda: np.zeros(0, dtype=np.float64)
+    )
 
     @property
     def final_phase(self) -> FlightPhase:
@@ -349,6 +396,12 @@ class SILRunner:
         self._v_cmd = np.zeros(3, dtype=np.float64)
         self._command_thrust = 0.0
         self._command_moment = np.zeros(3, dtype=np.float64)
+        # ACTUAL (lagged, mixed) actuator output + wind of the most recent
+        # plant step, mirrored into the control-rate histories by
+        # _record_history (Phase 6 plotting).
+        self._last_thrust_actual = 0.0
+        self._last_moment_actual = np.zeros(3, dtype=np.float64)
+        self._last_wind_ned = np.zeros(3, dtype=np.float64)
         self._last_gps: GPSMeasurement | None = None
         self._phase_enter_time = 0.0
 
@@ -372,7 +425,15 @@ class SILRunner:
         self._history_ekf_pos: list[ArrayF] = []
         self._history_ekf_vel: list[ArrayF] = []
         self._history_e_ct: list[float] = []
+        self._history_e_ct_times: list[float] = []
+        self._history_e_ct_leg: list[float] = []
         self._history_gps_times: list[float] = []
+        self._history_thrust: list[float] = []
+        self._history_moment: list[ArrayF] = []
+        self._history_wind: list[ArrayF] = []
+        self._history_pos_var: list[ArrayF] = []
+        self._history_gyro_bias: list[ArrayF] = []
+        self._history_accel_bias: list[ArrayF] = []
         self._phase_timeline: list[tuple[float, FlightPhase]] = [
             (0.0, FlightPhase.IDLE)
         ]
@@ -617,6 +678,13 @@ class SILRunner:
             wind_ned = np.asarray(self._wind.step(airspeed)) + self._wind_steady
         else:
             wind_ned = self._wind_steady
+        # Mirror the applied actuator output + wind for _record_history
+        # (Phase 6 plotting): what the plant actually felt this step.
+        self._last_thrust_actual = float(thrust_actual)
+        self._last_moment_actual = np.asarray(
+            moment_actual, dtype=np.float64
+        ).copy()
+        self._last_wind_ned = np.asarray(wind_ned, dtype=np.float64).copy()
         self._truth = propagate(
             self._truth,
             thrust_actual,
@@ -678,6 +746,19 @@ class SILRunner:
             return 0.0
         return self._time - self._gps_outage_start
 
+    def _note_phase_change(self, machine: FlightPhaseMachine) -> None:
+        """Record an accepted phase change on the timeline.
+
+        Multiple guarded transitions can be accepted within ONE control
+        step (e.g. arm then takeoff at t = 0): each accepted change is
+        its own timeline entry so a post-flight Gantt never skips a
+        phase the vehicle actually passed through.
+        """
+        if machine.phase is not self._last_phase:
+            self._phase_timeline.append((self._time, machine.phase))
+            self._phase_enter_time = self._time
+            self._last_phase = machine.phase
+
     def _build_telemetry(self) -> Telemetry:
         return Telemetry(
             position_ned=self._ekf_position(),
@@ -719,6 +800,7 @@ class SILRunner:
         # still works at any time (the machine allows ANY -> EMERGENCY).
         if self._ekf_diverged and not self._ekf_diverged_prev:
             machine.request("critical_fault", self._build_telemetry(), self._time)
+            self._note_phase_change(machine)
         self._ekf_diverged_prev = self._ekf_diverged
 
         telemetry = self._build_telemetry()
@@ -729,6 +811,7 @@ class SILRunner:
         while self._event_queue:
             event = self._event_queue.popleft()
             if machine.request(event, telemetry, self._time):
+                self._note_phase_change(machine)
                 self._armed = machine.phase is not FlightPhase.IDLE
                 telemetry = self._build_telemetry()
 
@@ -737,28 +820,35 @@ class SILRunner:
             telemetry.altitude_above_home
             > self._config.takeoff_altitude - 0.5
         ):
-            machine.request("altitude_reached", telemetry, self._time)
+            if machine.request("altitude_reached", telemetry, self._time):
+                self._note_phase_change(machine)
         if phase is FlightPhase.CRUISE:
             if (
                 self._mission is not None
                 and (self._time - self._phase_enter_time)
                 >= self._config.cruise_hold_s
             ):
-                machine.request("mission_start", telemetry, self._time)
+                if machine.request("mission_start", telemetry, self._time):
+                    self._note_phase_change(machine)
         if phase is FlightPhase.WAYPOINT:
             if telemetry.mission_complete:
-                machine.request("mission_complete", telemetry, self._time)
+                if machine.request("mission_complete", telemetry, self._time):
+                    self._note_phase_change(machine)
             if telemetry.battery_soc < 0.20:
-                machine.request("low_battery", telemetry, self._time)
+                if machine.request("low_battery", telemetry, self._time):
+                    self._note_phase_change(machine)
             if telemetry.gps_outage_duration > 5.0:
-                machine.request("gps_lost", telemetry, self._time)
+                if machine.request("gps_lost", telemetry, self._time):
+                    self._note_phase_change(machine)
         if phase is FlightPhase.RTL and (
             telemetry.horizontal_dist_to_home < 1.0
         ):
-            machine.request("home_reached", telemetry, self._time)
+            if machine.request("home_reached", telemetry, self._time):
+                self._note_phase_change(machine)
         if phase is FlightPhase.LAND and telemetry.altitude_above_home < 0.1:
             if abs(telemetry.vel_z) < 0.1:
-                machine.request("landed", telemetry, self._time)
+                if machine.request("landed", telemetry, self._time):
+                    self._note_phase_change(machine)
         if phase is FlightPhase.EMERGENCY:
             # Latch the descent flag on the first step in EMERGENCY so the
             # emergency_landing guard (and LAND entry) can see it.
@@ -766,16 +856,14 @@ class SILRunner:
                 self._emergency_descent_active = True
                 telemetry = self._build_telemetry()
             if telemetry.altitude_above_home < 0.5:
-                machine.request("emergency_landing", telemetry, self._time)
+                if machine.request("emergency_landing", telemetry, self._time):
+                    self._note_phase_change(machine)
 
-        # Armed flag follows the phase (IDLE disarms).
+        # Armed flag follows the phase (IDLE disarms). Phase timeline
+        # bookkeeping happens per accepted transition
+        # (_note_phase_change), so same-step successions like
+        # arm -> takeoff each get their own entry.
         self._armed = machine.phase is not FlightPhase.IDLE
-
-        # Phase timeline bookkeeping.
-        if machine.phase is not self._last_phase:
-            self._phase_timeline.append((self._time, machine.phase))
-            self._phase_enter_time = self._time
-            self._last_phase = machine.phase
 
     # ------------------------------------------------------------------
     # Phase setpoints + controller
@@ -871,6 +959,9 @@ class SILRunner:
             self._reference = self._reference + self._v_cmd * DT_CONTROL
             yaw_desired = diagnostics.chi_d
             self._history_e_ct.append(abs(diagnostics.e_ct))
+            # Phase 6: timestamp + leg index so plots can color per-leg.
+            self._history_e_ct_times.append(self._time)
+            self._history_e_ct_leg.append(float(self._mission.active_index))
 
         elif phase is FlightPhase.RTL:
             assert self._rtl_mission is not None
@@ -1060,6 +1151,25 @@ class SILRunner:
             )
             self._history_ekf_pos.append(self._ekf_position().copy())
             self._history_ekf_vel.append(self._ekf_velocity().copy())
+            # Phase 6 plotting histories: applied actuators + wind, EKF
+            # position covariance diagonal, and bias estimates.
+            self._history_thrust.append(self._last_thrust_actual)
+            self._history_moment.append(self._last_moment_actual.copy())
+            self._history_wind.append(self._last_wind_ned.copy())
+            covariance = np.asarray(self._ekf.covariance(), dtype=np.float64)
+            self._history_pos_var.append(
+                np.array(
+                    [covariance[0, 0], covariance[1, 1], covariance[2, 2]],
+                    dtype=np.float64,
+                )
+            )
+            nominal = self._ekf.nominal()
+            self._history_gyro_bias.append(
+                np.asarray(nominal.gyro_bias, dtype=np.float64).copy()
+            )
+            self._history_accel_bias.append(
+                np.asarray(nominal.accel_bias, dtype=np.float64).copy()
+            )
 
     def _finish(self, duration_s: float) -> SILResult:
         with self._lock:
@@ -1110,6 +1220,39 @@ class SILRunner:
                     ),
                     "command_parse_errors": self._command_parse_errors,
                 },
+                home_ned=self._home.copy(),
+                waypoints_ned=(
+                    np.asarray(
+                        [wp.position for wp in self._config.waypoints],
+                        dtype=np.float64,
+                    ).reshape(-1, 3)
+                    if self._config.waypoints
+                    else np.zeros((0, 3), dtype=np.float64)
+                ),
+                command_thrust=np.asarray(
+                    self._history_thrust, dtype=np.float64
+                ),
+                command_moment=np.asarray(
+                    self._history_moment, dtype=np.float64
+                ).reshape(-1, 3),
+                wind_ned=np.asarray(
+                    self._history_wind, dtype=np.float64
+                ).reshape(-1, 3),
+                position_var=np.asarray(
+                    self._history_pos_var, dtype=np.float64
+                ).reshape(-1, 3),
+                gyro_bias=np.asarray(
+                    self._history_gyro_bias, dtype=np.float64
+                ).reshape(-1, 3),
+                accel_bias=np.asarray(
+                    self._history_accel_bias, dtype=np.float64
+                ).reshape(-1, 3),
+                e_ct_times=np.asarray(
+                    self._history_e_ct_times, dtype=np.float64
+                ),
+                e_ct_leg=np.asarray(
+                    self._history_e_ct_leg, dtype=np.float64
+                ),
             )
             self._result = result
         return result

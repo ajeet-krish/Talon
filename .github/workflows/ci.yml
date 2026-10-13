@@ -1,0 +1,64 @@
+# Talon CI: build the C++17 kernel + pybind11 bindings and run both test
+# suites on every push and pull request.
+#
+# Interpreter note: pybind11 builds the `_core` extension against the
+# Python it finds at CMake configure time. `uv sync` creates .venv but
+# does not activate it in the shell, so this workflow passes the venv
+# interpreter explicitly with -DPython_EXECUTABLE (the FindPython /
+# pybind11 v3 variable; CMakeLists.txt also honors $VIRTUAL_ENV as a
+# fallback for local builds run under `uv run`).
+#
+# Timing: everything runs in a few minutes on ubuntu-latest. FetchContent
+# caching (gtest / eigen / pybind11 downloads under build/_deps) is a
+# straightforward future optimization, deliberately skipped here to keep
+# the workflow simple; add actions/cache keyed on CMakeLists.txt if the
+# configure step ever dominates the budget.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Sync Python environment
+        # Creates .venv with numpy, scipy, matplotlib, pymavlink, pytest.
+        run: uv sync
+
+      - name: Configure C++ build
+        # Release build; point FindPython at the uv-created venv so the
+        # _core extension matches the interpreter `uv run pytest` uses.
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          -DPython_EXECUTABLE="$PWD/.venv/bin/python"
+
+      - name: Build kernel, tests, and bindings
+        run: cmake --build build -j
+
+      - name: Run C++ unit tests (Google Test)
+        run: ./build/talon_tests
+
+      - name: Verify talon._core extension imports
+        # Hard-fail before pytest if the extension is missing or broken;
+        # without this a missing _core would skip every test and the run
+        # would still be green with zero tests executed.
+        run: uv run python -c "import talon._core"
+
+      - name: Run Python tests (pytest)
+        env:
+          # Belt and braces: conftest.py skips all tests when the native
+          # extension is missing; with this set it fails instead, so the
+          # suite can never silently pass with zero tests run.
+          TALON_REQUIRE_CORE: "1"
+        run: uv run pytest tests/ -q

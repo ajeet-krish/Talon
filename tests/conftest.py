@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 
@@ -17,6 +19,14 @@ _CORE_ERROR = _core_import_error()
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     if _CORE_ERROR is None:
         return
+    if os.environ.get("TALON_REQUIRE_CORE") == "1":
+        # CI (and anyone else who opts in) must not go green with zero
+        # tests run: fail loudly instead of skipping the whole suite.
+        raise RuntimeError(
+            "TALON_REQUIRE_CORE=1 is set but importing talon failed; "
+            "build the extension with `cmake -B build && cmake --build "
+            f"build -j` first. Import error: {_CORE_ERROR}"
+        )
     skip_core = pytest.mark.skip(
         reason=(
             "talon._core is not built; run "
