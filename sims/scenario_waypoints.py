@@ -37,12 +37,19 @@ RMSE.
 
 Acceptance: all 5 waypoints reached; mean |e_ct| < 1.0 m; max |e_ct| <
 3.0 m after the transient; EKF position RMSE < 2.0 m.
+
+Public API (Sprint 2.2): run_scenario() runs one simulation with
+perturbable noise scales, wind scales, start offsets, and seeds, and
+returns the headline WaypointMetrics; main() runs the nominal scenario
+(defaults) and prints the acceptance report. sims/monte_carlo.py wraps
+run_scenario() for the Monte Carlo sweep.
 """
 
 from __future__ import annotations
 
 import math
 import sys
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -94,6 +101,37 @@ MEAN_E_CT_MAX_M = 1.0
 MAX_E_CT_MAX_M = 3.0
 EKF_RMSE_MAX_M = 2.0
 
+# Nominal GPS noise densities (scaled by gps_noise_scale) and Dryden
+# wind sigmas (scaled by wind_scale); defaults reproduce the original
+# fixed-seed scenario exactly.
+NOMINAL_GPS_POSITION_NOISE_M = 0.3
+NOMINAL_GPS_POSITION_NOISE_VERTICAL_M = 0.5
+NOMINAL_GPS_VELOCITY_NOISE_MPS = 0.05
+NOMINAL_WIND_SIGMA_HORIZONTAL = 2.0
+NOMINAL_WIND_SIGMA_VERTICAL = 1.0
+
+# Lower bound for the GPS noise scale: at 0 the GPS would be unrealistically
+# perfect and the EKF-vs-truth RMSE would measure the IMU drift alone.
+MIN_GPS_NOISE_SCALE = 0.01
+
+
+@dataclass(slots=True)
+class WaypointMetrics:
+    """Headline metrics of one waypoint-circuit run.
+
+    success is the AND of the four acceptance criteria: all waypoints
+    reached, mean |e_ct| < 1.0 m, max |e_ct| < 3.0 m after the 15 s
+    transient, and EKF-vs-truth position RMSE < 2.0 m.
+    """
+
+    mean_e_ct: float
+    max_e_ct: float
+    ekf_rmse: float
+    waypoints_reached: int
+    mean_speed: float
+    duration_s: float
+    success: bool
+
 
 def _estimated_state(nominal: EKFNominalState, ekf: Ekf, gyro: np.ndarray) -> State:
     """Build the controller-facing State view from the EKF estimate."""
@@ -105,7 +143,31 @@ def _estimated_state(nominal: EKFNominalState, ekf: Ekf, gyro: np.ndarray) -> St
     return estimated
 
 
-def main() -> int:
+def run_scenario(
+    *,
+    gps_noise_scale: float = 1.0,
+    wind_scale: float = 1.0,
+    init_offset_ne: tuple[float, float] = (0.0, 0.0),
+    sensor_seed: int = 20261012,
+    wind_seed: int = 42,
+) -> WaypointMetrics:
+    """Run one waypoint-circuit simulation and return its metrics.
+
+    All arguments are keyword-only. The defaults reproduce the nominal
+    fixed-seed scenario (the one main() reports on). Perturbations for
+    the Monte Carlo sweep:
+
+    - gps_noise_scale: multiplier on the nominal GPS noise densities
+      (clipped to >= 0.01 so the GPS can never become unrealistically
+      perfect);
+    - wind_scale: multiplier on the Dryden turbulence sigmas;
+    - init_offset_ne: north/east offset (m) of the start hover point;
+    - sensor_seed / wind_seed: seeds of the sensor suite and the wind
+      realization.
+    """
+    gps_noise_scale = max(gps_noise_scale, MIN_GPS_NOISE_SCALE)
+    offset_n, offset_e = init_offset_ne
+
     params = VehicleParams()
     gains = ControlGains.defaults()
     controller = CascadedController(gains, params)
@@ -122,7 +184,7 @@ def main() -> int:
         ]
     )
 
-    start_position = np.array([0.0, 0.0, -ALTITUDE_M])
+    start_position = np.array([offset_n, offset_e, -ALTITUDE_M])
     truth = State()
     truth.position = start_position.copy()
 
@@ -138,17 +200,28 @@ def main() -> int:
     sensors = SensorSuite(
         IMUConfig(),
         GPSConfig(
-            position_noise=0.3,
-            position_noise_vertical=0.5,
-            velocity_noise=0.05,
+            position_noise=NOMINAL_GPS_POSITION_NOISE_M * gps_noise_scale,
+            position_noise_vertical=(
+                NOMINAL_GPS_POSITION_NOISE_VERTICAL_M * gps_noise_scale
+            ),
+            velocity_noise=NOMINAL_GPS_VELOCITY_NOISE_MPS * gps_noise_scale,
             update_rate=1.0 / DT_GPS,
         ),
-        seed=20261012,
+        seed=sensor_seed,
     )
 
     ekf = Ekf(EKFConfig())
     ekf.initialize_level(start_position, np.zeros(3))
-    wind = DrydenWind(2.0, 2.0, 1.0, 200.0, 200.0, 50.0, DT, seed=42)
+    wind = DrydenWind(
+        NOMINAL_WIND_SIGMA_HORIZONTAL * wind_scale,
+        NOMINAL_WIND_SIGMA_HORIZONTAL * wind_scale,
+        NOMINAL_WIND_SIGMA_VERTICAL * wind_scale,
+        200.0,
+        200.0,
+        50.0,
+        DT,
+        seed=wind_seed,
+    )
 
     # Integrated guidance reference point (module docstring) and the
     # current velocity command (overwritten each control tick).
@@ -169,7 +242,6 @@ def main() -> int:
     time_s = 0.0
 
     e_ct_samples: list[float] = []
-    e_ct_per_leg: dict[int, list[float]] = {}
     ground_speeds: list[float] = []
     est_errors: list[float] = []
 
@@ -250,9 +322,6 @@ def main() -> int:
             )
             if diag is not None and i >= transient_controls * steps_per_control:
                 e_ct_samples.append(abs(diag.e_ct))
-                e_ct_per_leg.setdefault(mission.active_index, []).append(
-                    abs(diag.e_ct)
-                )
 
         # 5. Motors + wind + truth propagation. The mixer clamps each
         # motor to [0, MOTOR_FORCE_MAX] and accepts the moment error
@@ -276,45 +345,62 @@ def main() -> int:
     ekf_rmse = float(np.sqrt(np.mean(np.square(est_errors))))
     mean_speed = float(np.mean(ground_speeds[transient_controls:]))
 
-    print("=== Phase 4 waypoint circuit (40x30 m @ 10 m, Dryden wind) ===")
-    print(
-        f"duration: {time_s:.1f} s"
-        + (
-            f" (mission complete at {mission_complete_time:.1f} s)"
-            if mission_complete_time is not None
-            else " (MISSION DID NOT COMPLETE)"
-        )
+    success = (
+        waypoints_reached >= len(WAYPOINT_POSITIONS)
+        and mean_e_ct < MEAN_E_CT_MAX_M
+        and max_e_ct < MAX_E_CT_MAX_M
+        and ekf_rmse < EKF_RMSE_MAX_M
     )
-    print(f"waypoints reached: {waypoints_reached}/{len(WAYPOINT_POSITIONS)}")
-    print(f"mean ground speed after transient: {mean_speed:.2f} m/s")
+    return WaypointMetrics(
+        mean_e_ct=mean_e_ct,
+        max_e_ct=max_e_ct,
+        ekf_rmse=ekf_rmse,
+        waypoints_reached=waypoints_reached,
+        mean_speed=mean_speed,
+        duration_s=time_s,
+        success=success,
+    )
+
+
+def main() -> int:
+    metrics = run_scenario()
+
+    print("=== Phase 4 waypoint circuit (40x30 m @ 10 m, Dryden wind) ===")
+    print(f"duration: {metrics.duration_s:.1f} s")
+    print(
+        f"waypoints reached: {metrics.waypoints_reached}"
+        f"/{len(WAYPOINT_POSITIONS)}"
+    )
+    print(f"mean ground speed after transient: {metrics.mean_speed:.2f} m/s")
     print(
         f"cross-track |e_ct| after {TRANSIENT_S:.0f} s: "
-        f"mean {mean_e_ct:.3f} m, max {max_e_ct:.3f} m "
-        f"(n = {len(e_ct_samples)})"
+        f"mean {metrics.mean_e_ct:.3f} m, max {metrics.max_e_ct:.3f} m"
     )
-    print("per-leg cross-track |e_ct|:")
-    for leg in sorted(e_ct_per_leg):
-        samples = e_ct_per_leg[leg]
-        print(
-            f"  leg {leg} (wp{leg - 1}->wp{leg}): "
-            f"mean {float(np.mean(samples)):.3f} m, "
-            f"max {float(np.max(samples)):.3f} m, "
-            f"n = {len(samples)}"
-        )
-    print(f"EKF-vs-truth position RMSE: {ekf_rmse:.3f} m")
+    print(f"EKF-vs-truth position RMSE: {metrics.ekf_rmse:.3f} m")
 
     ok = True
-    if waypoints_reached < len(WAYPOINT_POSITIONS):
-        print(f"FAIL: only {waypoints_reached} waypoints reached")
+    if metrics.waypoints_reached < len(WAYPOINT_POSITIONS):
+        print(
+            f"FAIL: only {metrics.waypoints_reached} waypoints reached"
+        )
         ok = False
-    if mean_e_ct >= MEAN_E_CT_MAX_M:
-        print(f"FAIL: mean |e_ct| {mean_e_ct:.3f} m >= {MEAN_E_CT_MAX_M} m")
+    if metrics.mean_e_ct >= MEAN_E_CT_MAX_M:
+        print(
+            f"FAIL: mean |e_ct| {metrics.mean_e_ct:.3f} m"
+            f" >= {MEAN_E_CT_MAX_M} m"
+        )
         ok = False
-    if max_e_ct >= MAX_E_CT_MAX_M:
-        print(f"FAIL: max |e_ct| {max_e_ct:.3f} m >= {MAX_E_CT_MAX_M} m")
+    if metrics.max_e_ct >= MAX_E_CT_MAX_M:
+        print(
+            f"FAIL: max |e_ct| {metrics.max_e_ct:.3f} m"
+            f" >= {MAX_E_CT_MAX_M} m"
+        )
         ok = False
-    if ekf_rmse >= EKF_RMSE_MAX_M:
-        print(f"FAIL: EKF RMSE {ekf_rmse:.3f} m >= {EKF_RMSE_MAX_M} m")
+    if metrics.ekf_rmse >= EKF_RMSE_MAX_M:
+        print(
+            f"FAIL: EKF RMSE {metrics.ekf_rmse:.3f} m"
+            f" >= {EKF_RMSE_MAX_M} m"
+        )
         ok = False
     if not ok:
         return 1

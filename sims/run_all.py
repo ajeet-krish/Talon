@@ -4,6 +4,7 @@ metrics, generate the publication plots, and write the validation report.
 Usage (from the repository root):
 
     uv run python sims/run_all.py
+    uv run python sims/run_all.py --monte-carlo   # + Monte Carlo sweep
 
 What it does, in order:
 
@@ -38,6 +39,11 @@ What it does, in order:
 
 6. Writes plots/validation_report.md (markdown table: Test, Target,
    Achieved, Pass) and prints the same summary to stdout.
+7. With --monte-carlo (default off): after the main validation, runs the
+   Sprint 2.2 Monte Carlo sweep over the waypoint circuit
+   (sims/monte_carlo.py) with n_runs from the TALON_MC_RUNS environment
+   variable (default 10) and writes plots/monte_carlo_report.md plus
+   plots/monte_carlo_summary.png.
 
 Exit status: 0 when every scenario main() returned 0 (their internal
 acceptance asserts already ran), 1 otherwise.
@@ -45,7 +51,9 @@ acceptance asserts already ran), 1 otherwise.
 
 from __future__ import annotations
 
+import argparse
 import io
+import os
 import re
 import subprocess
 import sys
@@ -68,6 +76,12 @@ from sims import (  # noqa: E402  (path setup above)
     scenario_rtl,
     scenario_waypoints,
     scenario_wind,
+)
+from sims.monte_carlo import (  # noqa: E402
+    MonteCarloConfig,
+    plot_monte_carlo,
+    run_monte_carlo,
+    write_report as write_monte_carlo_report,
 )
 from talon import (  # noqa: E402
     DT,
@@ -93,6 +107,8 @@ from talon.types import FlightPhase  # noqa: E402
 
 PLOTS_DIR = REPO_ROOT / "plots"
 REPORT_PATH = PLOTS_DIR / "validation_report.md"
+MC_REPORT_PATH = PLOTS_DIR / "monte_carlo_report.md"
+MC_PLOT_PATH = PLOTS_DIR / "monte_carlo_summary.png"
 
 # Transient excluded from cross-track statistics (matches
 # scenario_waypoints: the initial capture transient).
@@ -126,7 +142,7 @@ GUARD_TRANSITIONS_MIN = 9
 # The pytest row passes when the runtime count is >= the expected size,
 # so growing the suite does not fail the report.
 PYTEST_EXPECTED = 139
-GTEST_EXPECTED = 31
+GTEST_EXPECTED = 34  # was 31; Sprint 2.1 added 3 controller tests
 
 
 @dataclass(slots=True)
@@ -547,7 +563,7 @@ def _build_report(
             "C++ tests (GTest)",
             str(GTEST_EXPECTED),
             str(gtest_count) if gtest_count is not None else "n/a",
-            gtest_count == GTEST_EXPECTED,
+            gtest_count is not None and gtest_count >= GTEST_EXPECTED,
         )
     )
     return rows
@@ -601,8 +617,49 @@ def _write_report(rows: list[ReportRow], plot_paths: list[str]) -> Path:
     return REPORT_PATH
 
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Command-line flags for the validation driver."""
+    parser = argparse.ArgumentParser(
+        description="Talon Phase 6 validation driver."
+    )
+    parser.add_argument(
+        "--monte-carlo",
+        action="store_true",
+        help=(
+            "after the main validation, run the waypoint-circuit Monte "
+            "Carlo sweep (n_runs from TALON_MC_RUNS, default 10) and "
+            "write plots/monte_carlo_report.md + "
+            "plots/monte_carlo_summary.png"
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def _run_monte_carlo_sweep() -> None:
+    """Run the Sprint 2.2 Monte Carlo sweep and write report + plot."""
+    n_runs = int(os.environ.get("TALON_MC_RUNS", "10"))
+    config = MonteCarloConfig(n_runs=n_runs)
+    print(
+        f"Monte Carlo: running {n_runs} waypoint-circuit runs ...",
+        flush=True,
+    )
+    t0 = time.perf_counter()
+    results = run_monte_carlo(config)
+    elapsed = time.perf_counter() - t0
+    report_path = write_monte_carlo_report(results, config, MC_REPORT_PATH)
+    plot_path = plot_monte_carlo(results, config, MC_PLOT_PATH)
+    passed = sum(1 for r in results if r.success)
+    print(
+        f"Monte Carlo: {passed}/{len(results)} runs passed "
+        f"({elapsed:.1f} s wall)"
+    )
+    print(f"Monte Carlo report written to {report_path}")
+    print(f"Monte Carlo plot written to {plot_path}")
+
+
 def main() -> int:
     """Run every scenario, build the report, print the summary."""
+    args = _parse_args()
     t0 = time.perf_counter()
     print("=== Talon Phase 6 validation driver ===")
 
@@ -768,6 +825,13 @@ def main() -> int:
         f"scenario asserts {sum(1 for c in codes.values() if c == 0)}"
         f"/{len(codes)}, {time.perf_counter() - t0:.1f} s wall"
     )
+
+    # 8. Optional Monte Carlo sweep (Sprint 2.2; --monte-carlo, default
+    # off). Runs after the main validation so a failing scenario still
+    # leaves the validation report on disk.
+    if args.monte_carlo:
+        _run_monte_carlo_sweep()
+
     return 0 if all(code == 0 for code in codes.values()) else 1
 
 

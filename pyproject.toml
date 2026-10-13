@@ -26,6 +26,9 @@ packages = ["src/talon"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Make the repo root importable so tests can reach the sims/ package
+# (sims is not part of the installed wheel, which only ships src/talon).
+pythonpath = ["."]
 
 # The native extension `talon._core` is built by CMake, not by the Python
 # build backend. From the repository root:
