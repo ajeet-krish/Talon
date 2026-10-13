@@ -38,6 +38,11 @@ except ImportError as exc:  # pragma: no cover - exercised only on unbuilt check
 from .battery import BatteryConfig, BatteryModel, BatteryState
 from .controller import CascadedController, ControlCommand, ControlGains
 from .ekf import EKFConfig, EKFNominalState, Ekf
+from .export_json import (
+    SCHEMA_VERSION,
+    export_sil_result_json,
+    validate_flight_json,
+)
 from .guidance import GuidanceDiagnostics, NLGLConfig, NLGLGuidance
 from .mavlink_codec import MavlinkCodec
 from .mavlink_sil import SILConfig, SILResult, SILRunner
@@ -90,6 +95,7 @@ __all__ = [
     "NLGLGuidance",
     "PhaseTransition",
     "Quaternion",
+    "SCHEMA_VERSION",
     "SILConfig",
     "SILResult",
     "SILRunner",
@@ -100,12 +106,14 @@ __all__ = [
     "VehicleParams",
     "Waypoint",
     "WaypointMission",
+    "export_sil_result_json",
     "gps_to_ned",
     "gps_velocity_ned",
     "hover_thrust",
     "propagate",
     "rotation_matrix",
     "specific_force_from_velocity",
+    "validate_flight_json",
 ]
 
 __version__ = "0.1.0"

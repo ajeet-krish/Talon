@@ -37,9 +37,13 @@ What it does, in order:
            the fullest failure narrative (idle -> arm -> takeoff ->
            cruise -> emergency -> land -> idle) with fault markers.
 
-6. Writes plots/validation_report.md (markdown table: Test, Target,
+6. Exports the three SILRunner-backed results (gps_outage, wind,
+   emergency) as schema 1.0 JSON documents into plots/json/ via
+   talon.export_json (Sprint 2.3). The export is wrapped so a failure
+   only logs a warning and never fails the validation.
+7. Writes plots/validation_report.md (markdown table: Test, Target,
    Achieved, Pass) and prints the same summary to stdout.
-7. With --monte-carlo (default off): after the main validation, runs the
+8. With --monte-carlo (default off): after the main validation, runs the
    Sprint 2.2 Monte Carlo sweep over the waypoint circuit
    (sims/monte_carlo.py) with n_runs from the TALON_MC_RUNS environment
    variable (default 10) and writes plots/monte_carlo_report.md plus
@@ -92,7 +96,8 @@ from talon import (  # noqa: E402
     VehicleParams,
     propagate,
 )
-from talon.mavlink_sil import SILResult  # noqa: E402
+from talon.export_json import export_sil_result_json  # noqa: E402
+from talon.mavlink_sil import SILConfig, SILResult  # noqa: E402
 from talon.motors import MotorModel, forward_mix  # noqa: E402
 from talon.plotting import (  # noqa: E402
     plot_control_effort,
@@ -106,6 +111,7 @@ from talon.plotting import (  # noqa: E402
 from talon.types import FlightPhase  # noqa: E402
 
 PLOTS_DIR = REPO_ROOT / "plots"
+JSON_DIR = PLOTS_DIR / "json"
 REPORT_PATH = PLOTS_DIR / "validation_report.md"
 MC_REPORT_PATH = PLOTS_DIR / "monte_carlo_report.md"
 MC_PLOT_PATH = PLOTS_DIR / "monte_carlo_summary.png"
@@ -285,6 +291,36 @@ def _generate_plots(
             emergency_result, PLOTS_DIR / "state_machine.png"
         ),
     ]
+    return paths
+
+
+def _export_sil_json(
+    gps_result: SILResult, wind_result: SILResult, emergency_result: SILResult
+) -> list[str]:
+    """Export the three SIL histories as schema 1.0 JSON (Sprint 2.3).
+
+    Writes plots/json/{gps_outage,wind,emergency}.json with meta
+    scenario + seed filled in. An export failure only logs a warning:
+    JSON export must never fail the validation driver.
+    """
+    seed = SILConfig().seed  # the three scenarios use the default config
+    paths: list[str] = []
+    for name, result in (
+        ("gps_outage", gps_result),
+        ("wind", wind_result),
+        ("emergency", emergency_result),
+    ):
+        try:
+            path = export_sil_result_json(
+                result,
+                JSON_DIR / f"{name}.json",
+                meta={"scenario": name, "seed": seed},
+            )
+            size_kb = Path(path).stat().st_size / 1024.0
+            print(f"  {name}.json written ({size_kb:.1f} KB)")
+            paths.append(path)
+        except Exception as exc:  # noqa: BLE001 - warn, never fail validation
+            print(f"WARNING: JSON export failed for {name}: {exc}")
     return paths
 
 
@@ -794,8 +830,10 @@ def main() -> int:
     print("SIL re-run: emergency (plot: state machine) ...", flush=True)
     emergency_result = scenario_emergency.run_scenario()
 
-    # 6. Plots + report.
+    # 6. Plots, JSON export (Sprint 2.3), + report.
     plot_paths = _generate_plots(gps_result, wind_result, emergency_result)
+    print("exporting SIL JSON to plots/json/ ...", flush=True)
+    _export_sil_json(gps_result, wind_result, emergency_result)
     rows = _build_report(
         codes,
         parsed,
