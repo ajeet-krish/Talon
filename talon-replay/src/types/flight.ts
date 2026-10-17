@@ -1,12 +1,16 @@
 /**
- * Talon flight-export schema 1.0 (frozen).
+ * Talon flight-export schema 1.1.
  *
  * One JSON file per simulation scenario. Arrays are per-sample (N = meta.sample_count)
  * at a uniform rate meta.dt, unless noted. Positions/velocities are NED
  * (north, east, down) in meters / meters per second.
+ *
+ * 1.1 adds the top-level `obstacles` list (spherical keep-out zones). It is
+ * backward compatible: a 1.0 document without the key is read as an empty
+ * list, so the loader never sees an undefined field.
  */
 
-export const SCHEMA_VERSION = '1.0'
+export const SCHEMA_VERSION = '1.1'
 
 /** Flight-phase state machine labels, lowercase as exported. */
 export type FlightPhase =
@@ -20,10 +24,23 @@ export type FlightPhase =
   | 'emergency'
 
 /** Scenario ids shipped with the app (keys into public/data/). */
-export type ScenarioId = 'gps_outage' | 'wind' | 'emergency'
+export type ScenarioId = 'gps_outage' | 'wind' | 'emergency' | 'obstacle_field'
 
 /** NED triple: [north, east, down]. */
 export type Vec3 = [number, number, number]
+
+/**
+ * Spherical keep-out zone (schema 1.1). A position is inside the obstacle
+ * when its 3-D Euclidean distance to `center_ned` is less than `radius_m`.
+ */
+export interface Obstacle {
+  /** Stable identifier, e.g. "obs_north". */
+  id: string
+  /** Sphere centre, NED [m]. */
+  center_ned: Vec3
+  /** Keep-out radius [m]; always positive. */
+  radius_m: number
+}
 
 export interface FlightMeta {
   scenario: string
@@ -82,6 +99,8 @@ export interface FlightData {
   waypoints_ned: Vec3[]
   /** (3,) home position, NED [m]. */
   home_ned: Vec3
+  /** Spherical keep-out zones the mission was planned around (schema 1.1). */
+  obstacles: Obstacle[]
   /** [[t, phase], ...] phase onset times, sorted ascending. */
   phase_timeline: PhaseEvent[]
   /** Discrete autopilot events (arming, guards, landings). */

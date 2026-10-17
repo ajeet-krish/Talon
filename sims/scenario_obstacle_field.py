@@ -51,7 +51,9 @@ CRUISE_SPEED = 5.0
 WP_RADIUS_M = 2.0
 CLEARANCE_MARGIN_M = 2.0
 CLEARANCE_TOLERANCE_M = 1.0  # tracking may cost up to 1 m of the margin
-MAX_DURATION_S = 180.0
+# The augmented mission lands at ~59 s (see the phase timeline); 70 s
+# bounds the run with margin while keeping the exported history small.
+MAX_DURATION_S = 70.0
 
 # Rectangle at 10 m: start/finish at the origin, 40 m north, 30 m east.
 CIRCUIT_WAYPOINTS: list[Waypoint] = [

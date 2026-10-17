@@ -84,11 +84,64 @@ through SILConfig to the runner, and the runner copies it into the
 result. This keeps the obstacle metadata with the flight data end to
 end.
 
-## Open decisions (Phases 2-4)
+## Interactive obstacle scene (2026-10-17)
 
-- D7: Acceptance metrics for v2 reactive avoidance (min clearance
-  margin, allowed e_ct degradation, Monte Carlo min-clearance stats).
-- D8: Visual identity: how far toward SwarmGNC's bloom aesthetic versus
-  the current instrument look.
-- D9: WASM boundary: which Python glue functions are ported to TS
-  versus trimmed for the sandbox.
+### D7: Restrained bloom, not a full SwarmGNC haze
+
+**Decision.** Add `@react-three/postprocessing` bloom with
+`intensity 0.55`, `luminanceThreshold 0.6`, `mipmapBlur`, so only the bright
+emissive accents glow (drone nose, waypoint tags, keep-out shells). The scene
+keeps its crisp instrument look; the glow reads as energy, not atmosphere.
+
+**Rationale.** The user asked for the SwarmGNC aesthetic, but Talon's visual
+identity is a disciplined instrument panel, not a cinematic space scene. A
+high-luminance-threshold bloom takes the one idea that carries across (glowing
+hazard volumes and markers) without repainting the whole app.
+
+**Trade-off.** Less dramatic than SwarmGNC's heavy bloom. Acceptable: the
+obstacle field already carries the visual drama.
+
+### D8: Clearance is data-driven, not decorative
+
+**Decision.** `ObstacleField` tints each keep-out zone by the truth
+trajectory's live surface clearance: amber clear, yellow caution (under the
+2.0 m planner margin), rose breach. The HUD prints the live clearance and
+names the nearest zone; the legend prints the flight minimum.
+
+**Rationale.** Matches the project ethos already set by `WindParticles`
+("data-driven ambient motion, not decoration") and the covariance ellipsoid
+("the estimator's honesty meter"). The keep-out volume becomes a live sensor
+readout, not a static sticker, and reuses the exact quantity CI asserts.
+
+**Trade-off.** Requires per-frame clearance math in the render loop (cheap:
+three obstacles, one hypot each).
+
+### D9: Canvas sprite labels, not drei Html / CSS2D
+
+**Decision.** Keep-out labels are canvas-rendered sprite textures
+(`makeObstacleLabel`), matching the existing `WaypointMarkers` pattern,
+rather than drei `Html` or a CSS2DRenderer overlay.
+
+**Rationale.** Sprites are offline-safe, allocation-light, unaffected by DOM
+layout, and consistent with the one label pattern already in the codebase.
+SwarmGNC's CSS2D labels would introduce a second label technology for no
+visual gain at this scale.
+
+### D10: One clearance module shared by scene, HUD, and legend
+
+**Decision.** All clearance math and the keep-out palette live in
+`src/utils/clearance.ts`. The scene tint, the HUD readout, and the legend
+import from it; none define their own.
+
+**Rationale.** Three surfaces read the same quantity; a single source
+prevents the readout and the scene from disagreeing. The module is pure, so
+it is unit-tested in the node vitest environment without a DOM or WebGL.
+
+## Open decisions (Phases 3-4)
+
+- Acceptance metrics for v2 reactive avoidance (min clearance margin,
+  allowed e_ct degradation, Monte Carlo min-clearance stats).
+- Phase 3 unified entry point: whether the videos become an in-app route or
+  stay a separate docs artifact linked from the tool.
+- WASM boundary: which Python glue functions are ported to TS versus
+  trimmed for the sandbox.

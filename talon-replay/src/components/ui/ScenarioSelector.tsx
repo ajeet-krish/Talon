@@ -23,6 +23,10 @@ const SCENARIOS: Record<ScenarioId, ScenarioMeta> = {
     label: 'EMERGENCY',
     subtitle: 'critical fault, EKF divergence',
   },
+  obstacle_field: {
+    label: 'OBSTACLE FIELD',
+    subtitle: 'detour avoidance around keep-out zones',
+  },
 }
 
 /**

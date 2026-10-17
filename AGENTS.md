@@ -32,14 +32,14 @@ talon-replay (from its own directory): `npm install`, `npm run dev`, `npm run bu
 - `sims/`: six `scenario_*.py` runs, `monte_carlo.py`, and `run_all.py` validation driver.
 - `tests/`: pytest suites.
 - `docs/`: `conventions.md` plus `architecture.md`, `decisions.md`, `research.md`, `reviews.md`, `tests.md`.
-- `talon-replay/`: React 19, react-three-fiber 9, Vite 6 replay application.
+- `talon-replay/`: React 19, react-three-fiber 9, Vite 6 replay application. Scene layers include `ObstacleField` (spherical keep-out zones, bloom-tinted by live clearance) with shared clearance math in `src/utils/clearance.ts`.
 
 ## Status
 
 | Phase | Description | Status |
 |-------|-------------|--------|
 | Phase 1 | Obstacle scenario + schema 1.1 (offline detour avoidance) | Complete |
-| Phase 2 | Interactive obstacle scene (R3F + bloom + labels) | Pending |
+| Phase 2 | Interactive obstacle scene (R3F + bloom + labels) | Complete |
 | Phase 3 | Unified entry point (videos + scene + metrics) | Pending |
 | Phase 4 | In-browser WASM run | Pending |
 

@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
+import { EffectComposer, Bloom } from '@react-three/postprocessing'
 import { useFlightStore } from '@/store/useFlightStore'
 import { usePlayback } from '@/hooks/usePlayback'
 import { GroundPlane } from '@/components/scene/GroundPlane'
@@ -9,6 +10,7 @@ import { TrajectoryRibbon } from '@/components/scene/TrajectoryRibbon'
 import { CovarianceEllipsoid } from '@/components/scene/CovarianceEllipsoid'
 import { WindParticles } from '@/components/scene/WindParticles'
 import { WaypointMarkers } from '@/components/scene/WaypointMarkers'
+import { ObstacleField } from '@/components/scene/ObstacleField'
 
 /** Advances the store clock from the render loop; renders nothing. */
 function PlaybackDriver() {
@@ -18,8 +20,11 @@ function PlaybackDriver() {
 
 /**
  * Full-bleed replay scene: instrument-grid ground, phase-colored truth
- * trail, quadrotor marker, EKF covariance ellipsoid, wind field, and
- * mission waypoints. Camera framing is computed per scenario on load.
+ * trail, quadrotor marker, EKF covariance ellipsoid, wind field, mission
+ * waypoints, and spherical keep-out zones. A restrained bloom pass lifts
+ * only the bright emissive accents (drone nose, waypoint tags, keep-out
+ * shells) so the glow reads as energy, not haze. Camera framing is computed
+ * per scenario on load.
  */
 export function FlightScene() {
   const data = useFlightStore((s) => s.scenarios.get(s.activeScenario))
@@ -54,8 +59,17 @@ export function FlightScene() {
           <CovarianceEllipsoid data={data} />
           <WindParticles data={data} />
           <WaypointMarkers data={data} />
+          <ObstacleField data={data} />
         </Suspense>
       )}
+      <EffectComposer>
+        <Bloom
+          intensity={0.55}
+          luminanceThreshold={0.6}
+          luminanceSmoothing={0.25}
+          mipmapBlur
+        />
+      </EffectComposer>
     </Canvas>
   )
 }

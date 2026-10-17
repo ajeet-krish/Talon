@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useFlightStore } from './useFlightStore'
 import type { FlightData, ScenarioId } from '@/types/flight'
 
@@ -66,6 +66,7 @@ function fakeFlightData(durationS: number): FlightData {
     e_ct_leg: [],
     waypoints_ned: [],
     home_ned: [0, 0, 0],
+    obstacles: [],
     phase_timeline: [
       [0, 'idle'],
       [0, 'takeoff'],
@@ -86,7 +87,7 @@ beforeEach(() => {
     currentTime: 4,
     isPlaying: false,
     playbackSpeed: 1,
-    toggles: { trail: true, ellipsoid: true, wind: true, waypoints: true },
+    toggles: { trail: true, ellipsoid: true, wind: true, waypoints: true, obstacles: true },
   })
 })
 
@@ -125,6 +126,7 @@ describe('setToggle', () => {
       ellipsoid: true,
       wind: false,
       waypoints: true,
+      obstacles: true,
     })
   })
 })
@@ -135,5 +137,25 @@ describe('tick', () => {
     useFlightStore.getState().tick(0.5)
     expect(useFlightStore.getState().currentTime).toBe(10)
     expect(useFlightStore.getState().isPlaying).toBe(false)
+  })
+})
+
+describe('loadScenario', () => {
+  it('normalizes a schema 1.0 payload without obstacles to an empty list', async () => {
+    const legacy = fakeFlightData(10) as unknown as Record<string, unknown>
+    delete legacy.obstacles
+    ;(legacy.meta as Record<string, unknown>).schema_version = '1.0'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, json: async () => legacy })),
+    )
+    useFlightStore.setState({ scenarios: new Map(), error: null })
+
+    await useFlightStore.getState().loadScenario('wind')
+
+    const loaded = useFlightStore.getState().scenarios.get('wind')
+    expect(loaded?.obstacles).toEqual([])
+    expect(useFlightStore.getState().error).toBeNull()
+    vi.unstubAllGlobals()
   })
 })

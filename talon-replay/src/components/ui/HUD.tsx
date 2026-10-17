@@ -1,13 +1,22 @@
 import type { FlightData } from '@/types/flight'
 import { nedToScene, phaseAtTime, sampleVec3 } from '@/utils/interpolation'
 import { PHASE_COLORS } from '@/utils/colors'
+import {
+  CLEARANCE_CAUTION_M,
+  CLEARANCE_COLORS,
+  clearanceBand,
+  nearestObstacleId,
+  surfaceClearance,
+} from '@/utils/clearance'
 import { useFlightStore } from '@/store/useFlightStore'
 
 /**
  * Compact top-left telemetry readout: mission clock, live phase chip
  * (background is the Wong phase color, so the chip changes hue as the
- * state machine advances), altitude, and ground speed. Numbers are mono
- * and tabular so digits do not jitter while they update every frame.
+ * state machine advances), altitude, ground speed, and, when the scenario
+ * ships keep-out zones, the live surface clearance to the nearest zone with
+ * its name. Numbers are mono and tabular so digits do not jitter while they
+ * update every frame.
  */
 export function HUD({ data }: { data: FlightData }) {
   const currentTime = useFlightStore((s) => s.currentTime)
@@ -18,6 +27,13 @@ export function HUD({ data }: { data: FlightData }) {
   const [, altUp] = nedToScene(pos)
   const altitude = Math.max(altUp, 0)
   const speed = Math.hypot(vel[0], vel[1], vel[2])
+
+  const hasObstacles = data.obstacles.length > 0
+  const clearance = hasObstacles ? surfaceClearance(pos, data.obstacles) : Infinity
+  const band = hasObstacles
+    ? clearanceBand(clearance, CLEARANCE_CAUTION_M)
+    : 'clear'
+  const nearest = hasObstacles ? nearestObstacleId(pos, data.obstacles) : null
 
   return (
     <div className="pointer-events-none absolute left-3 top-3 flex flex-col gap-1.5 font-mono">
@@ -42,6 +58,20 @@ export function HUD({ data }: { data: FlightData }) {
           SPD <span className="text-ink">{speed.toFixed(2)}</span> M/S
         </span>
       </div>
+      {hasObstacles && (
+        <div className="flex items-center gap-2 text-[10px] tabular-nums">
+          <span className="text-ink-faint">CLR</span>
+          <span
+            className="font-semibold"
+            style={{ color: CLEARANCE_COLORS[band] }}
+          >
+            {clearance.toFixed(2)} M
+          </span>
+          <span className="tracking-wider text-ink-faint">
+            {band === 'breach' ? 'BREACH' : (nearest ?? '')}
+          </span>
+        </div>
+      )}
     </div>
   )
 }

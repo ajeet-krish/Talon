@@ -62,6 +62,30 @@ list of `{id, center_ned, radius_m}` objects. Old 1.0 documents (without
 the `obstacles` key) remain valid; the validator checks the block only
 when present.
 
+### talon-replay rendering layers (Phase 2)
+
+The R3F scene (`talon-replay/src/components/scene/FlightScene.tsx`) composes
+static and per-frame layers over the loaded `FlightData`, plus a single
+postprocessing pass:
+
+| Layer | File | Driven by |
+|-------|------|-----------|
+| Ground grid | `GroundPlane.tsx` | static |
+| Truth trail | `TrajectoryRibbon.tsx` | per-sample, phase-colored |
+| Drone marker + camera | `DroneMarker.tsx` | truth position/velocity |
+| EKF covariance | `CovarianceEllipsoid.tsx` | `position_var` |
+| Wind field | `WindParticles.tsx` | `wind_ned` |
+| Waypoints | `WaypointMarkers.tsx` | `waypoints_ned` |
+| Keep-out zones | `ObstacleField.tsx` | `obstacles` + live clearance |
+| Bloom | `FlightScene.tsx` | `@react-three/postprocessing` |
+
+Clearance math lives in one pure module, `talon-replay/src/utils/clearance.ts`
+(`surfaceClearance`, `minSurfaceClearance`, `clearanceBand`), shared by
+`ObstacleField` (scene tint), the HUD (live readout), and the legend (flight
+minimum). The 2.07 m flight-minimum the legend prints is the same quantity
+the Python CI asserts, so the web readout and the validation report cannot
+drift.
+
 ### talon-replay data-source abstraction (Phase 4-ready)
 
 The replay app consumes schema 1.1 JSON via `useFlightStore.loadScenario`.
@@ -85,6 +109,6 @@ scene components are agnostic to which source is active.
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | Obstacle scenario + schema 1.1 (offline detour avoidance) | Complete |
-| 2 | Interactive obstacle scene (R3F + bloom + labels) | Pending |
+| 2 | Interactive obstacle scene (R3F + bloom + labels) | Complete |
 | 3 | Unified entry point (videos + scene + metrics) | Pending |
 | 4 | In-browser WASM run | Pending |

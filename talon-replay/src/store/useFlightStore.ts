@@ -6,9 +6,15 @@ export interface DisplayToggles {
   ellipsoid: boolean
   wind: boolean
   waypoints: boolean
+  obstacles: boolean
 }
 
-export const SCENARIO_IDS: ScenarioId[] = ['gps_outage', 'wind', 'emergency']
+export const SCENARIO_IDS: ScenarioId[] = [
+  'gps_outage',
+  'wind',
+  'emergency',
+  'obstacle_field',
+]
 
 interface FlightStore {
   /** Loaded scenario payloads, keyed by scenario id. */
@@ -48,7 +54,7 @@ export const useFlightStore = create<FlightStore>((set, get) => ({
   currentTime: 0,
   isPlaying: false,
   playbackSpeed: 1,
-  toggles: { trail: true, ellipsoid: true, wind: true, waypoints: true },
+  toggles: { trail: true, ellipsoid: true, wind: true, waypoints: true, obstacles: true },
 
   loadScenario: async (id) => {
     if (get().scenarios.has(id)) return
@@ -58,6 +64,9 @@ export const useFlightStore = create<FlightStore>((set, get) => ({
       const res = await fetch(`${base}data/${id}.json`)
       if (!res.ok) throw new Error(`telemetry fetch failed (HTTP ${res.status})`)
       const data = (await res.json()) as FlightData
+      // Schema 1.0 documents predate the obstacles key; normalize so the
+      // scene never has to guard against undefined.
+      if (!Array.isArray(data.obstacles)) data.obstacles = []
       set((s) => ({
         scenarios: new Map(s.scenarios).set(id, data),
         loading: false,

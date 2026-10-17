@@ -10,7 +10,7 @@ APP_DIR="$(dirname "$SCRIPT_DIR")"
 SRC_DIR="$APP_DIR/../plots/json"
 DEST_DIR="$APP_DIR/public/data"
 
-SCENARIOS=(gps_outage wind emergency)
+SCENARIOS=(gps_outage wind emergency obstacle_field)
 
 mkdir -p "$DEST_DIR"
 for name in "${SCENARIOS[@]}"; do
