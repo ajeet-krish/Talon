@@ -10,7 +10,7 @@ uv run cmake --build build -j                      # build talon_tests and _core
 ./build/talon_tests                                # Google Tests (C++ kernel)
 uv sync                                            # Python environment (.venv)
 uv run pytest tests/ -q                            # pytest suites
-uv run python sims/run_all.py                      # validation driver: scenarios, plots, report
+uv run python sims/run_all.py                      # validation driver: scenarios, plots, videos, JSON + validation report
 ```
 
 talon-replay (from its own directory): `npm install`, `npm run dev`, `npm run build`, `npm test`.
@@ -29,10 +29,10 @@ talon-replay (from its own directory): `npm install`, `npm run dev`, `npm run bu
 - `cpp/tests/`: Google Test suites.
 - `bindings/pytalon.cpp`: pybind11 module `talon._core`.
 - `src/talon/`: Python package. `guidance.py` (NLGL), `mission.py`, `state_machine.py`, `sensors.py`, `motors.py`, `battery.py`, `mavlink_sil.py`, `plotting.py`, `export_json.py`, `animation.py`.
-- `sims/`: six `scenario_*.py` runs, `monte_carlo.py`, and `run_all.py` validation driver.
+- `sims/`: seven `scenario_*.py` runs, `monte_carlo.py`, and `run_all.py` validation driver.
 - `tests/`: pytest suites.
 - `docs/`: `conventions.md` plus `architecture.md`, `decisions.md`, `research.md`, `reviews.md`, `tests.md`.
-- `talon-replay/`: React 19, react-three-fiber 9, Vite 6 replay application. Scene layers include `ObstacleField` (spherical keep-out zones, bloom-tinted by live clearance) with shared clearance math in `src/utils/clearance.ts`.
+- `talon-replay/`: React 19, react-three-fiber 9, Vite 6 flight tool ("FlightLab"). Four sections in `src/views/` (Replay, Telemetry, Metrics, Videos) switched by `activeView`, with the transport bar shared by the time-based sections. Scene layers in `src/components/scene/` include `ObstacleField` (spherical keep-out zones, bloom-tinted by live clearance) with shared clearance math in `src/utils/clearance.ts`. Telemetry charts are hand-rolled SVG (`src/components/charts/`) over pure helpers in `src/utils/chart.ts` and `src/utils/telemetry.ts`. Recordings and telemetry are staged into `public/` by `scripts/copy_data.sh`.
 
 ## Status
 
@@ -40,7 +40,7 @@ talon-replay (from its own directory): `npm install`, `npm run dev`, `npm run bu
 |-------|-------------|--------|
 | Phase 1 | Obstacle scenario + schema 1.1 (offline detour avoidance) | Complete |
 | Phase 2 | Interactive obstacle scene (R3F + bloom + labels) | Complete |
-| Phase 3 | Unified entry point (videos + scene + metrics) | Pending |
+| Phase 3 | Unified entry point (videos + scene + metrics) | Complete |
 | Phase 4 | In-browser WASM run | Pending |
 
 ## Deep Docs

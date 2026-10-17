@@ -60,7 +60,9 @@ What it does, in order:
    TALON_SKIP_FINGERPRINT=1; each file is wrapped so a failure only
    logs a warning and never fails the validation.
 9. Writes plots/validation_report.md (markdown table: Test, Target,
-   Achieved, Pass) and prints the same summary to stdout.
+   Achieved, Pass) plus plots/json/validation.json (the same rows in
+   machine-readable form, consumed by the talon-replay Metrics view), and
+   prints the same summary to stdout.
 10. With --monte-carlo (default off): after the main validation, runs the
     Sprint 2.2 Monte Carlo sweep over the waypoint circuit
     (sims/monte_carlo.py) with n_runs from the TALON_MC_RUNS environment
@@ -75,6 +77,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import re
 import subprocess
@@ -141,6 +144,7 @@ JSON_DIR = PLOTS_DIR / "json"
 VIDEOS_DIR = REPO_ROOT / "docs" / "videos"
 PORTFOLIO_DIR = REPO_ROOT / "docs" / "portfolio"
 REPORT_PATH = PLOTS_DIR / "validation_report.md"
+VALIDATION_JSON_PATH = JSON_DIR / "validation.json"
 MC_REPORT_PATH = PLOTS_DIR / "monte_carlo_report.md"
 MC_PLOT_PATH = PLOTS_DIR / "monte_carlo_summary.png"
 
@@ -368,10 +372,10 @@ def _export_sil_json(
 def _export_videos(
     gps_result: SILResult, wind_result: SILResult, emergency_result: SILResult
 ) -> list[str]:
-    """Render the four cinematic flight videos (Sprint 2.4).
+    """Render the five cinematic flight videos (Sprint 2.4).
 
-    Writes docs/videos/{gps_outage,wind,emergency,waypoints}.mp4: the
-    three SILRunner-backed scenarios plus the Phase 4 waypoint circuit
+    Writes docs/videos/{gps_outage,wind,emergency,waypoints,obstacle_field}.mp4:
+    the SILRunner-backed scenarios plus the Phase 4 waypoint circuit
     (re-captured with histories via the animation adapter). A failure
     only logs a warning: video export must never fail the validation
     driver.
@@ -967,6 +971,37 @@ def _write_report(rows: list[ReportRow], plot_paths: list[str]) -> Path:
     return REPORT_PATH
 
 
+def _write_report_json(rows: list[ReportRow]) -> Path:
+    """Write plots/json/validation.json, the machine-readable report.
+
+    The talon-replay Metrics view fetches this file (copied into the app by
+    talon-replay/scripts/copy_data.sh), so the web report tracks the driver's
+    output instead of a hand-maintained table.
+    """
+    JSON_DIR.mkdir(parents=True, exist_ok=True)
+    passed = sum(1 for row in rows if row.passed)
+    document = {
+        "generated_utc": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC"
+        ),
+        "passed": passed,
+        "total": len(rows),
+        "rows": [
+            {
+                "test": row.test,
+                "target": row.target,
+                "achieved": row.achieved,
+                "passed": row.passed,
+            }
+            for row in rows
+        ],
+    }
+    VALIDATION_JSON_PATH.write_text(
+        json.dumps(document, indent=2), encoding="utf-8"
+    )
+    return VALIDATION_JSON_PATH
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Command-line flags for the validation driver."""
     parser = argparse.ArgumentParser(
@@ -1218,6 +1253,7 @@ def main() -> int:
         gtest_count,
     )
     report_path = _write_report(rows, plot_paths)
+    validation_json_path = _write_report_json(rows)
 
     # 7. Stdout summary.
     print()
@@ -1235,6 +1271,7 @@ def main() -> int:
             display = Path(path).name
         print(f"  {display}")
     print(f"report written to {report_path}")
+    print(f"validation json written to {validation_json_path}")
     print(
         f"summary: {passed}/{len(rows)} checks passed, "
         f"scenario asserts {sum(1 for c in codes.values() if c == 0)}"

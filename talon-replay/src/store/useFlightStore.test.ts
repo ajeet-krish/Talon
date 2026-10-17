@@ -88,6 +88,9 @@ beforeEach(() => {
     isPlaying: false,
     playbackSpeed: 1,
     toggles: { trail: true, ellipsoid: true, wind: true, waypoints: true, obstacles: true },
+    activeView: 'replay',
+    validation: null,
+    validationError: null,
   })
 })
 
@@ -137,6 +140,45 @@ describe('tick', () => {
     useFlightStore.getState().tick(0.5)
     expect(useFlightStore.getState().currentTime).toBe(10)
     expect(useFlightStore.getState().isPlaying).toBe(false)
+  })
+})
+
+describe('setView', () => {
+  it('switches the active section', () => {
+    expect(useFlightStore.getState().activeView).toBe('replay')
+    useFlightStore.getState().setView('telemetry')
+    expect(useFlightStore.getState().activeView).toBe('telemetry')
+  })
+})
+
+describe('loadValidation', () => {
+  it('fetches and caches the validation report', async () => {
+    const report = {
+      generated_utc: '2026-10-17 22:29 UTC',
+      passed: 25,
+      total: 25,
+      rows: [{ test: 't', target: 'x', achieved: 'y', passed: true }],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, json: async () => report })),
+    )
+
+    await useFlightStore.getState().loadValidation()
+
+    expect(useFlightStore.getState().validation?.passed).toBe(25)
+    expect(useFlightStore.getState().validationError).toBeNull()
+    vi.unstubAllGlobals()
+  })
+
+  it('records an error when the fetch fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404 })))
+
+    await useFlightStore.getState().loadValidation()
+
+    expect(useFlightStore.getState().validation).toBeNull()
+    expect(useFlightStore.getState().validationError).toContain('404')
+    vi.unstubAllGlobals()
   })
 })
 

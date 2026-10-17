@@ -137,11 +137,84 @@ import from it; none define their own.
 prevents the readout and the scene from disagreeing. The module is pure, so
 it is unit-tested in the node vitest environment without a DOM or WebGL.
 
-## Open decisions (Phases 3-4)
+### D11: Four-section shell on the existing store clock
+
+**Decision.** The tool is one entry point with four sections (Replay,
+Telemetry, Metrics, Videos), switched by `activeView` in the existing
+Zustand store. No router and no URL state.
+
+**Rationale.** The sections share one active scenario and one playback
+clock; a router would add history handling for a single-page instrument with
+no deep-link requirement. Section state is ephemeral tool state, which is
+what the store already holds (scenario, time, toggles).
+
+**Trade-off.** Sections are not shareable by URL. Acceptable for a
+GitHub-Pages instrument; a router can be layered on later without moving the
+store.
+
+### D12: Charts and run summary derived client-side, gates from the driver
+
+**Decision.** The telemetry series and the metrics run summary are computed
+in the browser from the recorded samples (`deriveTelemetry`, `summarizeRun`
+in `src/utils/telemetry.ts`). The validation gates table is fetched from
+`plots/json/validation.json`, a machine-readable sidecar written by
+`sims/run_all.py` and copied into `public/data/` by `scripts/copy_data.sh`.
+
+**Rationale.** Derived metrics cannot drift from the charts because both
+read the same payload; the gates cannot drift from the driver because they
+are the driver's own rows. Hand-transcribing either into a TypeScript
+constant would create two sources of truth.
+
+**Trade-off.** The driver grows a small JSON writer and the gates refresh
+only when `run_all.py` and `copy_data.sh` are re-run. Acceptable: the report
+was already regenerated on every driver run.
+
+### D13: Hand-rolled SVG charts, no charting dependency
+
+**Decision.** The telemetry charts are a small SVG component (`LineChart`)
+built on pure helpers in `src/utils/chart.ts` (min/max bucket decimation,
+padded domains, scales, path builder). No charting library is added.
+
+**Rationale.** The tool needs seven single-series time plots sharing one
+cursor, not an interactive charting framework. The project already
+hand-rolls its canvas labels and scrubber and keeps its dependency list
+deliberately short. The helpers are pure, so they are unit-tested in the
+node vitest environment without a DOM or WebGL.
+
+**Trade-off.** No zoom, brush, or tooltips out of the box. Acceptable for an
+instrument readout, and the min/max decimation preserves spikes.
+
+### D14: Only the cursor subscribes to the playback clock
+
+**Decision.** Each chart's static geometry (decimated path, domain, grid) is
+memoized on the payload; only the playhead cursor and the live value readout
+subscribe to `currentTime`.
+
+**Rationale.** The store ticks about sixty times a second during playback.
+Re-deriving a roughly seven-hundred-point path per chart per frame would
+waste work; a memoized path plus two small subscribers keeps a playing
+scenario cheap.
+
+**Trade-off.** One extra component boundary per chart. Acceptable and local.
+
+### D15: Recordings staged into public/videos by copy_data.sh
+
+**Decision.** The five MP4s are copied from `docs/videos/` into
+`talon-replay/public/videos/` and committed, mirroring how `plots/json/*.json`
+is copied into `public/data/`.
+
+**Rationale.** The recordings are small (about 1.6 MB total) and static
+hosting must serve them from `dist`. Committing keeps the app self-contained,
+so a build never depends on the monorepo layout or a prebuild copy step.
+
+**Trade-off.** The MP4 bytes exist twice in the repository. Acceptable at
+this size; regenerate with `copy_data.sh` after `run_all.py`.
+
+## Open decisions (Phase 4)
 
 - Acceptance metrics for v2 reactive avoidance (min clearance margin,
   allowed e_ct degradation, Monte Carlo min-clearance stats).
-- Phase 3 unified entry point: whether the videos become an in-app route or
-  stay a separate docs artifact linked from the tool.
 - WASM boundary: which Python glue functions are ported to TS versus
   trimmed for the sandbox.
+- Whether the live WASM source reuses the recorded `FlightDataSource`
+  interface or streams frames into a ring buffer first.

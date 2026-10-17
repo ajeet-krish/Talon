@@ -2,13 +2,15 @@
 
 Last updated: 2026-10-17
 
-## Current-state snapshot (FlightLab Phase 1)
+## Current-state snapshot (FlightLab Phase 3)
 
 Talon is a single-vehicle UAV GNC stack (C++17 header-only kernel via
-pybind11, Python mission/SIL/analysis glue) plus a TypeScript 3D flight
-replay web app. Phase 1 adds deterministic obstacle avoidance to the
-simulation pipeline and exports the obstacle field in the schema 1.1
-JSON contract.
+pybind11, Python mission/SIL/analysis glue) plus a TypeScript flight tool.
+Phase 1 added deterministic obstacle avoidance and the schema 1.1 obstacle
+contract; Phase 2 added the interactive 3D obstacle scene; Phase 3 turns the
+replay app into Talon FlightLab, a single entry point carrying four
+sections: the 3D replay, the telemetry charts, the metrics report, and the
+recorded flight videos.
 
 ### Data flow (one 200 Hz SIL step)
 
@@ -86,6 +88,44 @@ minimum). The 2.07 m flight-minimum the legend prints is the same quantity
 the Python CI asserts, so the web readout and the validation report cannot
 drift.
 
+### talon-replay FlightLab shell (Phase 3)
+
+The app is one entry point with four sections, switched by
+`useFlightStore.activeView` and rendered by `ViewTabs` in the header:
+
+| Section | File | Backed by |
+|---------|------|-----------|
+| Replay | `src/views/ReplayView.tsx` | R3F scene + HUD + legend |
+| Telemetry | `src/views/TelemetryView.tsx` | `deriveTelemetry(data)` time-series |
+| Metrics | `src/views/MetricsView.tsx` | `summarizeRun(data)` + `validation.json` |
+| Videos | `src/views/VideosView.tsx` | `public/videos/*.mp4` (`RECORDINGS`) |
+
+The replay and telemetry sections share the playback clock, so the transport
+bar and phase scrubber stay pinned to the bottom for both; metrics and videos
+drop them. The left rail always carries the scenario list and adds the
+scene-layer toggles only for the time-based sections.
+
+Two data paths feed the screens, both derived rather than hand-maintained:
+
+    recorded samples (public/data/*.json)
+        -> deriveTelemetry  -> Telemetry charts (altitude, speed, EKF error,
+                               wind, thrust, 3-sigma, clearance)
+        -> summarizeRun     -> Metrics run summary (duration, EKF RMSE,
+                               maxima, distance, min clearance)
+
+    sims/run_all.py -> plots/json/validation.json -> Metrics gates table
+
+Chart helpers live in one pure module, `src/utils/chart.ts` (min/max bucket
+decimation, domain, scales, path builder), and the series derivation in
+`src/utils/telemetry.ts`. Both are unit-tested in the node vitest
+environment; no charting dependency is added.
+
+### Recording pipeline
+
+    sims/run_all.py -> docs/videos/*.mp4 (five recordings)
+        -> scripts/copy_data.sh
+        -> talon-replay/public/videos/*.mp4 (committed, served statically)
+
 ### talon-replay data-source abstraction (Phase 4-ready)
 
 The replay app consumes schema 1.1 JSON via `useFlightStore.loadScenario`.
@@ -110,5 +150,5 @@ scene components are agnostic to which source is active.
 |-------|-------------|--------|
 | 1 | Obstacle scenario + schema 1.1 (offline detour avoidance) | Complete |
 | 2 | Interactive obstacle scene (R3F + bloom + labels) | Complete |
-| 3 | Unified entry point (videos + scene + metrics) | Pending |
+| 3 | Unified entry point (videos + scene + metrics) | Complete |
 | 4 | In-browser WASM run | Pending |

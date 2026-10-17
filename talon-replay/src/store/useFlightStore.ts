@@ -9,6 +9,25 @@ export interface DisplayToggles {
   obstacles: boolean
 }
 
+/** Top-level tool sections. */
+export type ViewId = 'replay' | 'telemetry' | 'metrics' | 'videos'
+
+/** One row of the validation driver's machine-readable report. */
+export interface ValidationRow {
+  test: string
+  target: string
+  achieved: string
+  passed: boolean
+}
+
+/** plots/json/validation.json, written by sims/run_all.py. */
+export interface ValidationReport {
+  generated_utc: string
+  passed: number
+  total: number
+  rows: ValidationRow[]
+}
+
 export const SCENARIO_IDS: ScenarioId[] = [
   'gps_outage',
   'wind',
@@ -27,6 +46,11 @@ interface FlightStore {
   isPlaying: boolean
   playbackSpeed: number
   toggles: DisplayToggles
+  /** Active top-level tool section. */
+  activeView: ViewId
+  /** Validation driver report (lazy; fetched by the Metrics view). */
+  validation: ValidationReport | null
+  validationError: string | null
 
   /** Fetch scenario JSON (no-op if already cached). */
   loadScenario: (id: ScenarioId) => Promise<void>
@@ -37,6 +61,10 @@ interface FlightStore {
   togglePlay: () => void
   setSpeed: (speed: number) => void
   setToggle: (key: keyof DisplayToggles, value: boolean) => void
+  /** Switch the active tool section. */
+  setView: (view: ViewId) => void
+  /** Fetch the validation report (no-op if already loaded). */
+  loadValidation: () => Promise<void>
   /** Advance playback by wall-clock dt scaled by playbackSpeed. */
   tick: (dtSeconds: number) => void
 }
@@ -55,6 +83,9 @@ export const useFlightStore = create<FlightStore>((set, get) => ({
   isPlaying: false,
   playbackSpeed: 1,
   toggles: { trail: true, ellipsoid: true, wind: true, waypoints: true, obstacles: true },
+  activeView: 'replay',
+  validation: null,
+  validationError: null,
 
   loadScenario: async (id) => {
     if (get().scenarios.has(id)) return
@@ -96,6 +127,26 @@ export const useFlightStore = create<FlightStore>((set, get) => ({
   setSpeed: (speed) => set({ playbackSpeed: speed }),
 
   setToggle: (key, value) => set((s) => ({ toggles: { ...s.toggles, [key]: value } })),
+
+  setView: (view) => set({ activeView: view }),
+
+  loadValidation: async () => {
+    if (get().validation) return
+    try {
+      const base = import.meta.env.BASE_URL ?? '/'
+      const res = await fetch(`${base}data/validation.json`)
+      if (!res.ok) {
+        throw new Error(`validation fetch failed (HTTP ${res.status})`)
+      }
+      const data = (await res.json()) as ValidationReport
+      set({ validation: data, validationError: null })
+    } catch (err) {
+      set({
+        validationError:
+          err instanceof Error ? err.message : 'validation fetch failed',
+      })
+    }
+  },
 
   tick: (dtSeconds) =>
     set((s) => {

@@ -1,0 +1,157 @@
+{
+  "generated_utc": "2026-10-17 23:01 UTC",
+  "passed": 25,
+  "total": 25,
+  "rows": [
+    {
+      "test": "Scenario asserts (7 scripts)",
+      "target": "7 of 7 pass",
+      "achieved": "7 of 7 pass",
+      "passed": true
+    },
+    {
+      "test": "Hover steady-state drift (final |err|)",
+      "target": "< 0.05 m",
+      "achieved": "0.005 m",
+      "passed": true
+    },
+    {
+      "test": "Hover window deviation (max, last 20 s)",
+      "target": "< 0.05 m",
+      "achieved": "0.026 m",
+      "passed": true
+    },
+    {
+      "test": "Position step rise time (0 to 90%)",
+      "target": "< 2.5 s",
+      "achieved": "1.290 s",
+      "passed": true
+    },
+    {
+      "test": "Position step overshoot",
+      "target": "< 10 %",
+      "achieved": "8.21 %",
+      "passed": true
+    },
+    {
+      "test": "Position step steady-state error",
+      "target": "< 0.05 m",
+      "achieved": "0.030 m",
+      "passed": true
+    },
+    {
+      "test": "EKF position RMSE (waypoint circuit)",
+      "target": "< 2.0 m",
+      "achieved": "0.102 m",
+      "passed": true
+    },
+    {
+      "test": "Gyro bias estimate (max |axis|, final)",
+      "target": "< 0.01 rad/s",
+      "achieved": "0.00177 rad/s",
+      "passed": true
+    },
+    {
+      "test": "NLGL mean cross-track (after 15 s)",
+      "target": "< 1.0 m",
+      "achieved": "0.650 m",
+      "passed": true
+    },
+    {
+      "test": "NLGL max cross-track (after 15 s)",
+      "target": "< 3.0 m",
+      "achieved": "1.967 m",
+      "passed": true
+    },
+    {
+      "test": "Waypoints reached (40x30 m circuit)",
+      "target": "5 of 5",
+      "achieved": "5 of 5",
+      "passed": true
+    },
+    {
+      "test": "RTL trigger delay after low battery",
+      "target": "< 1.0 s",
+      "achieved": "0.000 s",
+      "passed": true
+    },
+    {
+      "test": "RTL final horizontal distance to home",
+      "target": "< 3.0 m",
+      "achieved": "0.070 m",
+      "passed": true
+    },
+    {
+      "test": "RTL touchdown vertical speed at 0.5 m",
+      "target": "< 0.5 m/s",
+      "achieved": "0.398 m/s",
+      "passed": true
+    },
+    {
+      "test": "Wind hover RMS (last 30 s, 4-6 m/s airflow)",
+      "target": "below bound max(0.25, 2x baseline + 0.05) m",
+      "achieved": "0.094 m (bound 0.250 m)",
+      "passed": true
+    },
+    {
+      "test": "Wind hover max error",
+      "target": "< 3.0 m",
+      "achieved": "0.165 m",
+      "passed": true
+    },
+    {
+      "test": "GPS outage error growth (4 s blackout)",
+      "target": "< 5.0 m",
+      "achieved": "0.686 m",
+      "passed": true
+    },
+    {
+      "test": "GPS reconvergence after fixes resume",
+      "target": "< 5.0 s",
+      "achieved": "0.01 s",
+      "passed": true
+    },
+    {
+      "test": "Obstacle field min 3-D surface clearance",
+      "target": "> 0 m",
+      "achieved": "2.072 m",
+      "passed": true
+    },
+    {
+      "test": "Emergency detection delay (EKF corrupt_bias)",
+      "target": "< 1.0 s",
+      "achieved": "0.000 s",
+      "passed": true
+    },
+    {
+      "test": "Emergency final truth altitude",
+      "target": "< 0.5 m",
+      "achieved": "-0.000 m",
+      "passed": true
+    },
+    {
+      "test": "State machine phases covered (SIL union)",
+      "target": "8 of 8",
+      "achieved": "8 of 8",
+      "passed": true
+    },
+    {
+      "test": "State machine guard transitions covered",
+      "target": ">= 9 of 14",
+      "achieved": "9 of 14",
+      "passed": true
+    },
+    {
+      "test": "Python tests (pytest)",
+      "target": "139",
+      "achieved": "186",
+      "passed": true
+    },
+    {
+      "test": "C++ tests (GTest)",
+      "target": "34",
+      "achieved": "34",
+      "passed": true
+    }
+  ]
+}
