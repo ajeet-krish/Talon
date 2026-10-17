@@ -99,7 +99,7 @@ def test_required_keys(tmp_path) -> None:
 
 def test_meta_schema_version(tmp_path) -> None:
     data = _export_load(_make_result(), tmp_path)
-    assert data["meta"]["schema_version"] == SCHEMA_VERSION == "1.0"
+    assert data["meta"]["schema_version"] == SCHEMA_VERSION == "1.1"
 
 
 def test_meta_units_block(tmp_path) -> None:

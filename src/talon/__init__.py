@@ -35,6 +35,13 @@ except ImportError as exc:  # pragma: no cover - exercised only on unbuilt check
         "same Python interpreter)."
     ) from exc
 
+from .avoidance import (
+    compute_detour_point,
+    leg_intersects_obstacle,
+    leg_obstacle_distance,
+    min_clearance,
+    plan_avoidance_mission,
+)
 from .battery import BatteryConfig, BatteryModel, BatteryState
 from .controller import CascadedController, ControlCommand, ControlGains
 from .ekf import EKFConfig, EKFNominalState, Ekf
@@ -56,7 +63,7 @@ from .sensors import (
     specific_force_from_velocity,
 )
 from .state_machine import FlightPhaseMachine, PhaseTransition, Telemetry
-from .types import FlightPhase, Waypoint
+from .types import FlightPhase, SphericalObstacle, Waypoint
 
 __all__ = [
     "AIR_DENSITY",
@@ -100,16 +107,22 @@ __all__ = [
     "SILResult",
     "SILRunner",
     "SensorSuite",
+    "SphericalObstacle",
     "State",
     "Telemetry",
     "VEHICLE_AREA",
     "VehicleParams",
     "Waypoint",
     "WaypointMission",
+    "compute_detour_point",
     "export_sil_result_json",
     "gps_to_ned",
     "gps_velocity_ned",
     "hover_thrust",
+    "leg_intersects_obstacle",
+    "leg_obstacle_distance",
+    "min_clearance",
+    "plan_avoidance_mission",
     "propagate",
     "rotation_matrix",
     "specific_force_from_velocity",

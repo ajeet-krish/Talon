@@ -77,4 +77,35 @@ class Waypoint:
             )
 
 
-__all__ = ["FlightPhase", "GPSMeasurement", "IMUMeasurement", "Waypoint"]
+@dataclass(slots=True)
+class SphericalObstacle:
+    """Spherical keep-out zone in NED (m).
+
+    center_ned is the 3-D sphere centre in the NED frame; radius_m is the
+    keep-out radius. A position is inside the obstacle when its 3-D Euclidean
+    distance to centre is less than radius_m.
+    """
+
+    id: str
+    center_ned: NDArray[np.float64]
+    radius_m: float
+
+    def __post_init__(self) -> None:
+        self.center_ned = np.asarray(self.center_ned, dtype=np.float64)
+        if self.center_ned.shape != (3,):
+            raise ValueError(
+                f"center_ned must have shape (3,), got {self.center_ned.shape}"
+            )
+        if self.radius_m <= 0.0:
+            raise ValueError(
+                f"radius_m must be positive, got {self.radius_m}"
+            )
+
+
+__all__ = [
+    "FlightPhase",
+    "GPSMeasurement",
+    "IMUMeasurement",
+    "SphericalObstacle",
+    "Waypoint",
+]

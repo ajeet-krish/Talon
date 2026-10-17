@@ -123,7 +123,7 @@ from talon.state_machine import (
     PhaseTransition,
     Telemetry,
 )
-from talon.types import FlightPhase, GPSMeasurement, Waypoint
+from talon.types import FlightPhase, GPSMeasurement, SphericalObstacle, Waypoint
 
 # Derived-estimate thresholds (module docstring).
 CONVERGENCE_MIN_GPS_UPDATES = 20
@@ -182,6 +182,7 @@ class SILConfig:
     cruise_hold_s: float = 2.0
     enable_udp: bool = True
     seed: int = 20261012
+    obstacles: list[SphericalObstacle] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.start_position_ned = np.asarray(
@@ -273,6 +274,7 @@ class SILResult:
     e_ct_leg: ArrayF = field(
         default_factory=lambda: np.zeros(0, dtype=np.float64)
     )
+    obstacles: list[SphericalObstacle] = field(default_factory=list)
 
     @property
     def final_phase(self) -> FlightPhase:
@@ -1253,6 +1255,7 @@ class SILRunner:
                 e_ct_leg=np.asarray(
                     self._history_e_ct_leg, dtype=np.float64
                 ),
+                obstacles=list(self._config.obstacles),
             )
             self._result = result
         return result

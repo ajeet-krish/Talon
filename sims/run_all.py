@@ -13,12 +13,12 @@ What it does, in order:
 1. Runs each of the six scenarios through its own main() with stdout
    captured (that is where each scenario's printed metrics and PASS/FAIL
    asserts live). The combined status is the AND of the six exit codes.
-2. Re-runs the three SILRunner-backed scenarios (wind, gps_outage,
-   emergency) through their run_scenario() entry points to obtain full
-   SILResult histories for metric computation and plotting. The three
-   Phase 4-style scripts (hover, waypoints, rtl) are standalone loops
-   without a SILResult, so their headline numbers are parsed from the
-   captured stdout (stable print formats, regex-matched).
+2. Re-runs the SILRunner-backed scenarios (wind, gps_outage, emergency,
+   obstacle_field) through their run_scenario() entry points to obtain
+   full SILResult histories for metric computation and plotting. The
+   three Phase 4-style scripts (hover, waypoints, rtl) are standalone
+   loops without a SILResult, so their headline numbers are parsed from
+   the captured stdout (stable print formats, regex-matched).
 3. Runs a quick 1 m position step through the cascaded PD (the Phase 2
    acceptance shape) to measure rise time, overshoot, and steady-state
    error for the report.
@@ -43,10 +43,11 @@ What it does, in order:
    emergency) as schema 1.0 JSON documents into plots/json/ via
    talon.export_json (Sprint 2.3). The export is wrapped so a failure
    only logs a warning and never fails the validation.
-7. Renders four cinematic 3D flight videos into docs/videos/ via
+7. Renders five cinematic 3D flight videos into docs/videos/ via
    talon.animation (Sprint 2.4): gps_outage, wind, emergency from the
-   SIL re-runs, and waypoints from the Phase 4 circuit re-captured with
-   histories (_run_waypoints_with_capture). Skipped with --skip-video or
+   SIL re-runs, waypoints from the Phase 4 circuit re-captured with
+   histories (_run_waypoints_with_capture), and obstacle_field from
+   the FlightLab Phase 1 scenario. Skipped with --skip-video or
    TALON_SKIP_VIDEO=1; each video is wrapped so a failure only logs a
    warning and never fails the validation.
 8. Exports the Sprint 2.5 data-art flight fingerprints via
@@ -95,6 +96,7 @@ from sims import (  # noqa: E402  (path setup above)
     scenario_emergency,
     scenario_gps_outage,
     scenario_hover,
+    scenario_obstacle_field,
     scenario_rtl,
     scenario_waypoints,
     scenario_wind,
@@ -335,18 +337,25 @@ def _export_sil_json(
     scenario + seed filled in. An export failure only logs a warning:
     JSON export must never fail the validation driver.
     """
-    seed = SILConfig().seed  # the three scenarios use the default config
+    seed = SILConfig().seed  # the scenarios use the default config
     paths: list[str] = []
-    for name, result in (
-        ("gps_outage", gps_result),
-        ("wind", wind_result),
-        ("emergency", emergency_result),
+    obstacle_result = scenario_obstacle_field.run_scenario()[0]
+    for name, result, obstacles in (
+        ("gps_outage", gps_result, None),
+        ("wind", wind_result, None),
+        ("emergency", emergency_result, None),
+        (
+            "obstacle_field",
+            obstacle_result,
+            scenario_obstacle_field.OBSTACLES,
+        ),
     ):
         try:
             path = export_sil_result_json(
                 result,
                 JSON_DIR / f"{name}.json",
                 meta={"scenario": name, "seed": seed},
+                obstacles=obstacles,
             )
             size_kb = Path(path).stat().st_size / 1024.0
             print(f"  {name}.json written ({size_kb:.1f} KB)")
@@ -369,12 +378,14 @@ def _export_videos(
     """
     print("capturing waypoint-circuit history for the video ...", flush=True)
     waypoints_result = _run_waypoints_with_capture()
+    obstacle_result_video = scenario_obstacle_field.run_scenario()[0]
     paths: list[str] = []
     for name, result in (
         ("gps_outage", gps_result),
         ("wind", wind_result),
         ("emergency", emergency_result),
         ("waypoints", waypoints_result),
+        ("obstacle_field", obstacle_result_video),
     ):
         t0 = time.perf_counter()
         try:
@@ -625,8 +636,8 @@ def _build_report(
     passed_count = sum(1 for code in codes.values() if code == 0)
     rows.append(
         ReportRow(
-            "Scenario asserts (6 scripts)",
-            "6 of 6 pass",
+            "Scenario asserts (7 scripts)",
+            "7 of 7 pass",
             f"{passed_count} of {len(codes)} pass",
             passed_count == len(codes),
         )
@@ -828,6 +839,18 @@ def _build_report(
         )
     )
 
+    # Obstacle field (parsed).
+    obstacle = parsed["obstacle_field"]
+    rows.append(
+        ReportRow(
+            "Obstacle field min 3-D surface clearance",
+            "> 0 m",
+            _fmt(obstacle.get("min_clearance_m"), "m"),
+            obstacle.get("min_clearance_m") is not None
+            and obstacle["min_clearance_m"] > 0.0,
+        )
+    )
+
     # Emergency (parsed).
     emergency = parsed["emergency"]
     rows.append(
@@ -1015,6 +1038,7 @@ def main() -> int:
         ("wind", scenario_wind),
         ("gps_outage", scenario_gps_outage),
         ("emergency", scenario_emergency),
+        ("obstacle_field", scenario_obstacle_field),
     ):
         print(f"running scenario: {name} ...", flush=True)
         scenario_outputs[name] = _run_main(module)
@@ -1095,6 +1119,12 @@ def main() -> int:
             "final_altitude_m": _search(
                 r"final truth: altitude ([0-9.eE+-]+) m",
                 scenario_outputs["emergency"][1],
+            ),
+        },
+        "obstacle_field": {
+            "min_clearance_m": _search(
+                r"min 3-D surface clearance: ([0-9.eE+-]+) m",
+                scenario_outputs["obstacle_field"][1],
             ),
         },
     }

@@ -34,9 +34,9 @@ import numpy as np
 
 from talon.mavlink_sil import SILResult
 from talon.state_machine import PhaseTransition
-from talon.types import FlightPhase
+from talon.types import FlightPhase, SphericalObstacle
 
-SCHEMA_VERSION: str = "1.0"
+SCHEMA_VERSION: str = "1.1"
 
 # Histories are sampled at the CONTROL rate (100 Hz; SILResult docstring).
 SAMPLE_DT_S: float = 0.01
@@ -79,7 +79,17 @@ REQUIRED_KEYS: tuple[str, ...] = (
     "home_ned",
     "phase_timeline",
     "event_log",
+    "obstacles",
 )
+
+
+def _obstacle_to_dict(obstacle: SphericalObstacle, round_decimals: int | None) -> dict[str, Any]:
+    """Serialize one SphericalObstacle to a JSON-ready dict."""
+    return {
+        "id": obstacle.id,
+        "center_ned": _to_json_value(obstacle.center_ned, round_decimals),
+        "radius_m": _to_json_value(obstacle.radius_m, round_decimals),
+    }
 
 # (N,) histories that must match len(time_s).
 _SERIES_1D: tuple[str, ...] = ("time_s", "command_thrust")
@@ -190,13 +200,16 @@ def export_sil_result_json(
     *,
     meta: dict[str, Any] | None = None,
     round_decimals: int | None = 6,
+    obstacles: list[SphericalObstacle] | None = None,
 ) -> str:
-    """Write ``result`` to ``path`` as schema 1.0 JSON; return abs path.
+    """Write ``result`` to ``path`` as schema 1.1 JSON; return abs path.
 
     Parent directories are created as needed. ``meta`` entries are merged
     into the auto-filled meta block, but the auto keys (schema_version,
     generated_utc, sample_count, duration_s, dt, units) always win.
-    ``round_decimals=None`` keeps full float precision.
+    ``round_decimals=None`` keeps full float precision. ``obstacles`` is
+    the list of spherical keep-out zones the mission was planned around;
+    when None an empty list is written so the schema stays uniform.
     """
     time_s = np.asarray(result.time_s, dtype=np.float64)
     _check_finite("time_s", time_s)
@@ -231,6 +244,10 @@ def export_sil_result_json(
         document[name] = _to_json_value(arrays[name], round_decimals)
     document["waypoints_ned"] = _to_json_value(waypoints_ned, round_decimals)
     document["home_ned"] = _to_json_value(home_ned, round_decimals)
+    document["obstacles"] = [
+        _obstacle_to_dict(obs, round_decimals)
+        for obs in (obstacles if obstacles is not None else [])
+    ]
     # Re-emit in schema order (document grew past insertion order above).
     document = {key: document[key] for key in REQUIRED_KEYS}
 
@@ -303,6 +320,27 @@ def validate_flight_json(data: dict[str, Any]) -> None:
     if waypoints != []:
         _expect_shape("waypoints_ned", waypoints, (len(waypoints), 3))
     _expect_shape("home_ned", data["home_ned"], (3,))
+
+    obstacles = data["obstacles"]
+    if not isinstance(obstacles, list):
+        raise ValueError(
+            f"obstacles must be a list, got {type(obstacles).__name__}"
+        )
+    for index, entry in enumerate(obstacles):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"obstacles[{index}] must be a dict, got {type(entry).__name__}"
+            )
+        if not isinstance(entry.get("id"), str):
+            raise ValueError(f"obstacles[{index}].id must be a string")
+        _expect_shape(
+            f"obstacles[{index}].center_ned", entry.get("center_ned"), (3,)
+        )
+        radius = entry.get("radius_m")
+        if not isinstance(radius, (int, float)) or isinstance(radius, bool):
+            raise ValueError(f"obstacles[{index}].radius_m must be a number")
+        if radius <= 0:
+            raise ValueError(f"obstacles[{index}].radius_m must be positive")
 
     for index, entry in enumerate(data["phase_timeline"]):
         if (
