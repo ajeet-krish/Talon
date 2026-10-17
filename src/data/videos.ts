@@ -16,8 +16,8 @@ export interface Recording {
  * the replay scene is the interactive half. Recordings with a matching
  * scenario can jump straight into the interactive replay.
  *
- * Files are not committed here: scripts/copy_videos.sh stages them from the
- * monorepo docs/videos/ directory before dev and build.
+ * Files are committed under public/videos/, staged from docs/videos/ by
+ * scripts/copy_data.sh after a validation driver run.
  */
 export const RECORDINGS: Recording[] = [
   {

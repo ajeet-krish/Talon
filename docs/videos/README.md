@@ -4,7 +4,7 @@ Cinematic 3D flight exports (Sprint 2.4). Every video is rendered from a
 full SIL history by the validation driver:
 
 ```sh
-uv run python sims/run_all.py
+uv run python python/sims/run_all.py
 ```
 
 Use `--skip-video` (or set `TALON_SKIP_VIDEO=1`) to skip the export. The
@@ -17,8 +17,7 @@ and a fade-in title card. When ffmpeg is unavailable the exporter
 degrades to a PillowWriter GIF (path suffix adjusted to `.gif`).
 
 The five recordings are also surfaced inside the FlightLab tool's Videos
-section; `talon-replay/scripts/copy_data.sh` stages them into
-`talon-replay/public/videos/`.
+section; `scripts/copy_data.sh` stages them into `public/videos/`.
 
 ## Waypoint circuit
 

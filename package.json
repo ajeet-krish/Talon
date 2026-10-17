@@ -1,9 +1,9 @@
 {
-  "name": "talon-replay",
+  "name": "talon-flightlab",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Interactive 3D flight replay of Talon UAV autopilot simulations (EKF, state machine, NLGL guidance)",
+  "description": "Talon FlightLab: fly and inspect a Talon UAV autopilot simulation in the browser (3D replay, telemetry, metrics, videos)",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.build.json --noEmit && vite build",

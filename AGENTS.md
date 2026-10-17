@@ -1,38 +1,45 @@
-# Talon
+# Talon FlightLab
 
-Single-vehicle UAV autopilot: a header-only C++17 GNC kernel (dynamics, Dryden wind, cascaded PD, 15-state MEKF) exposed through pybind11, with Python mission, SIL, and analysis tooling plus a TypeScript 3D flight replay.
+Drone autopilot simulator: a header-only C++17 GNC kernel (dynamics, Dryden wind, cascaded PD, 15-state MEKF) exposed through pybind11, with Python mission, SIL, and analysis tooling, and a React 19 + react-three-fiber web tool that replays and inspects the results. The web app owns the repository root; the C++ core lives in `core/`; the Python package, simulations, and tests live in `python/`.
 
 ## Quick Commands
 
 ```bash
+# Native core (from the repository root)
 uv run cmake -B build -DCMAKE_BUILD_TYPE=Release   # configure kernel, GTest, pybind11
-uv run cmake --build build -j                      # build talon_tests and _core*.so into src/talon/
+uv run cmake --build build -j                      # build talon_tests and _core*.so into python/talon/
 ./build/talon_tests                                # Google Tests (C++ kernel)
 uv sync                                            # Python environment (.venv)
-uv run pytest tests/ -q                            # pytest suites
-uv run python sims/run_all.py                      # validation driver: scenarios, plots, videos, JSON + validation report
-```
+uv run pytest python/tests/ -q                     # pytest suites
+uv run python python/sims/run_all.py               # validation driver: scenarios, plots, videos, JSON + validation report
 
-talon-replay (from its own directory): `npm install`, `npm run dev`, `npm run build`, `npm test`.
+# Web app (from the repository root)
+npm install
+npm run dev                                        # vite dev server
+npm run build                                      # typecheck + production build into dist/
+npm test                                           # vitest unit tests
+scripts/copy_data.sh                               # refresh public/data + public/videos from the driver output
+```
 
 ## Conventions
 
 - No em dashes, double hyphens used as dashes, or dash equivalents anywhere: code, comments, docs, commit messages.
-- C++: header-only C++17 under `cpp/include/talon/`, 4-space indent, K&R braces; snake_case functions, PascalCase types, SCREAMING_SNAKE constants.
-- Python: snake_case, type hints, uv-managed dependencies; package lives under `src/talon/`.
+- C++: header-only C++17 under `core/include/talon/`, 4-space indent, K&R braces; snake_case functions, PascalCase types, SCREAMING_SNAKE constants.
+- Python: snake_case, type hints, uv-managed dependencies; package lives under `python/talon/`.
 - Frames: NED world, aerospace body, Hamilton scalar-first quaternions, thrust along -body-z. Single source of truth is `docs/conventions.md`.
-- TypeScript (talon-replay): `strict` with `noUncheckedIndexedAccess`; typecheck before build.
+- TypeScript (web app): `strict` with `noUncheckedIndexedAccess`; typecheck before build; pure logic in `src/utils/` with vitest coverage.
 
 ## Project Map
 
-- `cpp/include/talon/`: header-only kernel. `dynamics.hpp` (RK4), `wind.hpp` (Dryden), `controller.hpp` (cascaded PD), `ekf.hpp` (MEKF), `types.hpp`, `constants.hpp`.
-- `cpp/tests/`: Google Test suites.
+- `src/`: web app source. `views/` (Replay, Telemetry, Metrics, Videos), `components/` (scene, charts, ui), `utils/` (pure), `store/` (Zustand), `data/` (scenario + recording metadata), `hooks/`.
+- `core/include/talon/`: header-only C++17 kernel. `dynamics.hpp` (RK4), `wind.hpp` (Dryden), `controller.hpp` (cascaded PD), `ekf.hpp` (MEKF), `types.hpp`, `constants.hpp`.
+- `core/tests/`: Google Test suites.
 - `bindings/pytalon.cpp`: pybind11 module `talon._core`.
-- `src/talon/`: Python package. `guidance.py` (NLGL), `mission.py`, `state_machine.py`, `sensors.py`, `motors.py`, `battery.py`, `mavlink_sil.py`, `plotting.py`, `export_json.py`, `animation.py`.
-- `sims/`: seven `scenario_*.py` runs, `monte_carlo.py`, and `run_all.py` validation driver.
-- `tests/`: pytest suites.
-- `docs/`: `conventions.md` plus `architecture.md`, `decisions.md`, `research.md`, `reviews.md`, `tests.md`.
-- `talon-replay/`: React 19, react-three-fiber 9, Vite 6 flight tool ("FlightLab"). Four sections in `src/views/` (Replay, Telemetry, Metrics, Videos) switched by `activeView`, with the transport bar shared by the time-based sections. Scene layers in `src/components/scene/` include `ObstacleField` (spherical keep-out zones, bloom-tinted by live clearance) with shared clearance math in `src/utils/clearance.ts`. Telemetry charts are hand-rolled SVG (`src/components/charts/`) over pure helpers in `src/utils/chart.ts` and `src/utils/telemetry.ts`. Recordings and telemetry are staged into `public/` by `scripts/copy_data.sh`.
+- `python/talon/`: Python package. `guidance.py` (NLGL), `mission.py`, `state_machine.py`, `sensors.py`, `motors.py`, `battery.py`, `avoidance.py`, `mavlink_sil.py`, `plotting.py`, `export_json.py`, `animation.py`.
+- `python/sims/`: seven `scenario_*.py` runs, `monte_carlo.py`, and `run_all.py` validation driver.
+- `python/tests/`: pytest suites.
+- `public/data/`, `public/videos/`: committed app assets, staged by `scripts/copy_data.sh`.
+- `docs/`: `conventions.md` plus `architecture.md`, `decisions.md`, `research.md`, `reviews.md`, `tests.md`, `videos/`, `portfolio/`.
 
 ## Status
 

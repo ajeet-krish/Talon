@@ -2,14 +2,34 @@
 
 Last updated: 2026-10-17
 
+## Repository restructure (2026-10-17)
+
+The web app moved to the repository root, the C++ core to `core/`, and the
+Python package, simulations, and tests to `python/`. Every suite was re-run at
+the new paths; the only code changes were path configuration.
+
+| Suite | Command | Result |
+|-------|---------|--------|
+| C++ kernel (Google Test) | `./build/talon_tests` | 34 pass |
+| Python (pytest) | `uv run pytest python/tests/ -q` | 186 pass |
+| Config + store + utils (vitest) | `npm test` (repo root) | 60 pass |
+| Validation driver | `uv run python python/sims/run_all.py --skip-video --skip-fingerprint` | 25/25 checks, 7/7 scenario asserts |
+| Typecheck + production build | `npm run build` | clean |
+
+Path-only changes: `CMakeLists.txt` (`core/include`, `core/tests`, and the
+`python/talon` extension output dir), `pyproject.toml` (packages, testpaths,
+pythonpath), `python/sims/run_all.py` (`PY_ROOT`/`REPO_ROOT`, pytest path),
+`.github/workflows/ci.yml` (pytest path plus a new web job), and
+`scripts/copy_data.sh` (repository-root paths).
+
 ## FlightLab Phase 3: unified entry point (2026-10-17)
 
 | Suite | Command | Result |
 |-------|---------|--------|
 | C++ kernel (Google Test) | `./build/talon_tests` | 34 pass |
-| Python (pytest) | `uv run pytest tests/ -q` | 186 pass |
-| Config + store + utils (vitest) | `npm test` (talon-replay) | 60 pass |
-| Validation driver | `uv run python sims/run_all.py --skip-fingerprint` | 25/25 checks, 7/7 scenario asserts |
+| Python (pytest) | `uv run pytest python/tests/ -q` | 186 pass |
+| Config + store + utils (vitest) | `npm test` (repo root) | 60 pass |
+| Validation driver | `uv run python python/sims/run_all.py --skip-fingerprint` | 25/25 checks, 7/7 scenario asserts |
 | Typecheck | `npm run typecheck` | clean |
 | Production build | `npm run build` | clean, 629 modules |
 
@@ -35,7 +55,7 @@ Last updated: 2026-10-17
 
 ### Regeneration verification
 
-- `sims/run_all.py` regenerated `plots/json/*.json` plus `plots/json/validation.json`
+- `python/sims/run_all.py` regenerated `plots/json/*.json` plus `plots/json/validation.json`
   and `docs/videos/*.mp4`. The four previously committed MP4s were reproduced
   byte-for-byte (`git diff --stat -- docs/videos/` is empty); only the new
   `obstacle_field.mp4` was added.

@@ -61,7 +61,7 @@ What it does, in order:
    logs a warning and never fails the validation.
 9. Writes plots/validation_report.md (markdown table: Test, Target,
    Achieved, Pass) plus plots/json/validation.json (the same rows in
-   machine-readable form, consumed by the talon-replay Metrics view), and
+   machine-readable form, consumed by the FlightLab Metrics view), and
    prints the same summary to stdout.
 10. With --monte-carlo (default off): after the main validation, runs the
     Sprint 2.2 Monte Carlo sweep over the waypoint circuit
@@ -89,9 +89,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+# run_all.py lives at python/sims/run_all.py. PY_ROOT makes `sims` and the
+# editable `talon` package importable; REPO_ROOT (its parent) owns the
+# plots/, docs/, and build/ directories the driver reads and writes.
+PY_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = PY_ROOT.parent
+if str(PY_ROOT) not in sys.path:
+    sys.path.insert(0, str(PY_ROOT))
 
 import numpy as np
 
@@ -266,7 +270,7 @@ def _count_pytest() -> int | None:
     """Number of pytest tests via collection (no execution)."""
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "tests/", "-q", "--collect-only"],
+            [sys.executable, "-m", "pytest", "python/tests/", "-q", "--collect-only"],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -974,8 +978,8 @@ def _write_report(rows: list[ReportRow], plot_paths: list[str]) -> Path:
 def _write_report_json(rows: list[ReportRow]) -> Path:
     """Write plots/json/validation.json, the machine-readable report.
 
-    The talon-replay Metrics view fetches this file (copied into the app by
-    talon-replay/scripts/copy_data.sh), so the web report tracks the driver's
+    The FlightLab Metrics view fetches this file (copied into the app by
+    scripts/copy_data.sh), so the web report tracks the driver's
     output instead of a hand-maintained table.
     """
     JSON_DIR.mkdir(parents=True, exist_ok=True)

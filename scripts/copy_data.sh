@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Refresh replay telemetry and recordings from the Talon simulator.
-# From the Talon repo root: uv run python sims/run_all.py
+# Refresh FlightLab telemetry and recordings from the Talon simulator.
+# From the repository root: uv run python python/sims/run_all.py
 # (regenerates plots/json/*.json including validation.json, and
-# docs/videos/*.mp4), then from this app directory:
+# docs/videos/*.mp4), then from the repository root:
 #   scripts/copy_data.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_DIR="$(dirname "$SCRIPT_DIR")"
-REPO_DIR="$(dirname "$APP_DIR")"
-JSON_DIR="$REPO_DIR/plots/json"
-VIDEO_DIR="$REPO_DIR/docs/videos"
-DATA_DEST="$APP_DIR/public/data"
-VIDEO_DEST="$APP_DIR/public/videos"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+JSON_DIR="$ROOT_DIR/plots/json"
+VIDEO_DIR="$ROOT_DIR/docs/videos"
+DATA_DEST="$ROOT_DIR/public/data"
+VIDEO_DEST="$ROOT_DIR/public/videos"
 
 SCENARIOS=(gps_outage wind emergency obstacle_field)
 VIDEOS=(waypoints gps_outage wind emergency obstacle_field)

@@ -3,7 +3,7 @@
     "scenario": "wind",
     "seed": 20261012,
     "schema_version": "1.1",
-    "generated_utc": "2026-10-17T23:00:12Z",
+    "generated_utc": "2026-10-17T23:38:31Z",
     "sample_count": 6000,
     "duration_s": 59.99,
     "dt": 0.01,

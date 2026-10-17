@@ -6,8 +6,9 @@ Last updated: 2026-10-17
 
 ### D1: Extend talon-replay in place, no new app
 
-**Decision.** The interactive visual tool evolves `talon-replay/` into a
-unified present-and-run experience. No separate web app.
+**Decision.** The interactive visual tool evolved the existing replay app
+(then `talon-replay/`, since D16 the repository root) into a unified
+present-and-run experience. No separate web app.
 
 **Rationale.** talon-replay already owns schema consumption, playback
 math, the phase timeline signature, vitest coverage, and the GitHub
@@ -59,7 +60,7 @@ valid; the validator checks the block only when present.
 
 **Rationale.** The exporter is the single source of truth for the JSON
 contract. Keeping the validator lenient on the new key means existing
-`plots/json/*.json` files and the talon-replay TS types do not break on
+`plots/json/*.json` files and the web app TS types do not break on
 the first deploy.
 
 ### D5: Matplotlib video pipeline untouched
@@ -200,15 +201,37 @@ scenario cheap.
 ### D15: Recordings staged into public/videos by copy_data.sh
 
 **Decision.** The five MP4s are copied from `docs/videos/` into
-`talon-replay/public/videos/` and committed, mirroring how `plots/json/*.json`
+`public/videos/` and committed, mirroring how `plots/json/*.json`
 is copied into `public/data/`.
 
 **Rationale.** The recordings are small (about 1.6 MB total) and static
 hosting must serve them from `dist`. Committing keeps the app self-contained,
-so a build never depends on the monorepo layout or a prebuild copy step.
+so a build never depends on the archive layout or a prebuild copy step.
 
 **Trade-off.** The MP4 bytes exist twice in the repository. Acceptable at
 this size; regenerate with `copy_data.sh` after `run_all.py`.
+
+## Repository restructure (2026-10-17)
+
+### D16: Web app at the repository root, core/ and python/ for the rest
+
+**Decision.** The web app moved to the repository root (it is the product:
+Talon FlightLab). The header-only C++ kernel moved to `core/`, and the Python
+package, simulations, and tests moved to `python/`. Vite `base` becomes `/`,
+so GitHub Pages serves the app at the repository Pages root.
+
+**Rationale.** One repository, one product: the simulator ships as the root
+app rather than as a `talon-replay/` subfolder. The three trees gain single
+owners (web, C++, Python), which also removes the `src/` collision between the
+web source and the previous Python `src/` layout.
+
+**Trade-off.** The Python package moved out of the idiomatic `src/` layout, so
+`pyproject.toml`, the driver's root math (`PY_ROOT`/`REPO_ROOT`), CMake's
+extension output directory, CI, and the docs had to move with it. Mitigated by
+re-running every suite at the new paths (see docs/tests.md).
+
+**Supersedes** the location named in D1, not its intent (still one app, no
+fork).
 
 ## Open decisions (Phase 4)
 

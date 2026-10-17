@@ -1,16 +1,27 @@
-# Deploy the talon-replay app to GitHub Pages.
+# Deploy the Talon FlightLab web app to GitHub Pages.
 #
-# talon-replay lives in the Talon monorepo, so build steps run from the
-# talon-replay/ subdirectory and only replay changes trigger the deploy.
-# Pages serves the app under /talon-replay/ (see base in vite.config.ts);
-# the full URL depends on the final repo name.
+# The web app is the repository root (Vite base '/'), so the build runs at the
+# root and Pages serves the site at https://<user>.github.io/<repo>/. Only web
+# changes trigger a deploy; the C++/Python core is covered by ci.yml.
 name: Deploy to GitHub Pages
 
 on:
   push:
     branches: [main]
     paths:
-      - "talon-replay/**"
+      - "src/**"
+      - "public/**"
+      - "scripts/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.ts"
+      - "vitest.config.ts"
+      - "tsconfig.json"
+      - "tsconfig.build.json"
+      - "tailwind.config.js"
+      - "postcss.config.js"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
 permissions:
@@ -31,17 +42,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: talon-replay/package-lock.json
       - name: Install dependencies
         run: npm ci
-        working-directory: talon-replay
       - name: Build
         run: npm run build
-        working-directory: talon-replay
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: talon-replay/dist
+          path: dist
 
   deploy:
     needs: build

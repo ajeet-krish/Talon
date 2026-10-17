@@ -32,7 +32,7 @@ FetchContent_Declare(
 # Header-only interface library: the entire C++ kernel.
 add_library(talon_headers INTERFACE)
 target_include_directories(talon_headers
-    INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/cpp/include
+    INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/core/include
 )
 target_compile_features(talon_headers INTERFACE cxx_std_17)
 
@@ -56,10 +56,10 @@ endif()
 if(BUILD_TESTS)
     enable_testing()
     add_executable(talon_tests
-        cpp/tests/test_controller.cpp
-        cpp/tests/test_dynamics.cpp
-        cpp/tests/test_ekf.cpp
-        cpp/tests/test_wind.cpp
+        core/tests/test_controller.cpp
+        core/tests/test_dynamics.cpp
+        core/tests/test_ekf.cpp
+        core/tests/test_wind.cpp
     )
     target_link_libraries(talon_tests PRIVATE talon_headers GTest::gtest_main)
     include(GoogleTest)
@@ -78,7 +78,7 @@ if(BUILD_BINDINGS)
     target_link_libraries(_core PRIVATE talon_headers)
 
     # Land the module inside the Python package so `import talon._core` works.
-    set(_talon_pkg_dir ${CMAKE_CURRENT_SOURCE_DIR}/src/talon)
+    set(_talon_pkg_dir ${CMAKE_CURRENT_SOURCE_DIR}/python/talon)
     set_target_properties(_core PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY ${_talon_pkg_dir}
         RUNTIME_OUTPUT_DIRECTORY ${_talon_pkg_dir}

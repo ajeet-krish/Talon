@@ -36,7 +36,7 @@ _HOVER_ACCEL = np.array([0.0, 0.0, -GRAVITY])
 def _quiet_config() -> EKFConfig:
     """Low-noise EKF config for deterministic perfect-sensor tests.
 
-    Mirrors the C++ quiet_config() in cpp/tests/test_ekf.cpp so the Python
+    Mirrors the C++ quiet_config() in core/tests/test_ekf.cpp so the Python
     convergence checks do not depend on the noise floor.
     """
     config = EKFConfig()

@@ -27,7 +27,7 @@ PYBIND11_MODULE(_core, m) {
         "Talon C++ computational kernel: rigid-body dynamics, wind, cascaded "
         "PD autopilot, MEKF state estimator, constants.";
 
-    // Constants (single source of truth: cpp/include/talon/constants.hpp).
+    // Constants (single source of truth: core/include/talon/constants.hpp).
     m.attr("MASS") = talon::MASS;
     m.attr("GRAVITY") = talon::GRAVITY;
     m.attr("ARM_LENGTH") = talon::ARM_LENGTH;
@@ -138,7 +138,7 @@ PYBIND11_MODULE(_core, m) {
                        "Rate D gains ((N*m) per rad/s)")
         .def_static("defaults", &ControlGains::defaults,
                     "Analytically derived Crazyflie-class starting gains "
-                    "documented in cpp/include/talon/controller.hpp.")
+                    "documented in core/include/talon/controller.hpp.")
         .def("__repr__", [](const ControlGains& g) {
             return "ControlGains(kp_pos=[" + std::to_string(g.kp_pos.x()) +
                    ", " + std::to_string(g.kp_pos.y()) + ", " +
@@ -160,7 +160,7 @@ PYBIND11_MODULE(_core, m) {
         .def(py::init<const ControlGains&, const VehicleParams&>(),
              py::arg("gains"), py::arg("params") = VehicleParams{},
              "Cascaded PD autopilot (position outer loop, attitude inner "
-             "loop; see cpp/include/talon/controller.hpp for conventions).")
+             "loop; see core/include/talon/controller.hpp for conventions).")
         .def("step", &CascadedController::step,
              py::arg("estimated_state"), py::arg("pos_desired"),
              py::arg("vel_desired"), py::arg("yaw_desired"), py::arg("dt"),
@@ -235,7 +235,7 @@ PYBIND11_MODULE(_core, m) {
              "15-state multiplicative error-state KF (MEKF). Error state "
              "ordering [dp(3), dv(3), dtheta(3), dbg(3), dba(3)]; body-frame "
              "(right) attitude error q_true = q_est (x) dq (see "
-             "cpp/include/talon/ekf.hpp).")
+             "core/include/talon/ekf.hpp).")
         .def("initialize", &Ekf::initialize, py::arg("initial"),
              "Set the nominal state and P to the configured initial "
              "covariances.")

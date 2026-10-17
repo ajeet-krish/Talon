@@ -7,10 +7,36 @@ Last updated: 2026-10-17
 Talon is a single-vehicle UAV GNC stack (C++17 header-only kernel via
 pybind11, Python mission/SIL/analysis glue) plus a TypeScript flight tool.
 Phase 1 added deterministic obstacle avoidance and the schema 1.1 obstacle
-contract; Phase 2 added the interactive 3D obstacle scene; Phase 3 turns the
+contract; Phase 2 added the interactive 3D obstacle scene; Phase 3 turned the
 replay app into Talon FlightLab, a single entry point carrying four
 sections: the 3D replay, the telemetry charts, the metrics report, and the
 recorded flight videos.
+
+### Repository layout
+
+The web app owns the repository root, so static hosting serves `dist/` from
+the Pages root with no subpath.
+
+    /                      web app (Vite + React 19 + R3F)
+      index.html  package.json  vite.config.ts  tsconfig*.json
+      src/                 views, components, utils, store, data, hooks
+      public/data/         exported telemetry JSON (committed)
+      public/videos/       recorded MP4s (committed)
+      scripts/             copy_data.sh
+    core/                  header-only C++17 kernel + Google Tests
+      include/talon/       dynamics, wind, controller, ekf, types, constants
+      tests/
+    bindings/pytalon.cpp   pybind11 module talon._core
+    python/                Python package, simulations, and tests
+      talon/               package (CMake drops _core*.so here)
+      sims/                scenarios + run_all.py validation driver
+      tests/
+    docs/                  conventions, architecture, decisions, reviews, tests
+    CMakeLists.txt  pyproject.toml  uv.lock
+
+Import path note: `python/` is on the pytest and driver `sys.path`, so
+`import talon` and `import sims` resolve without an install step; the
+editable install additionally maps the `talon` package to `python/talon`.
 
 ### Data flow (one 200 Hz SIL step)
 
@@ -37,11 +63,11 @@ recorded flight videos.
     export_sil_result_json (schema 1.1, obstacles serialized as top-level key)
         |
         v
-    talon-replay (R3F scene renders ObstacleField from the JSON)
+    src/ web app (R3F scene renders ObstacleField from the JSON)
 
 ### Module ownership
 
-| Layer | C++17 kernel (`cpp/include/talon/`) | Python (`src/talon/`) |
+| Layer | C++17 kernel (`core/include/talon/`) | Python (`python/talon/`) |
 |-------|--------------------------------------|------------------------|
 | Dynamics / RK4 | `dynamics.hpp` (`propagate`) | re-export only |
 | Wind | `wind.hpp` (`DrydenWind`) | re-export only |
@@ -64,9 +90,9 @@ list of `{id, center_ned, radius_m}` objects. Old 1.0 documents (without
 the `obstacles` key) remain valid; the validator checks the block only
 when present.
 
-### talon-replay rendering layers (Phase 2)
+### Web app rendering layers (Phase 2)
 
-The R3F scene (`talon-replay/src/components/scene/FlightScene.tsx`) composes
+The R3F scene (`src/components/scene/FlightScene.tsx`) composes
 static and per-frame layers over the loaded `FlightData`, plus a single
 postprocessing pass:
 
@@ -81,14 +107,14 @@ postprocessing pass:
 | Keep-out zones | `ObstacleField.tsx` | `obstacles` + live clearance |
 | Bloom | `FlightScene.tsx` | `@react-three/postprocessing` |
 
-Clearance math lives in one pure module, `talon-replay/src/utils/clearance.ts`
+Clearance math lives in one pure module, `src/utils/clearance.ts`
 (`surfaceClearance`, `minSurfaceClearance`, `clearanceBand`), shared by
 `ObstacleField` (scene tint), the HUD (live readout), and the legend (flight
 minimum). The 2.07 m flight-minimum the legend prints is the same quantity
 the Python CI asserts, so the web readout and the validation report cannot
 drift.
 
-### talon-replay FlightLab shell (Phase 3)
+### Web app FlightLab shell (Phase 3)
 
 The app is one entry point with four sections, switched by
 `useFlightStore.activeView` and rendered by `ViewTabs` in the header:
@@ -113,7 +139,7 @@ Two data paths feed the screens, both derived rather than hand-maintained:
         -> summarizeRun     -> Metrics run summary (duration, EKF RMSE,
                                maxima, distance, min clearance)
 
-    sims/run_all.py -> plots/json/validation.json -> Metrics gates table
+    python/sims/run_all.py -> plots/json/validation.json -> Metrics gates table
 
 Chart helpers live in one pure module, `src/utils/chart.ts` (min/max bucket
 decimation, domain, scales, path builder), and the series derivation in
@@ -122,11 +148,11 @@ environment; no charting dependency is added.
 
 ### Recording pipeline
 
-    sims/run_all.py -> docs/videos/*.mp4 (five recordings)
+    python/sims/run_all.py -> docs/videos/*.mp4 (five recordings)
         -> scripts/copy_data.sh
-        -> talon-replay/public/videos/*.mp4 (committed, served statically)
+        -> public/videos/*.mp4 (committed, served statically)
 
-### talon-replay data-source abstraction (Phase 4-ready)
+### Web app data-source abstraction (Phase 4-ready)
 
 The replay app consumes schema 1.1 JSON via `useFlightStore.loadScenario`.
 The renderer layers (`FlightScene`, `TrajectoryRibbon`, `DroneMarker`,

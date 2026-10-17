@@ -1,4 +1,4 @@
-"""MEKF state estimator (single source of truth: cpp/include/talon/ekf.hpp).
+"""MEKF state estimator (single source of truth: core/include/talon/ekf.hpp).
 
 Thin re-export of the C++ 15-state multiplicative error-state Kalman filter
 exposed through the pybind11 extension `talon._core`. There is intentionally

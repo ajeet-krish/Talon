@@ -1,4 +1,4 @@
-"""Cascaded PD autopilot (single source of truth: cpp/include/talon/controller.hpp).
+"""Cascaded PD autopilot (single source of truth: core/include/talon/controller.hpp).
 
 This module is a thin re-export of the C++ controller exposed through the
 pybind11 extension `talon._core`. There is intentionally no Python

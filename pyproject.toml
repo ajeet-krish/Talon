@@ -22,15 +22,16 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/talon"]
+packages = ["python/talon"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-# Make the repo root importable so tests can reach the sims/ package
-# (sims is not part of the installed wheel, which only ships src/talon).
-pythonpath = ["."]
+testpaths = ["python/tests"]
+# Put python/ on the path so tests can reach the talon package and the sims
+# package (sims is not part of the installed wheel, which only ships
+# python/talon).
+pythonpath = ["python"]
 
 # The native extension `talon._core` is built by CMake, not by the Python
 # build backend. From the repository root:
 #   cmake -B build && cmake --build build -j
-# which drops _core*.so into src/talon/. This file only manages Python deps.
+# which drops _core*.so into python/talon/. This file only manages Python deps.

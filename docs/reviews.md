@@ -4,11 +4,11 @@ Last updated: 2026-10-17
 
 ## FlightLab Phase 3: unified entry point (2026-10-17)
 
-Scope: the four-section shell in `talon-replay/src/views/` and `App.tsx`, the
+Scope: the four-section shell in `src/views/` and `App.tsx`, the
 new pure utilities (`src/utils/chart.ts`, `src/utils/telemetry.ts`,
 `src/utils/format.ts`), the SVG chart (`src/components/charts/LineChart.tsx`),
-the `validation.json` sidecar in `sims/run_all.py`, and the video staging in
-`talon-replay/scripts/copy_data.sh`.
+the `validation.json` sidecar in `python/sims/run_all.py`, and the video staging
+in `scripts/copy_data.sh`.
 
 Verdict: PASS.
 
@@ -25,7 +25,7 @@ Verdict: PASS.
   non-decreasing times, so the polyline cannot zigzag.
 - PASS: `src/utils/telemetry.ts` normalizes signed zero on the altitude
   channel (`altitudeOf`), so a zero down value renders as `0` and not `-0.0`.
-- PASS: `sims/run_all.py` writes `validation.json` from the same `ReportRow`
+- PASS: `python/sims/run_all.py` writes `validation.json` from the same `ReportRow`
   list as the markdown report, so the two cannot disagree; the driver run
   reports 25/25 with the JSON sidecar present.
 

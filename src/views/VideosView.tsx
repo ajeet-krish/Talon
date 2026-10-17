@@ -7,7 +7,7 @@ import type { ScenarioId } from '@/types/flight'
 /**
  * Videos screen: the recorded Matplotlib flights (docs/videos), the
  * publication half of the tool. The MP4s are staged into public/videos by
- * scripts/copy_videos.sh. A recording that has a matching scenario can jump
+ * scripts/copy_data.sh. A recording that has a matching scenario can jump
  * straight into the interactive replay for that run.
  */
 export function VideosView() {
@@ -88,7 +88,7 @@ export function VideosView() {
           {unavailable ? (
             <StatusPanel
               title="RECORDING UNAVAILABLE"
-              detail="run talon-replay/scripts/copy_videos.sh"
+              detail="run scripts/copy_data.sh"
               tone="error"
             />
           ) : (

@@ -1,5 +1,9 @@
-# Talon CI: build the C++17 kernel + pybind11 bindings and run both test
-# suites on every push and pull request.
+# Talon CI: build the C++17 kernel + pybind11 bindings and run the native
+# suites, and typecheck, test, and build the FlightLab web app.
+#
+# Layout: the C++ core lives in core/, the Python package and simulations in
+# python/, and the web app (Vite + React) owns the repository root. See
+# AGENTS.md for the map.
 #
 # Interpreter note: pybind11 builds the `_core` extension against the
 # Python it finds at CMake configure time. `uv sync` creates .venv but
@@ -61,4 +65,23 @@ jobs:
           # extension is missing; with this set it fails instead, so the
           # suite can never silently pass with zero tests run.
           TALON_REQUIRE_CORE: "1"
-        run: uv run pytest tests/ -q
+        run: uv run pytest python/tests/ -q
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Typecheck and production build
+        run: npm run build
