@@ -1,6 +1,75 @@
 # Talon Test Results
 
-Last updated: 2026-10-17
+Last updated: 2026-10-18
+
+## Live ground station and pacing (FlightLab Phase 6, 2026-10-18)
+
+| Suite | Command | Result |
+|-------|---------|--------|
+| Rust core (cargo) | `cargo test -p talon-core` | 181 pass |
+| Rust wasm bindings (cargo) | `cargo test -p talon-wasm` | 11 pass, run natively |
+| Python (pytest) | `uv run pytest python/tests/ -q` | 186 pass |
+| Web unit tests (vitest) | `npm test` | 135 pass (13 files) |
+| Typecheck + production build | `npm run build` | clean, 646 modules |
+| Live wasm smoke test | `npm run smoke:wasm` | all checks pass, 4 of 4 configs |
+| Served build | `npm run preview` + curl | 200 for the page, wasm module, `.wasm`, and configs |
+
+### New frontend tests (Phase 6)
+
+- `src/live/stream.test.ts` (18): the codec closes the stride with the last
+  field and reads every named offset back; a delta is appended and truncated at
+  capacity; `indexAt` floors to the newest sample at or before the requested time
+  and clamps at both ends (`0.016` resolves to the sample at `0.01`, not the one
+  at `0.02`, because a live display may not read ahead); `poseAt` interpolates
+  position, velocity, and estimate between bracketing samples, holds at the
+  newest sample rather than extrapolating, takes the shortest attitude path
+  across a quaternion sign flip, and refuses the empty buffer; each sample is
+  tagged with the phase in effect when it was recorded, including as the core's
+  timeline grows in later frames; the derived series are one per documented name
+  and carry the right values from a written block.
+- `src/live/pacing.test.ts` (13): nothing advances before start; 1x is one
+  second of sim per second of wall time; the rate scales the target (1, 4, 16);
+  `Infinity` targets the end with no wall time; pause holds and resume continues;
+  a rate change re-bases on the current sim time so the vehicle never snaps; the
+  run never passes the end; a 30 s tab-switch delta is clamped to `MAX_FRAME_MS`
+  instead of teleporting; a negative or zero delta is ignored; reset returns to
+  zero stopped; a run can start from a non-zero sim time; the rate labels are
+  `1x`, `16x`, `MAX`.
+- `src/live/view.test.ts` (10): the mission frame includes the takeoff column,
+  contains every waypoint and the far edge of each keep-out shell, and falls back
+  to a readable volume for a degenerate config; `rollPitchYaw` reads level flight
+  as zero, nose-up pitch as positive, a right roll as positive, a right turn as
+  positive heading, and normalizes a non-unit quaternion; the scene-from-NED
+  quaternion is the documented quarter turn.
+- `src/live/sim.test.ts` (8 added): the streaming passthroughs. `sampleCount`,
+  `drain` (with the from-index forwarded to the session), `phases` (including a
+  malformed timeline degrading to an empty list), `gpsCounts`, and `ekfFlags`.
+- `src/utils/interpolation.test.ts` (2 replaced by 3): `nedToScene` puts altitude
+  on the up axis, keeps a level vehicle on the ground plane, and maps the NED
+  basis onto the scene basis (north to +x, east to +z, down to -y), which is the
+  assertion the old test was missing.
+
+### Live wasm smoke test (`npm run smoke:wasm`)
+
+Flown through the built `public/wasm-rust/` module the way the page drives it,
+one frame of steps at a time, draining each delta:
+
+| Config | Samples | Last time | Last altitude | Phases | Outcome |
+|--------|---------|-----------|---------------|--------|---------|
+| hover | 6000 | 59.99 s | 9.99 m | 4 | holds altitude |
+| waypoints | 12000 | 119.99 s | 0.00 m | 8 | 5 of 5 waypoints, landed |
+| obstacle_field | 7000 | 69.99 s | 0.00 m | 8 | 3 keep-out zones in the document, landed |
+| wind | 6000 | 59.99 s | 9.99 m | 4 | holds altitude |
+
+Every config: the streamed stride is 36 doubles and matches the page's decoder,
+one sample is recorded per control step, draining returns exactly the recorded
+samples with each delta aligned to the cursor, the recorder's capacity is never
+exceeded, the stepped document is schema 1.1 with every sample present, the
+estimator converges without diverging, and the last sample lands one control step
+short of the requested duration. A paced run of the hover config at 1x over
+60 Hz frames reaches the end in 3600 frames (60.00 s of wall time for 60.00 s of
+sim) and never lags the wall clock by more than a frame, which is the check that
+the per-frame step rounding does not drift.
 
 ## In-browser live run (FlightLab Phase 4, 2026-10-17)
 

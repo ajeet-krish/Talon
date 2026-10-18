@@ -25,6 +25,7 @@ npm install
 npm run dev                                        # vite dev server, base /Talon/ (localhost:5173/Talon/)
 npm run build                                      # typecheck + production build into dist/
 npm test                                           # vitest unit tests
+npm run smoke:wasm                                 # headless live-run check against public/wasm-rust
 scripts/copy_data.sh                               # refresh public/data + public/videos from the driver output
 
 uv run python python/sims/export_live_configs.py   # -> public/data/live/configs.json + fixtures
@@ -41,7 +42,7 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 
 ## Project Map
 
-- `src/`: web app source. `views/` (Replay, Telemetry, Metrics, Videos, Run), `components/` (scene, charts, ui), `live/` (engine loader plus the thin LiveSim seam to the native run), `utils/` (pure), `store/` (Zustand), `data/` (scenario + recording + live-run metadata), `hooks/`.
+- `src/`: web app source. `views/` (Replay, Telemetry, Metrics, Videos, Run), `components/` (scene, live, charts, ui), `live/` (engine loader, sample recorder, pacer, display geometry, thin LiveSim seam), `utils/` (pure), `store/` (Zustand), `data/` (scenario + recording + live-run metadata), `hooks/`.
 - `core/src/`: the Rust autopilot, `talon-core`. `sim.rs` (SIL runner), `scenario.rs` (browser config), `export.rs` (schema 1.1 document), `dynamics.rs`, `wind.rs`, `controller.rs`, `ekf.rs`, `guidance.rs`, `mission.rs`, `state_machine.rs`, `sensors.rs`, `motors.rs`, `battery.rs`, `rng.rs`, `math.rs`, `types.rs`, `constants.rs`.
 - `wasm/`: wasm-bindgen crate exposing the stepping `Session` to the browser (`src/lib.rs`), built by `build.sh` into `public/wasm-rust/`.
 - `core/include/talon/` and `core/tests/`: the retiring C++17 kernel and its Google Tests.
@@ -65,8 +66,8 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 | Phase 4 | In-browser WASM run | Complete |
 | Phase 5a | Rust `talon-core` library + native tests | Complete |
 | Phase 5b | WASM + PyO3 bindings, generated type mirrors, retire the C++ stack | In Progress |
-| Phase 6 | GCS shell with live telemetry and teaching captions | Not started |
-| Phase 7 | Altitude legibility in the scene | Not started |
+| Phase 6 | GCS shell with live telemetry and teaching captions | Complete |
+| Phase 7 | Altitude legibility in the scene | In Progress |
 | Phase 8 | Mission authoring (waypoints, wind, faults) | Not started |
 | Phase 9 | Reactive avoidance in Rust, with validation | Not started |
 

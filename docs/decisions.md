@@ -465,6 +465,70 @@ megabytes of text parsed on completion rather than a frame stream. That is fine
 for the current UI, which shows a finished run, and the zero-copy typed-array
 views the live GCS display wants are Phase 6 work on the same session object.
 
+### D26: The live run is paced on the page, and the GCS has its own view
+
+**Decision.** Phase 6 adds a dedicated live view: its own scene, its own
+instrument rail, and a playback rate control (1x, 4x, 16x, and a maximum
+limited only by the frame budget). Pacing lives entirely in TypeScript
+(`src/live/pacing.ts`): the run view asks how far the run should have got by
+now and advances the native session by that many plant steps, then reveals
+whatever it recorded. The core steps as fast as it is told and has no notion
+of time passing. On completion the run publishes its document through
+`setLiveRun` and the replay, telemetry, and metrics sections work unchanged.
+
+**Rationale.** The alternative considered was to grow a `FlightData` document
+in the store as the run progressed, which would have reused the existing
+scene. It was rejected for three concrete reasons. `src/utils/telemetry.ts`
+takes `data.time_s.length` as N, so the metrics view would report a different
+flight depending on when it was opened. `TrajectoryRibbon` builds its geometry
+once per document and would need a refill hook plus a camera framed over a
+trajectory of preallocated zeros. And every frame would reconcile a document
+whose arrays are hundreds of kilobytes. A separate view keeps the recorded
+path exactly as it was and gives the live path a recorder sized to the
+scenario, filled from a streamed delta.
+
+Pacing on the page rather than in the core is what keeps a watched run and a
+batch run the same flight: the core's trajectory does not depend on how it was
+revealed, so the numbers a viewer reads are the numbers a batch run produces.
+`Infinity` is offered as a rate because the fastest a run can go is a
+legitimate thing to want, and it costs nothing to express once pacing is a
+display concern.
+
+**Trade-off.** The web app now assembles a scene twice: the recorded scene
+(`src/components/scene/`) and the live one (`src/components/live/`). They share
+the ground plane, the phase palette, and the clearance helpers, which is what
+keeps them looking like one tool, but a change to the scene language has to be
+made in both places. The rail can not reuse `src/components/charts/LineChart.tsx`
+either, because its cursor and live value come from the store clock; it has its
+own strip chart over the recorded series.
+
+### D27: A sample's phase is tagged in the recorder, and altitude is the up axis
+
+**Decision.** Two consequences of showing a live run. The recorder tags every
+sample with the flight phase in effect when it was recorded, as an index into a
+fixed palette order, so the live trail can colour itself from the data the
+recorder already has (the core's phase timeline arrives as events, not per
+sample). And `nedToScene` is `[north, -down, east]`: NED index 0 is north, index
+1 is east, index 2 is down, and the scene puts down on -y so up is up.
+
+**Rationale.** The phase tag keeps presentation out of the recorder (it stores
+an index, not a colour) while avoiding a scan of the timeline per vertex.
+
+The axis mapping corrects a real bug that this phase surfaced. The scene had
+been reading index 1 as up and index 2 as depth, contradicting its own comment
+and every other consumer: `deriveTelemetry` reads altitude as the negated index
+2, `python/talon/plotting.py` plots `home_d - truth_position[:, 2]` for altitude
+and `truth_position[:, 1]` for east, and the recorded climbs show about
+-2.5 m/s on index 2 during takeoff. So the charts said the vehicle climbed to
+10 m while the scene drew it at whatever its east coordinate happened to be,
+mostly behind the opaque ground disc. The heading had the same misreading
+(`atan2(north, down)`), as did the wind field's advection.
+
+**Trade-off.** None worth naming: the mapping is now a documented rotation with
+a determinant of +1, so geometry is not mirrored, and the replay framing and
+the vehicle's nose both changed for the better. The change touches the replay
+view as well as the live one, which is correct because it was wrong in both.
+
 ## Open decisions (resolved at Phase 4)
 
 - Acceptance metrics for v2 reactive avoidance: still open (no live
