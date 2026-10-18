@@ -118,7 +118,23 @@ describe('buildPhaseSegments', () => {
 })
 
 describe('nedToScene', () => {
-  it('maps NED to scene with up = -down', () => {
-    expect(nedToScene([3, -2, 5])).toEqual([3, 2, 5])
+  it('puts altitude on the up axis, not depth', () => {
+    // A vehicle 3 m north, 5 m east, 2 m up. The chart altitude is 2 m, so the
+    // scene y must be 2, and east must land on the scene z axis.
+    expect(nedToScene([3, 5, -2])).toEqual([3, 2, 5])
+  })
+
+  it('keeps a level vehicle on the ground plane', () => {
+    // Zero down is zero height, which is what the ground grid sits at.
+    expect(nedToScene([12, -7, 0])).toEqual([12, 0, -7])
+  })
+
+  it('is a pure rotation, so the NED basis lands on the scene basis', () => {
+    // North stays +x, east becomes +z, down becomes -y (so up is +y). The
+    // mapping matrix is [[1,0,0],[0,0,-1],[0,1,0]], determinant +1: a pure
+    // rotation, no mirrored geometry, no crossed products.
+    expect(nedToScene([1, 0, 0])).toEqual([1, 0, 0])
+    expect(nedToScene([0, 1, 0])).toEqual([0, 0, 1])
+    expect(nedToScene([0, 0, 1])).toEqual([0, -1, 0])
   })
 })

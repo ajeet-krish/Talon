@@ -82,8 +82,9 @@ export function WindParticles({ data }: { data: FlightData }) {
     if (pointsRef.current) pointsRef.current.visible = active
     if (!active) return
     const windNed = sampleVec3(currentTime, data.time_s, data.wind_ned)
-    const [wn, , we] = windNed
-    const wUp = -windNed[1]
+    // NED is [north, east, down]; the scene is [north, up, east].
+    const [wn, we, wd] = windNed
+    const wUp = -wd
     const pos = geometry.getAttribute('position') as THREE.BufferAttribute
     const arr = pos.array as Float32Array
     for (let i = 0; i < PARTICLE_COUNT; i++) {

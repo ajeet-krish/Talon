@@ -26,7 +26,9 @@ export function DroneMarker({ data }: { data: FlightData }) {
     g.position.set(x, y, z)
     const speed = Math.hypot(velNed[0], velNed[1], velNed[2])
     if (speed > 0.05) {
-      heading.current = Math.atan2(velNed[0], velNed[2])
+      // Scene x is north and scene z is east, so the yaw that points the nose
+      // (local +z) along the ground track is atan2(north, east) = atan2(v[0], v[1]).
+      heading.current = Math.atan2(velNed[0], velNed[1])
     }
     g.rotation.y = heading.current
 

@@ -3,16 +3,27 @@ import type { FlightPhase, PhaseEvent, Vec3 } from '@/types/flight'
 /**
  * Coordinate conventions.
  *
- * Telemetry is NED (north, east, down): +x north, +y down, +z east.
- * Three.js scene is a right-handed frame with +y up:
+ * Telemetry is NED (north, east, down): index 0 north, index 1 east, index 2
+ * down. That is the order the core records, the Python analyst plots, and
+ * `deriveTelemetry` reads, so altitude is the negated index 2 and east is
+ * index 1.
+ *
+ * The Three.js scene is a right-handed frame with +y up and the ground grid on
+ * y = 0:
  *
  *   scene = [n, -d, e]   i.e.   x = north, y = up (= -down), z = east
  *
- * The transform matrix has determinant +1, so it is a pure rotation and
- * preserves handedness (no mirrored geometry or crossed products).
+ * This is a pure rotation (determinant +1), so handedness is preserved and no
+ * geometry is mirrored. Getting it wrong is not cosmetic: it puts altitude on
+ * the depth axis, which parks the vehicle on the ground plane while the charts
+ * report it climbing.
  */
 export function nedToScene(v: Vec3): [number, number, number] {
-  return [v[0], -v[1], v[2]]
+  const up = -v[2]
+  // Canonicalize negative zero: a level vehicle is at height 0, and a readout
+  // that prints "-0.0" or a strict equality check that fails on -0 is a bug
+  // report waiting to happen.
+  return [v[0], up === 0 ? 0 : up, v[1]]
 }
 
 /**
