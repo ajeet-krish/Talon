@@ -13,6 +13,7 @@ pub mod controller;
 pub mod dynamics;
 pub mod guidance;
 pub mod ekf;
+pub mod export;
 pub mod math;
 pub mod mission;
 pub mod motors;
