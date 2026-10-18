@@ -11,10 +11,12 @@ import { describe, expect, it } from 'vitest'
 import {
   LIVE_SERIES,
   LiveBuffer,
+  PHASE_ORDER,
   SAMPLE_FIELD,
   SAMPLE_STRIDE,
   decodeSample,
   emptyFrame,
+  phaseIndexOf,
 } from './stream'
 
 type FieldName = keyof typeof SAMPLE_FIELD
@@ -207,5 +209,91 @@ describe('LiveBuffer', () => {
   it('exposes one series per documented name', () => {
     const buf = new LiveBuffer(1)
     expect(Object.keys(buf.series).sort()).toEqual([...LIVE_SERIES].sort())
+  })
+
+  it('interpolates the pose between samples so the draw does not step', () => {
+    const buf = new LiveBuffer(8)
+    buf.append(
+      concat([
+        block(0, { TRUTH_POSITION: [0, 0, -10], TRUTH_VELOCITY: [2, 0, -1] }),
+        block(0.05, { TRUTH_POSITION: [0.1, 0.2, -11], TRUTH_VELOCITY: [4, 0, -3] }),
+      ]),
+    )
+    const frame = emptyFrame()
+    expect(buf.poseAt(0.025, frame)).toBe(true)
+    expect(frame.time).toBeCloseTo(0.025, 6)
+    expect(frame.truthPosition[0]).toBeCloseTo(0.05, 6)
+    expect(frame.truthPosition[1]).toBeCloseTo(0.1, 6)
+    expect(frame.truthPosition[2]).toBeCloseTo(-10.5, 6)
+    expect(frame.truthVelocity[0]).toBeCloseTo(3, 6)
+    expect(frame.truthVelocity[2]).toBeCloseTo(-2, 6)
+  })
+
+  it('holds at the newest sample rather than extrapolating', () => {
+    const buf = new LiveBuffer(8)
+    buf.append(concat([block(0, { TRUTH_POSITION: [0, 0, -10] }), block(0.01, { TRUTH_POSITION: [1, 0, -10] })]))
+    const frame = emptyFrame()
+    buf.poseAt(99, frame)
+    expect(frame.truthPosition[0]).toBeCloseTo(1, 6)
+    buf.poseAt(-5, frame)
+    expect(frame.truthPosition[0]).toBeCloseTo(0, 6)
+  })
+
+  it('takes the shortest attitude path across a quaternion sign flip', () => {
+    // q and -q are the same rotation. Interpolating naively through zero would
+    // gimbal-lock the airframe; the sign flip avoids it.
+    const buf = new LiveBuffer(8)
+    buf.append(
+      concat([
+        block(0, { TRUTH_QUATERNION: [1, 0, 0, 0] }),
+        block(0.01, { TRUTH_QUATERNION: [-1, 0, 0, 0] }),
+      ]),
+    )
+    const frame = emptyFrame()
+    buf.poseAt(0.005, frame)
+    const [w] = frame.quaternion
+    expect(Math.abs(w)).toBeCloseTo(1, 6)
+  })
+
+  it('refuses to pose the empty buffer', () => {
+    const buf = new LiveBuffer(4)
+    expect(buf.poseAt(0, emptyFrame())).toBe(false)
+  })
+
+  it('tags each sample with the phase in effect when it was recorded', () => {
+    const buf = new LiveBuffer(8)
+    // The timeline arrives first, as the run view reads it before draining.
+    buf.setPhases([
+      [0, 'idle'],
+      [0, 'arm'],
+      [0.01, 'takeoff'],
+      [0.03, 'cruise'],
+    ])
+    const blocks: Float64Array[] = []
+    for (let i = 0; i < 5; i += 1) blocks.push(sample(i * 0.01))
+    buf.append(concat(blocks))
+    const names = [...buf.phaseIndex].slice(0, buf.count).map((i) => PHASE_ORDER[i])
+    expect(names).toEqual(['arm', 'takeoff', 'takeoff', 'cruise', 'cruise'])
+  })
+
+  it('keeps tagging new samples as the timeline grows', () => {
+    const buf = new LiveBuffer(8)
+    buf.setPhases([[0, 'idle'], [0, 'arm']])
+    buf.append(concat([sample(0), sample(0.01)]))
+    expect([...buf.phaseIndex].slice(0, 2).map((i) => PHASE_ORDER[i])).toEqual(['arm', 'arm'])
+    // The core reports the takeoff event, then more samples arrive.
+    buf.setPhases([[0, 'idle'], [0, 'arm'], [0.02, 'takeoff']])
+    buf.append(concat([sample(0.02), sample(0.03)]))
+    expect([...buf.phaseIndex].slice(0, 4).map((i) => PHASE_ORDER[i])).toEqual([
+      'arm',
+      'arm',
+      'takeoff',
+      'takeoff',
+    ])
+  })
+
+  it('falls back to the first phase for an unknown label', () => {
+    expect(phaseIndexOf('not-a-phase')).toBe(0)
+    expect(phaseIndexOf('cruise')).toBe(PHASE_ORDER.indexOf('cruise'))
   })
 })

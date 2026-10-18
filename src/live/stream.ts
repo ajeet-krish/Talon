@@ -18,7 +18,7 @@
  *   on arrival is what keeps the frame budget free for rendering.
  */
 
-import type { Vec3, PhaseEvent } from '@/types/flight'
+import type { Vec3, PhaseEvent, FlightPhase } from '@/types/flight'
 import { nedToScene } from '@/utils/interpolation'
 
 /** Doubles per streamed sample; mirrors `talon_core::sim::SAMPLE_STRIDE`. */
@@ -171,6 +171,31 @@ export const LIVE_SERIES = [
 export type LiveSeriesName = (typeof LIVE_SERIES)[number]
 
 /**
+ * Flight phases in palette order.
+ *
+ * A sample records which of these was in effect, as an index, so the recorder
+ * stays free of presentation and the trail can colour vertices through
+ * `PHASE_COLORS` without a lookup per vertex.
+ */
+export const PHASE_ORDER = [
+  'idle',
+  'arm',
+  'takeoff',
+  'cruise',
+  'waypoint',
+  'rtl',
+  'land',
+  'emergency',
+] as const satisfies readonly FlightPhase[]
+
+const PHASE_INDEX = new Map<string, number>(PHASE_ORDER.map((p, i) => [p, i]))
+
+/** Palette index for a phase label, or 0 (idle) for an unknown one. */
+export function phaseIndexOf(label: string): number {
+  return PHASE_INDEX.get(label) ?? 0
+}
+
+/**
  * Append-only recorder for one live run.
  *
  * Owns the decoded series, the scene-space trail, and the derived scalars. The
@@ -182,6 +207,14 @@ export class LiveBuffer {
   count = 0
   /** Sim time of the newest sample (s). */
   latestTime = 0
+  /**
+   * Sim time the scene should draw at (s).
+   *
+   * The run view writes this from the pacer once per frame. It is a plain field
+   * rather than React state on purpose: the render loop reads it directly, so a
+   * frame that only moves the clock costs no reconciliation.
+   */
+  clock = 0
   /** Phase timeline as reported by the core, oldest first. */
   phases: PhaseEvent[] = []
 
@@ -193,12 +226,20 @@ export class LiveBuffer {
   readonly series: Record<LiveSeriesName, Float32Array>
   /** Sim time per sample, for the rail's time axis. */
   readonly times: Float32Array
+  /** Palette index (see `PHASE_ORDER`) of the phase in effect at each sample. */
+  readonly phaseIndex: Uint8Array
+
+  /** Palette index per phase event, parallel to `phases`. */
+  private phaseEnum: number[] = []
+  /** Index of the last phase event at or before the newest sample. */
+  private phaseCursor = 0
 
   constructor(capacitySamples: number) {
     this.capacity = Math.max(capacitySamples, 1)
     this.flat = new Float64Array(this.capacity * SAMPLE_STRIDE)
     this.trail = new Float32Array(this.capacity * 3)
     this.times = new Float32Array(this.capacity)
+    this.phaseIndex = new Uint8Array(this.capacity)
     this.series = {
       altitude: new Float32Array(this.capacity),
       groundSpeed: new Float32Array(this.capacity),
@@ -256,6 +297,14 @@ export class LiveBuffer {
       this.trail[index * 3 + 1] = y
       this.trail[index * 3 + 2] = z
       this.times[index] = t
+      // Advance the phase cursor to the last event at or before this sample.
+      while (
+        this.phaseCursor + 1 < this.phaseEnum.length &&
+        (this.phases[this.phaseCursor + 1]?.[0] ?? 0) <= t
+      ) {
+        this.phaseCursor += 1
+      }
+      this.phaseIndex[index] = this.phaseEnum[this.phaseCursor] ?? 0
       this.series.altitude[index] = -pd
       this.series.groundSpeed[index] = Math.hypot(vn, ve)
       this.series.verticalSpeed[index] = -vd
@@ -271,6 +320,30 @@ export class LiveBuffer {
   /** Replace the phase timeline with the core's current list. */
   setPhases(phases: PhaseEvent[]): void {
     this.phases = phases
+    this.phaseEnum = phases.map(([, phase]) => phaseIndexOf(phase))
+    if (this.phaseCursor >= this.phaseEnum.length) {
+      this.phaseCursor = Math.max(0, this.phaseEnum.length - 1)
+    }
+  }
+
+  /**
+   * Drop every recorded sample and start over, reusing the buffers.
+   *
+   * A second run of the same scenario reuses one recorder, and the renderer holds
+   * a reference to the trail array, so the arrays are cleared in place rather
+   * than replaced: the scene keeps its geometry and simply draws nothing.
+   */
+  reset(): void {
+    this.count = 0
+    this.latestTime = 0
+    this.clock = 0
+    this.phases = []
+    this.phaseEnum = []
+    this.phaseCursor = 0
+    this.trail.fill(0)
+    this.times.fill(0)
+    this.phaseIndex.fill(0)
+    for (const name of LIVE_SERIES) this.series[name].fill(0)
   }
 
   /**
@@ -308,6 +381,85 @@ export class LiveBuffer {
   latest(out: LiveFrame): boolean {
     return this.frameAt(this.count - 1, out)
   }
+
+  /**
+   * Interpolate the pose at sim time `t` into `out`, for a smooth draw.
+   *
+   * Samples arrive at the control rate (100 Hz) while frames land at roughly
+   * 60 Hz, so drawing the newest sample raw would visibly step. Position,
+   * velocity, estimate, and wind are interpolated between the two bracketing
+   * samples; attitude is normalised-linear interpolated (the samples are less
+   * than 10 ms apart, so the difference from a true slerp is far below a pixel)
+   * and the remaining fields are taken from the floor sample, where their
+   * instantaneous value is what a readout wants.
+   *
+   * Clamps at both ends: before the first sample it draws the first, and past the
+   * newest it holds at the newest rather than extrapolating into a flight that
+   * has not happened.
+   */
+  poseAt(t: number, out: LiveFrame): boolean {
+    if (this.count === 0) return false
+    const i = this.indexAt(t)
+    if (i < 0) return false
+    const j = i + 1 < this.count ? i + 1 : i
+    decodeSample(this.flat, i * SAMPLE_STRIDE, out)
+    if (j === i) return true
+
+    const t0 = this.times[i] ?? 0
+    const t1 = this.times[j] ?? t0
+    const span = t1 - t0
+    const a = span > 0 ? Math.min(Math.max((t - t0) / span, 0), 1) : 0
+    const b = 1 - a
+
+    out.time = t0 * b + t1 * a
+    out.truthPosition = lerpVec3(out.truthPosition, this.vecAt(j, SAMPLE_FIELD.TRUTH_POSITION), a)
+    out.truthVelocity = lerpVec3(out.truthVelocity, this.vecAt(j, SAMPLE_FIELD.TRUTH_VELOCITY), a)
+    out.ekfPosition = lerpVec3(out.ekfPosition, this.vecAt(j, SAMPLE_FIELD.EKF_POSITION), a)
+    out.ekfVelocity = lerpVec3(out.ekfVelocity, this.vecAt(j, SAMPLE_FIELD.EKF_VELOCITY), a)
+    out.wind = lerpVec3(out.wind, this.vecAt(j, SAMPLE_FIELD.WIND), a)
+    out.quaternion = nlerpQuat(out.quaternion, this.quatAt(j), a)
+    return true
+  }
+
+  /** Read a three-vector field out of the sample at `index`. */
+  private vecAt(index: number, offset: number): Vec3 {
+    const base = index * SAMPLE_STRIDE + offset
+    return [this.flat[base] ?? 0, this.flat[base + 1] ?? 0, this.flat[base + 2] ?? 0]
+  }
+
+  /** Read the attitude out of the sample at `index`. */
+  private quatAt(index: number): [number, number, number, number] {
+    const base = index * SAMPLE_STRIDE + SAMPLE_FIELD.TRUTH_QUATERNION
+    return [
+      this.flat[base] ?? 1,
+      this.flat[base + 1] ?? 0,
+      this.flat[base + 2] ?? 0,
+      this.flat[base + 3] ?? 0,
+    ]
+  }
+}
+
+/** Component-wise blend of two three-vectors. */
+function lerpVec3(a: Vec3, b: Vec3, t: number): Vec3 {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+}
+
+/** Normalised linear interpolation between two unit quaternions, shortest path. */
+function nlerpQuat(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+  t: number,
+): [number, number, number, number] {
+  // q and -q are the same rotation, so flip b onto a's hemisphere first.
+  const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+  const s = dot < 0 ? -1 : 1
+  const w = a[0] + (s * b[0] - a[0]) * t
+  const x = a[1] + (s * b[1] - a[1]) * t
+  const y = a[2] + (s * b[2] - a[2]) * t
+  const z = a[3] + (s * b[3] - a[3]) * t
+  const norm = Math.hypot(w, x, y, z)
+  if (norm === 0) return [1, 0, 0, 0]
+  return [w / norm, x / norm, y / norm, z / norm]
 }
 
 /** Mean sample period from the recorded times, or the 100 Hz control rate. */
