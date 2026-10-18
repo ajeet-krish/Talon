@@ -10,8 +10,10 @@
 pub mod constants;
 pub mod controller;
 pub mod dynamics;
+pub mod guidance;
 pub mod ekf;
 pub mod math;
+pub mod mission;
 pub mod rng;
 pub mod types;
 pub mod wind;
