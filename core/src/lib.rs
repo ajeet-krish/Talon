@@ -15,5 +15,6 @@ pub mod ekf;
 pub mod math;
 pub mod mission;
 pub mod rng;
+pub mod state_machine;
 pub mod types;
 pub mod wind;
