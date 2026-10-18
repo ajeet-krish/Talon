@@ -1,0 +1,26 @@
+# Browser build of the Talon GNC core.
+#
+# This crate is a thin wasm-bindgen wrapper: it owns no autopilot logic, it just
+# exposes the native `talon-core` runner to JavaScript. Everything it does is so
+# the browser can drive the same code the desktop harness drives, so a change in
+# flight behaviour is made once, in the core.
+#
+# Built with `wasm-pack build wasm --target web`, which emits an ES module plus a
+# `.wasm` into `public/wasm-rust/` where the app loads it at runtime.
+
+[package]
+name = "talon-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "WebAssembly bindings for the Talon GNC core"
+license = "MIT"
+
+[lib]
+# cdylib for the wasm module, rlib so `cargo test` can build the crate natively.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+talon-core = { path = "../core" }
+serde_json = "1.0.154"
+wasm-bindgen = "0.2"

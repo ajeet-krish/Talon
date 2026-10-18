@@ -1,0 +1,33 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_session_free: (a: number, b: number) => void;
+export const core_version: () => [number, number];
+export const run_scenario: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const session_advance: (a: number, b: number) => number;
+export const session_altitude_m: (a: number) => number;
+export const session_battery_soc: (a: number) => number;
+export const session_document_json: (a: number, b: number, c: number) => [number, number, number, number];
+export const session_duration_s: (a: number) => number;
+export const session_ekf_position: (a: number) => [number, number];
+export const session_finished: (a: number) => number;
+export const session_new: (a: number, b: number) => [number, number, number];
+export const session_phase: (a: number) => [number, number];
+export const session_prepare: (a: number) => void;
+export const session_prepared: (a: number) => number;
+export const session_progress: (a: number) => number;
+export const session_run_to_end: (a: number) => number;
+export const session_scenario_id: (a: number) => [number, number];
+export const session_step: (a: number) => number;
+export const session_steps_done: (a: number) => number;
+export const session_summary_json: (a: number) => [number, number];
+export const session_time: (a: number) => number;
+export const session_total_steps: (a: number) => number;
+export const session_truth_position: (a: number) => [number, number];
+export const session_truth_velocity: (a: number) => [number, number];
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_start: () => void;
