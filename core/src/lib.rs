@@ -17,6 +17,7 @@ pub mod math;
 pub mod mission;
 pub mod motors;
 pub mod rng;
+pub mod sensors;
 pub mod state_machine;
 pub mod types;
 pub mod wind;
