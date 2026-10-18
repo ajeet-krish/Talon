@@ -409,6 +409,62 @@ place where a field name can silently drift from what the exporter writes.
 matter because the bottleneck was never arithmetic. Generating the mirrors adds a
 build step and means the mirrors must not be edited by hand, which is the point.
 
+### D24: The browser steps the native core through a wasm-bindgen session
+
+**Context.** The Rust core is the autopilot (D22). The browser has to run it, and
+the first thing that needs to exist is a page where the browser actually does.
+
+**Decision.** `wasm/` is a thin wasm-bindgen crate exposing one `Session` object:
+construct it from scenario JSON, `prepare` once, `step` or `advance(n)` inside a
+frame budget, read the live pose out at any point, and pull the finished flight
+document and run summary at the end. The plant loop, guidance, mission manager,
+motor mixer, sensor suite, phase machine, and FDIR all live in the native core
+and are reached through that one boundary. The TypeScript side
+(`src/live/engine.ts` plus a small `LiveSim`) only loads the module and drives
+it; it owns no autopilot logic.
+
+**Rationale.** The measured motivation (D22) was boundary chattiness, and a
+stepwise session is what removes it: the frame loop makes about one call per
+frame rather than a scalar read per control tick, and reading the live pose is
+three calls when the view needs it. A stepping API also serves both consumers
+without a second code path, since a batch run is just `run_to_end`. wasm-pack's
+`--target web` output is loaded at runtime from the Vite base URL rather than
+bundled, so the module stays out of the JS graph and a missing build degrades to
+the existing "Run disabled" message (D19) instead of a failed bundle.
+
+**Trade-off.** No node test can load the module the way the browser does
+(`fetch` cannot read a `file:` URL), so the native session is covered by Rust
+tests and the browser path by a build-and-serve check; the TypeScript wrapper is
+covered against a scripted fake session. Real-time pacing is deliberately not
+part of this step: the loop runs as fast as the frame budget allows, which is
+what the Phase 4 loop already did, and turning that into a real-time GCS
+playback is Phase 6.
+
+### D25: The flight document is assembled in Rust, and the schema does not move
+
+**Context.** The recorded scenarios, the scene, the charts, the metrics, and the
+run summary all speak schema 1.1 (D4). A live run has to produce something they
+already understand, or the whole presentation layer forks.
+
+**Decision.** `talon-core::export` assembles the schema 1.1 document
+(`core/src/export.rs`), preserving the two exporter details that matter: floats
+round to six decimals, and `meta.duration_s` is the last sample time rather than
+the requested duration. Field names, units, and ordering are unchanged, and the
+document is serialized with serde from the Rust types that are the schema source
+of truth (D23). The one new input is `meta.generated_utc`, supplied by the caller
+because the core has no clock.
+
+**Rationale.** A live run and a recorded run are then the same document and every
+downstream consumer stays untouched, which is what makes the completion of a
+browser run a rail entry next to the recorded scenarios. Keeping the exporter in
+the core rather than in the wasm crate means it is covered by ordinary
+`cargo test` on native, where a schema drift is a failing assertion.
+
+**Trade-off.** The document is a whole-history JSON, so a 120 s run is a few
+megabytes of text parsed on completion rather than a frame stream. That is fine
+for the current UI, which shows a finished run, and the zero-copy typed-array
+views the live GCS display wants are Phase 6 work on the same session object.
+
 ## Open decisions (resolved at Phase 4)
 
 - Acceptance metrics for v2 reactive avoidance: still open (no live

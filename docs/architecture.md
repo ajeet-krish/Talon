@@ -2,16 +2,23 @@
 
 Last updated: 2026-10-18
 
-## Current-state snapshot (FlightLab Phase 4)
+## Current-state snapshot (FlightLab Phase 5b, in progress)
 
-Talon is a single-vehicle UAV GNC stack (C++17 header-only kernel via
-pybind11, Python mission/SIL/analysis glue) plus a TypeScript flight tool.
+Talon is a single-vehicle UAV GNC stack whose autopilot is one Rust library,
+`talon-core`, plus a Python analysis harness and a TypeScript flight tool.
 Phase 1 added deterministic obstacle avoidance and the schema 1.1 obstacle
 contract; Phase 2 added the interactive 3D obstacle scene; Phase 3 turned the
 replay app into Talon FlightLab, a single entry point carrying the replay,
-telemetry, metrics, and video sections; Phase 4 added a live run that
-executes the same C++ kernel in the browser as WebAssembly, driven by a
-TypeScript port of the Python glue, behind a fifth Run section.
+telemetry, metrics, and video sections; Phase 4 added a live run that executed
+the then-C++ kernel in the browser as WebAssembly, driven by a TypeScript port
+of the Python glue. Phase 5 moves the whole autopilot into Rust (D22, D23) and
+puts the browser run on it: the wasm-bindgen session in D24 replaces the
+TypeScript loop, and the schema 1.1 document is now assembled in Rust (D25) so
+the scene, charts, and metrics are unchanged.
+
+The Python and C++ stacks are still present while the port is finished; the
+recorded telemetry, the validation report, and the five videos are frozen as
+produced by the Python stack and are not regenerated.
 
 ### Repository layout
 
@@ -20,20 +27,26 @@ from that root as a GitHub Pages *project* site, served from a subpath
 (`https://<owner>.github.io/Talon/`), so Vite's `base` is `/Talon/` and every
 emitted asset URL carries that prefix (D21).
 
-    /                      web app (Vite + React 19 + R3F)
+    /                      web app (Vite + React 19 + R3F) + Cargo workspace
       index.html  package.json  vite.config.ts  tsconfig*.json
+      Cargo.toml           Cargo workspace (members: core, wasm)
       src/                 views, components, utils, store, data, hooks
-      src/live/            TS glue for the WASM run (see below)
+      src/live/            engine loader + LiveSim seam to the native run
       public/data/         exported telemetry JSON + live configs (committed)
-      public/wasm/         compiled kernel glue + wasm (committed)
+      public/wasm-rust/    talon-core via wasm-bindgen, web target (committed)
+      public/wasm/         the retiring Emscripten kernel (still committed)
       public/videos/       recorded MP4s (committed)
       scripts/             copy_data.sh
-    wasm/                  Emscripten build of the kernel (exports.cpp)
+    core/                  talon-core Rust GNC library (the autopilot)
+      src/                 math, constants, rng, types, dynamics, wind,
+                           controller, ekf, guidance, mission, state_machine,
+                           motors, battery, sensors, sim, scenario, export
+      tests/               GTest suites for the retiring C++ kernel
+      include/talon/       the retiring C++17 header-only kernel
+    wasm/                  wasm-bindgen crate (plus the retiring Emscripten build)
+      src/lib.rs           the Session the browser drives
     fixtures/              Python-generated parity fixtures (committed)
-    core/                  header-only C++17 kernel + Google Tests
-      include/talon/       dynamics, wind, controller, ekf, types, constants
-      tests/
-    bindings/pytalon.cpp   pybind11 module talon._core
+    bindings/pytalon.cpp   pybind11 module talon._core (to become a PyO3 crate)
     python/                Python package, simulations, and tests
       talon/               package (CMake drops _core*.so here)
       sims/                scenarios, run_all.py, export_live_configs.py
@@ -159,29 +172,34 @@ environment; no charting dependency is added.
         -> scripts/copy_data.sh
         -> public/videos/*.mp4 (committed, served statically)
 
-### Live in-browser run (Phase 4)
+### Live in-browser run (Phase 5b)
 
-The Run section executes the autopilot in the browser. One 200 Hz step:
+The Run section executes the autopilot in the browser. The core is the Rust
+library compiled to wasm32; the page only steps it:
 
     configs.json (Python-exported)  -> LiveSim (src/live/sim.ts)
-      sensors: truth-side IMU 200 Hz, GPS 10 Hz (src/live/sensors.ts)
-      estimator: 15-state MEKF (WASM kernel)
-      derived flags: convergence / divergence (mirrors mavlink_sil)
-      state machine + FDIR (src/live/stateMachine.ts)
-      guidance: NLGL (src/live/guidance.ts) + mission (src/live/mission.ts)
-      controller: cascaded PD, 100 Hz ZOH (WASM kernel)
-      motors: X mixer + first-order lag (src/live/motors.ts)
-      plant: RK4 + Dryden wind (WASM kernel), ground clamp
-      history at 100 Hz -> FlightData (schema 1.1)
+      -> talon_core Session (public/wasm-rust/, wasm-bindgen, D24)
+           sensors: truth-side IMU 200 Hz, GPS 10 Hz
+           estimator: 15-state MEKF
+           derived flags: convergence / divergence (mirrors mavlink_sil)
+           state machine + FDIR
+           guidance: NLGL + waypoint mission
+           controller: cascaded PD, 100 Hz ZOH
+           motors: X mixer + first-order lag
+           plant: RK4 + Dryden wind, ground clamp
+           history at 100 Hz
+      -> document_json  -> FlightData (schema 1.1, assembled in Rust, D25)
+      -> summary_json   -> mission outcome + fix accounting for the run tiles
 
-The module boundary is deliberate (decisions.md D17): the numerically heavy
-and safety-critical pieces (dynamics, wind, controller, MEKF) run in the
-compiled kernel (`wasm/exports.cpp`, embind `Kernel` class, scalar API so a
-step costs a handful of cheap calls). Everything with no native counterpart
-is TypeScript. The WASM glue is loaded once via a script tag
-(`src/live/kernel.ts`) and reached through a `KernelHandle` interface, so
-tests inject a node-loaded kernel and the UI only ever depends on the
-interface.
+The module boundary is now the whole core: physics, estimation, guidance,
+mission, FDIR, and the SIL loop itself are native, and the frame loop makes
+about one call per frame instead of a scalar read per control tick (D22, D24).
+`src/live/engine.ts` loads the wasm-pack web output at runtime from the Vite
+base URL and declares the exported surface by hand, so a signature drift fails
+the typecheck. `LiveSim` is the seam: construct a session from the scenario
+JSON, step it inside a 12 ms frame budget, read the live pose while it runs, and
+turn the finished session into the document the scene and charts already
+consume.
 
 Config flow and fixtures, all generated by
 `python/sims/export_live_configs.py` from the Python scenario definitions:
@@ -197,13 +215,15 @@ becomes a rail entry ("LIVE RUN") alongside the recorded scenarios. The
 store keys it under the string `live` (`ScenarioKey`), which is never
 fetched.
 
-Deliberate scope limits (decisions.md D18, D20): the noise stream is a
-seeded mulberry32 generator, so a live run is statistically equivalent to,
-not bit-identical with, the recorder; fault injection (GPS outage,
-emergency, low battery) is recorded-only and the battery state of charge is
-held at 1.0; the obstacle waypoints are pre-planned offline. When the WASM
-module is unavailable, Run disables itself with a visible message and every
-other section still works (decisions.md D19).
+Deliberate scope limits: the core's own noise generator replaces numpy's, so a
+live run is statistically equivalent to, not bit-identical with, the recorder
+(D18, and the recorded files stay frozen). The loop runs as fast as the frame
+budget allows, so a 60 s scenario finishes in a few frames; turning that into
+real-time playback with a live telemetry rail is Phase 6. Fault injection (GPS
+outage, emergency, low battery) is still recorded-only and the live battery
+state of charge is held at 1.0 (D20). When the WASM module is unavailable, Run
+disables itself with a visible message and every other section still works
+(D19).
 
 ## Phase roadmap
 
@@ -213,3 +233,9 @@ other section still works (decisions.md D19).
 | 2 | Interactive obstacle scene (R3F + bloom + labels) | Complete |
 | 3 | Unified entry point (videos + scene + metrics) | Complete |
 | 4 | In-browser WASM run | Complete |
+| 5a | Rust `talon-core` library + native tests | Complete |
+| 5b | WASM + PyO3 bindings, generated type mirrors, retire the C++ stack | In Progress |
+| 6 | GCS shell with live telemetry and teaching captions | Not started |
+| 7 | Altitude legibility in the scene | Not started |
+| 8 | Mission authoring (waypoints, wind, faults) | Not started |
+| 9 | Reactive avoidance in Rust, with validation | Not started |
