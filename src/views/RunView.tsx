@@ -1,13 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useFlightStore } from '@/store/useFlightStore'
 import { loadLiveConfigs } from '@/data/live'
-import { loadWasmModule } from '@/live/kernel'
-import type { KernelHandle, TalonModule } from '@/live/kernel'
+import { loadEngine } from '@/live/engine'
+import type { CoreModule } from '@/live/engine'
 import { LiveSim } from '@/live/sim'
 import type { LiveConfig, LiveRunSummary } from '@/live/types'
 
 type WasmState = 'loading' | 'ready' | 'unavailable'
 type RunState = 'idle' | 'running' | 'done'
+
+/** One live read-out taken from the running native session. */
+interface LiveSample {
+  phase: string
+  /** Sim time (s). */
+  time: number
+  /** Altitude above the ground plane (m). */
+  altitude: number
+  /** Ground speed (m/s). */
+  speed: number
+}
 
 const PHASE_LABELS: Record<string, string> = {
   idle: 'IDLE',
@@ -25,11 +36,11 @@ function fmt(value: number, digits = 2): string {
 }
 
 /**
- * Live in-browser SIL. The same C++ autopilot kernel the recorded runs use
- * (dynamics, Dryden wind, cascaded PD, 15-state MEKF) is compiled to
- * WebAssembly and driven here by the TypeScript mission, guidance, motor, and
- * state-machine glue. Pick a scenario, run it, then open the result in the
- * replay, telemetry, and metrics sections like any recorded flight.
+ * Live in-browser SIL. The Rust autopilot core (RK4 dynamics, Dryden wind,
+ * cascaded PD, 15-state MEKF, NLGL guidance, mission manager, FDM, and the SIL
+ * loop itself) is compiled to WebAssembly and stepped here, in the page, at the
+ * plant rate. Pick a scenario, fly it, then open the result in the replay,
+ * telemetry, and metrics sections like any recorded flight.
  */
 export function RunView() {
   const setView = useFlightStore((s) => s.setView)
@@ -43,9 +54,9 @@ export function RunView() {
   const [runState, setRunState] = useState<RunState>('idle')
   const [progress, setProgress] = useState(0)
   const [summary, setSummary] = useState<LiveRunSummary | null>(null)
+  const [live, setLive] = useState<LiveSample | null>(null)
 
-  const moduleRef = useRef<TalonModule | null>(null)
-  const kernelRef = useRef<KernelHandle | null>(null)
+  const engineRef = useRef<CoreModule | null>(null)
   const rafRef = useRef<number | null>(null)
 
   // Scenario configs (one fetch per session; safe to refetch on remount).
@@ -65,14 +76,13 @@ export function RunView() {
     }
   }, [])
 
-  // WASM kernel: loaded once; if it fails, Run is disabled with a clear note.
+  // WebAssembly kernel: loaded once; if it fails, Run is disabled with a clear note.
   useEffect(() => {
     let cancelled = false
-    loadWasmModule()
+    loadEngine()
       .then((mod) => {
         if (cancelled) return
-        moduleRef.current = mod
-        kernelRef.current = new mod.Kernel()
+        engineRef.current = mod
         setWasm('ready')
       })
       .catch((err: unknown) => {
@@ -94,17 +104,26 @@ export function RunView() {
 
   const startRun = useCallback(() => {
     const cfg = configs?.find((c) => c.id === selectedId)
-    const kernel = kernelRef.current
-    if (cfg === undefined || kernel === null || runState === 'running') return
+    const engine = engineRef.current
+    if (cfg === undefined || engine === null || runState === 'running') return
 
-    const sim = new LiveSim(cfg, kernel)
+    const sim = LiveSim.create(cfg, engine.Session)
     sim.prepare()
     setRunState('running')
     setProgress(0)
     setSummary(null)
+    setLive(null)
 
-    // Drive the 200 Hz loop from animation frames so the panel stays
-    // responsive: run as many plant steps as fit in a ~12 ms budget per frame.
+    const sample = (): LiveSample => ({
+      phase: sim.phase,
+      time: sim.time,
+      altitude: sim.altitudeM,
+      speed: sim.groundSpeed,
+    })
+
+    // Drive the 200 Hz plant loop from animation frames so the panel stays
+    // responsive: run as many native plant steps as fit in a ~12 ms budget per
+    // frame, and read the live pose back out of the running session.
     const tick = () => {
       const deadline = performance.now() + 12
       let done = false
@@ -112,11 +131,13 @@ export function RunView() {
         done = sim.advance()
         if (done) break
       }
+      setLive(sample())
       setProgress(sim.progress)
       if (done) {
         const result = sim.finish()
         setLiveRun(result.data, result.summary)
         setSummary(result.summary)
+        sim.dispose()
         setRunState('done')
         rafRef.current = null
         return
@@ -138,7 +159,7 @@ export function RunView() {
               LIVE RUN
             </h1>
             <span className="font-mono text-[9px] tracking-[0.2em] text-ink-faint">
-              C++ KERNEL / WEBSOCKET FREE / WASM
+              RUST CORE / WASM / STEPPED IN-PAGE
             </span>
           </div>
           <span
@@ -155,12 +176,13 @@ export function RunView() {
         </div>
 
         <p className="max-w-2xl text-[11px] leading-relaxed text-ink-dim">
-          Fly a scenario here and now: the autopilot kernel (RK4 dynamics,
-          Dryden turbulence, cascaded PD, 15-state MEKF) is compiled to
-          WebAssembly and driven in the browser by the same mission, NLGL
-          guidance, motor, sensor, and state-machine logic the recorded runs
-          use. The result drops into the replay, telemetry, and metrics
-          sections exactly like a recorded flight.
+          Fly a scenario here and now: the autopilot is the Rust GNC core (RK4
+          dynamics, Dryden turbulence, cascaded PD, 15-state MEKF, NLGL guidance,
+          waypoint mission, motor mixer, and the SIL loop itself) compiled to
+          WebAssembly and stepped in this page at the 200 Hz plant rate. There is
+          no server and no recording: the numbers below come out of the browser,
+          and the result drops into the replay, telemetry, and metrics sections
+          exactly like a recorded flight.
         </p>
 
         {configError !== null && (
@@ -257,6 +279,35 @@ export function RunView() {
             </div>
           </div>
         </section>
+
+        {live !== null && (
+          <section className="border border-grid">
+            <div className="border-b border-grid px-3 py-1.5 font-mono text-[9px] tracking-[0.2em] text-ink-faint">
+              {runState === 'running' ? 'LIVE TELEMETRY' : 'FINAL TELEMETRY'}
+            </div>
+            <dl className="grid grid-cols-2 gap-px bg-grid sm:grid-cols-4">
+              {[
+                { label: 'PHASE', value: PHASE_LABELS[live.phase] ?? live.phase },
+                { label: 'T+', value: `${fmt(live.time, 1)} s` },
+                { label: 'ALT', value: `${fmt(live.altitude, 1)} m` },
+                { label: 'GND SPD', value: `${fmt(live.speed, 1)} m/s` },
+              ].map((tile) => (
+                <div key={tile.label} className="bg-panel px-3 py-2">
+                  <dt className="font-mono text-[9px] tracking-[0.15em] text-ink-faint">
+                    {tile.label}
+                  </dt>
+                  <dd
+                    className={`mt-1 font-mono text-[11px] ${
+                      tile.label === 'PHASE' ? 'text-signal' : 'text-ink'
+                    }`}
+                  >
+                    {tile.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        )}
 
         {summary !== null && (
           <section className="border border-grid">

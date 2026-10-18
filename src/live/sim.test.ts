@@ -1,93 +1,335 @@
-import { beforeAll, describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
+/**
+ * LiveSim tests.
+ *
+ * The autopilot itself is no longer in TypeScript, so these tests do not fly
+ * anything: they cover the seam. A scripted fake session stands in for the Rust
+ * core and the tests assert what LiveSim does with it, which is exactly the part
+ * that can break without the native tests noticing: the summary assembly, the
+ * clearance computation, the phase list, and the delegation of stepping.
+ *
+ * The native side has its own tests (`cargo test -p talon-core` and
+ * `cargo test -p talon-wasm`), including that stepping in chunks matches a bulk
+ * run, so parity between the two paths is checked where the physics lives.
+ */
+
+import { describe, expect, it, vi } from 'vitest'
 import { LiveSim } from './sim'
-import { loadWasmModuleForTest, wasmBuilt } from './wasmNode'
-import type { KernelHandle, TalonModule } from './kernel'
+import type { CoreSession } from './engine'
+import type { FlightData, FlightPhase } from '@/types/flight'
 import type { LiveConfig } from './types'
-import type { Vec3 } from './math'
 
-function readJson(rel: string): unknown {
-  return JSON.parse(
-    readFileSync(decodeURIComponent(new URL(rel, import.meta.url).pathname), 'utf8'),
-  )
+const CONFIG: LiveConfig = {
+  id: 'waypoints',
+  label: 'Waypoint circuit',
+  blurb: 'test',
+  duration_s: 10,
+  takeoff_altitude: 10,
+  start_position_ned: [0, 0, 0],
+  waypoints: [
+    { position: [20, 0, -10], speed: 5, heading: 0, radius: 2 },
+  ],
+  obstacles: [],
+  wind_sigma: [0, 0, 0],
+  wind_steady_ned: [0, 0, 0],
+  seed: 7,
+  gps_position_noise: 0.3,
+  gps_position_noise_vertical: 0.5,
+  gps_velocity_noise: 0.05,
+  cruise_hold_s: 2,
+  auto_arm: true,
 }
 
-function readJsonOptional(rel: string): unknown | null {
-  try {
-    return readJson(rel)
-  } catch {
-    return null
+/** One truth / estimate pair per sample, at 3 m of error on the first sample. */
+const DOCUMENT: FlightData = {
+  meta: {
+    scenario: 'waypoints',
+    seed: 7,
+    schema_version: '1.1',
+    generated_utc: '2026-10-18T00:00:00Z',
+    sample_count: 3,
+    duration_s: 9.99,
+    dt: 0.01,
+    units: {},
+  },
+  time_s: [0, 0.01, 0.02],
+  truth_position: [
+    [0, 0, 0],
+    [1, 0, -10],
+    [2, 0, -10],
+  ],
+  truth_velocity: [
+    [0, 0, 0],
+    [5, 0, 0],
+    [5, 0, 0],
+  ],
+  ekf_position: [
+    [3, 4, 0],
+    [1, 0, -10],
+    [2, 0, -10],
+  ],
+  ekf_velocity: [
+    [0, 0, 0],
+    [5, 0, 0],
+    [5, 0, 0],
+  ],
+  position_var: [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+  ],
+  gyro_bias: [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+  ],
+  accel_bias: [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+  ],
+  wind_ned: [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+  ],
+  command_thrust: [0, 0, 0],
+  command_moment: [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+  ],
+  e_ct: [0],
+  e_ct_times: [0],
+  e_ct_leg: [0],
+  waypoints_ned: [[20, 0, -10]],
+  home_ned: [0, 0, 0],
+  obstacles: [],
+  phase_timeline: [
+    [0, 'idle' as FlightPhase],
+    [0.5, 'arm' as FlightPhase],
+    [0.5, 'takeoff' as FlightPhase],
+    [3, 'cruise' as FlightPhase],
+  ],
+  event_log: [],
+}
+
+const SUMMARY = {
+  duration_s: 9.99,
+  waypoint_count: 1,
+  waypoints_reached: 1,
+  mission_complete: true,
+  gps_accepted: 90,
+  gps_gated: 2,
+  gps_skipped: 0,
+  final_phase: 'idle',
+  final_truth_altitude_m: 0,
+  ekf_converged: true,
+  ekf_diverged: false,
+  steps_done: 2000,
+  total_steps: 2000,
+}
+
+/** A scripted stand-in for the native session. */
+class FakeSession implements CoreSession {
+  static lastConfigJson = ''
+  prepareCalls = 0
+  stepCalls = 0
+  freeCalls = 0
+  advanceReturns = 0
+
+  constructor(configJson: string) {
+    FakeSession.lastConfigJson = configJson
+  }
+
+  prepare(): void {
+    this.prepareCalls += 1
+  }
+  step(): boolean {
+    this.stepCalls += 1
+    return false
+  }
+  advance(steps: number): number {
+    this.advanceReturns = steps
+    return steps
+  }
+  run_to_end(): number {
+    return 0
+  }
+  get progress(): number {
+    return 0.5
+  }
+  get finished(): boolean {
+    return false
+  }
+  get prepared(): boolean {
+    return this.prepareCalls > 0
+  }
+  get steps_done(): number {
+    return 1000
+  }
+  get total_steps(): number {
+    return 2000
+  }
+  get time(): number {
+    return 5
+  }
+  get duration_s(): number {
+    return 10
+  }
+  get scenario_id(): string {
+    return 'waypoints'
+  }
+  get battery_soc(): number {
+    return 1
+  }
+  phase(): string {
+    return 'cruise'
+  }
+  truth_position(): Float64Array {
+    return Float64Array.from([1, 2, -10])
+  }
+  truth_velocity(): Float64Array {
+    return Float64Array.from([3, 4, 0])
+  }
+  ekf_position(): Float64Array {
+    return Float64Array.from([1, 2, -10])
+  }
+  altitude_m(): number {
+    return 10
+  }
+  document_json(): string {
+    return JSON.stringify(DOCUMENT)
+  }
+  summary_json(): string {
+    return JSON.stringify(SUMMARY)
+  }
+  free(): void {
+    this.freeCalls += 1
   }
 }
 
-const configs = (readJson('../../public/data/live/configs.json') as { configs: LiveConfig[] })
-  .configs
-
-function configById(id: string): LiveConfig {
-  const found = configs.find((c) => c.id === id)
-  if (found === undefined) throw new Error(`missing live config ${id}`)
-  return found
+function run(overrides?: Partial<FlightData>, summary?: Partial<typeof SUMMARY>) {
+  const document = { ...DOCUMENT, ...overrides } as FlightData
+  const session = new FakeSession(JSON.stringify(CONFIG))
+  session.document_json = () => JSON.stringify(document)
+  session.summary_json = () => JSON.stringify({ ...SUMMARY, ...summary })
+  const sim = new LiveSim(session)
+  return { sim, session }
 }
 
-interface SilReference {
-  sample_dt: number
-  truth_position: Vec3[]
-  phase_timeline: [number, string][]
-}
-
-const silReference = readJsonOptional('../../fixtures/sil_reference.json') as Record<
-  string,
-  SilReference
-> | null
-
-// The live run needs the WASM build output; skip when it is absent.
-describe.skipIf(!wasmBuilt())('Live in-browser SIL', () => {
-  let module: TalonModule
-  beforeAll(async () => {
-    module = await loadWasmModuleForTest()
+describe('LiveSim', () => {
+  it('sends the scenario to the native session as config JSON', () => {
+    LiveSim.create(CONFIG, FakeSession)
+    expect(JSON.parse(FakeSession.lastConfigJson)).toEqual(CONFIG)
   })
 
-  function kernel(): KernelHandle {
-    return new module.Kernel()
-  }
-
-  it('flies the hover profile to 10 m and converges the EKF', () => {
-    const cfg = configById('hover')
-    const { data, summary } = new LiveSim(cfg, kernel()).runToCompletion()
-
-    expect(data.meta.sample_count).toBe(Math.round(cfg.duration_s / 0.01))
-    expect(summary.mission_complete).toBe(false)
-    expect(summary.phases).toContain('takeoff')
-    expect(summary.phases).toContain('cruise')
-
-    const last = data.truth_position[data.truth_position.length - 1] as Vec3
-    expect(last[2]).toBeCloseTo(-cfg.takeoff_altitude, 0)
-    expect(summary.ekf_position_rmse_m).toBeLessThan(0.5)
+  it('delegates preparation and stepping to the native session', () => {
+    const { sim, session } = run()
+    sim.prepare()
+    sim.advance()
+    sim.advanceMany(64)
+    expect(session.prepareCalls).toBe(1)
+    expect(session.stepCalls).toBe(1)
+    expect(session.advanceReturns).toBe(64)
   })
 
-  it('flies the obstacle circuit around the keep-out spheres', () => {
-    const cfg = configById('obstacle_field')
-    const { summary } = new LiveSim(cfg, kernel()).runToCompletion()
-
-    expect(summary.phases).toContain('waypoint')
-    expect(summary.waypoints_reached).toBeGreaterThanOrEqual(6)
-    expect(summary.min_clearance_m).not.toBeNull()
-    expect(summary.min_clearance_m as number).toBeGreaterThan(0)
+  it('exposes the live pose, speed, altitude, and phase while flying', () => {
+    const { sim } = run()
+    expect(sim.phase).toBe('cruise')
+    expect(sim.altitudeM).toBe(10)
+    expect(sim.truthPosition).toEqual([1, 2, -10])
+    expect(sim.groundSpeed).toBeCloseTo(5, 12)
+    expect(sim.progress).toBe(0.5)
+    expect(sim.finished).toBe(false)
   })
 
-  it.skipIf(silReference === null)(
-    'tracks the Python SIL reference trajectory within tolerance',
-    () => {
-      const cfg = configById('hover')
-      const { data } = new LiveSim(cfg, kernel()).runToCompletion()
-      const reference = (silReference as Record<string, SilReference>).hover
-      const refLast = reference.truth_position[reference.truth_position.length - 1] as Vec3
-      const last = data.truth_position[data.truth_position.length - 1] as Vec3
-      // The noise realization differs (documented), so this is a statistical
-      // agreement check, not a bit-exact one.
-      expect(Math.hypot(last[0] - refLast[0], last[1] - refLast[1])).toBeLessThan(3.0)
-      expect(Math.abs(last[2] - refLast[2])).toBeLessThan(1.0)
-      expect(data.phase_timeline.map((p) => p[1])).toContain('cruise')
-    },
-  )
+  it('falls back to idle for an unknown phase label', () => {
+    const session = new FakeSession('{}')
+    session.phase = () => 'not-a-phase'
+    const sim = new LiveSim(session)
+    expect(sim.phase).toBe('idle')
+  })
+
+  it('carries the summary straight through from the native session', () => {
+    const { sim } = run()
+    const { summary } = sim.finish()
+    expect(summary.duration_s).toBe(SUMMARY.duration_s)
+    expect(summary.waypoint_count).toBe(1)
+    expect(summary.waypoints_reached).toBe(1)
+    expect(summary.mission_complete).toBe(true)
+    expect(summary.gps_accepted).toBe(90)
+    expect(summary.gps_gated).toBe(2)
+  })
+
+  it('computes the estimator error from the document arrays', () => {
+    const { sim } = run()
+    const { summary } = sim.finish()
+    // The first sample is off by a 3-4-5 triangle, so 5 m: RMSE over three
+    // samples with one such error is sqrt(25/3).
+    expect(summary.ekf_position_rmse_m).toBeCloseTo(Math.sqrt(25 / 3), 12)
+    // The final error is the error at the last sample, which has converged.
+    expect(summary.final_position_error_m).toBe(0)
+  })
+
+  it('reports the terminal error at the last sample, not the worst one', () => {
+    const { sim } = run({
+      ekf_position: [
+        [0, 0, 0],
+        [1, 0, -10],
+        [5, 4, -10],
+      ],
+    })
+    const { summary } = sim.finish()
+    expect(summary.final_position_error_m).toBeCloseTo(5, 12)
+  })
+
+  it('reports the phases in order without repeats', () => {
+    const { sim } = run()
+    const { summary } = sim.finish()
+    expect(summary.phases).toEqual(['idle', 'arm', 'takeoff', 'cruise'])
+  })
+
+  it('reports no clearance when the scenario has no obstacles', () => {
+    const { sim } = run()
+    expect(sim.finish().summary.min_clearance_m).toBeNull()
+  })
+
+  it('measures clearance to the nearest obstacle surface', () => {
+    const obstacles = [{ id: 'obs', center_ned: [2, 0, -10] as [number, number, number], radius_m: 1 }]
+    const { sim } = run({ obstacles })
+    // Samples sit at 0 m, 1 m, and 0 m from the center, so at 3 m, 1 m, 3 m
+    // respectively, which is a clearance of -1 m at the closest sample.
+    const clearance = sim.finish().summary.min_clearance_m
+    expect(clearance).not.toBeNull()
+    expect(clearance as number).toBeCloseTo(-1, 12)
+  })
+
+  it('parses the document once and returns the same result afterwards', () => {
+    const { sim, session } = run()
+    const spy = vi.spyOn(session, 'document_json')
+    const first = sim.finish()
+    const second = sim.finish()
+    expect(first).toBe(second)
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('passes the document through unchanged apart from the summary', () => {
+    const { sim } = run()
+    const { data } = sim.finish()
+    expect(data.meta.scenario).toBe('waypoints')
+    expect(data.time_s).toEqual(DOCUMENT.time_s)
+    expect(data.truth_position).toEqual(DOCUMENT.truth_position)
+  })
+
+  it('releases the native session on dispose', () => {
+    const { sim, session } = run()
+    sim.dispose()
+    expect(session.freeCalls).toBe(1)
+  })
+
+  it('prepares before a one-shot run', () => {
+    const { sim, session } = run()
+    sim.runToCompletion()
+    expect(session.prepareCalls).toBe(1)
+  })
 })
