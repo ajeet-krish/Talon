@@ -15,7 +15,7 @@ uv run python python/sims/run_all.py               # validation driver: scenario
 
 # Web app (from the repository root)
 npm install
-npm run dev                                        # vite dev server
+npm run dev                                        # vite dev server, base /Talon/ (localhost:5173/Talon/)
 npm run build                                      # typecheck + production build into dist/
 npm test                                           # vitest unit tests
 scripts/copy_data.sh                               # refresh public/data + public/videos from the driver output

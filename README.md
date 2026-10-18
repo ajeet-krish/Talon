@@ -27,13 +27,23 @@ The web app is the repository root (Vite + React).
 
 ```bash
 npm install
-npm run dev      # dev server
+npm run dev      # dev server at http://localhost:5173/Talon/
 npm run build    # typecheck + production build into dist/
+npm run preview  # serve the built site at http://localhost:4173/Talon/
 npm test         # vitest unit tests
 ```
 
-The app is served at the Pages root once deployed
-(`https://<user>.github.io/<repo>/`).
+The app is a GitHub Pages *project* site, served from a subpath
+(`https://ajeet-krish.github.io/Talon/`), so Vite's `base` is `/Talon/` and
+the dev and preview servers use the same prefix. Override it for a
+root-served local session with `VITE_BASE=/ npm run dev`. The deploy workflow
+derives the base from the repository name at build time, so it follows a
+rename without any edit here.
+
+Deployment requires the repository's Pages source to be set to
+**GitHub Actions** (Settings > Pages > Build and deployment > Source). Left on
+"Deploy from a branch", GitHub publishes the raw repository through Jekyll and
+the site serves an untranspiled `index.html`.
 
 The Run section needs the WebAssembly kernel. Build it once with
 `./wasm/build.sh` (Emscripten); without it every other section still works

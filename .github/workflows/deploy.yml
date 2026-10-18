@@ -1,8 +1,19 @@
 # Deploy the Talon FlightLab web app to GitHub Pages.
 #
-# The web app is the repository root (Vite base '/'), so the build runs at the
-# root and Pages serves the site at https://<user>.github.io/<repo>/. Only web
-# changes trigger a deploy; the C++/Python core is covered by ci.yml.
+# Pages *project* site: the repository is ajeet-krish/Talon, so the site is
+# served from https://ajeet-krish.github.io/Talon/ and every asset needs that
+# prefix. The build below derives VITE_BASE from the repository name, which
+# vite.config.ts reads, so the base path can never drift from the repo name
+# (and stays correct if the repo is renamed, or if the site ever becomes a
+# user/org page at the root).
+#
+# The repository's Pages source must be "GitHub Actions" (Settings > Pages >
+# Build and deployment > Source). If it is left on "Deploy from a branch",
+# GitHub publishes the raw repository through Jekyll instead and this workflow
+# fails at the configure-pages step. `enablement: true` lets that step switch
+# the source to Actions by itself when the token has the pages: write scope.
+#
+# Only web changes trigger a deploy; the C++/Python core is covered by ci.yml.
 name: Deploy to GitHub Pages
 
 on:
@@ -11,6 +22,7 @@ on:
     paths:
       - "src/**"
       - "public/**"
+      - "wasm/**"
       - "scripts/**"
       - "index.html"
       - "package.json"
@@ -38,15 +50,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # First, so a misconfigured Pages source fails before the build runs.
+      - id: pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - name: Install dependencies
         run: npm ci
+
       - name: Build
-        run: npm run build
-      - uses: actions/configure-pages@v5
+        # Project pages live under /<repo>/; a user/org <name>.github.io page
+        # is served from the root instead.
+        run: |
+          repo="${GITHUB_REPOSITORY#*/}"
+          if [[ "$repo" == *.github.io ]]; then
+            base="/"
+          else
+            base="/$repo/"
+          fi
+          echo "Building for ${base} (Pages environment: ${{ steps.pages.outputs.base_path }})"
+          VITE_BASE="$base" npm run build
+
+      - name: Confirm the built asset paths carry the base
+        run: |
+          grep -q "$(basename "$GITHUB_REPOSITORY")/assets/" dist/index.html \
+            || { echo "dist/index.html does not reference the base-prefixed assets"; grep -o 'src="[^"]*"' dist/index.html; exit 1; }
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
