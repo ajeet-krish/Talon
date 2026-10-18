@@ -20,7 +20,7 @@
  * run is statistically equivalent to a recorded one, not bit-identical.
  */
 
-import type { FlightData, FlightPhase, Obstacle } from '@/types/flight'
+import type { FlightData, FlightPhase, Obstacle, PhaseEvent } from '@/types/flight'
 import type { CoreSession } from './engine'
 import type { LiveConfig, LiveRunResult, LiveRunSummary } from './types'
 import type { Vec3 } from './math'
@@ -147,6 +147,40 @@ export class LiveSim {
   /** Battery state of charge in [0, 1]. */
   get batterySoc(): number {
     return this.session.battery_soc
+  }
+
+  /**
+   * Samples recorded so far, at the control rate.
+   *
+   * This is also the cursor: the number of samples already consumed is exactly
+   * what the next `drain` should ask for from.
+   */
+  get sampleCount(): number {
+    return this.session.sample_count
+  }
+
+  /** Pull the samples recorded since `from` as a flat block. */
+  drain(from: number): Float64Array {
+    return this.session.samples_from(from)
+  }
+
+  /** The phase timeline as `[time_s, phase]` pairs. */
+  phases(): PhaseEvent[] {
+    try {
+      return JSON.parse(this.session.phases_json()) as PhaseEvent[]
+    } catch {
+      return []
+    }
+  }
+
+  /** GPS fix accounting from the core: accepted, gated, skipped. */
+  gpsCounts(): [number, number, number] {
+    return [this.session.gps_accepted, this.session.gps_gated, this.session.gps_skipped]
+  }
+
+  /** Estimator flags from the core: converged, diverged. */
+  ekfFlags(): [boolean, boolean] {
+    return [this.session.ekf_converged, this.session.ekf_diverged]
   }
 
   /** The flight document and the summary for the run so far. */

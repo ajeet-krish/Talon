@@ -35,8 +35,27 @@ export interface CoreSession {
   readonly duration_s: number
   readonly scenario_id: string
   readonly battery_soc: number
+  /** Samples recorded so far, at the control rate. */
+  readonly sample_count: number
+  /** Accepted GPS fixes since the run started. */
+  readonly gps_accepted: number
+  /** GPS fixes rejected by the innovation gate. */
+  readonly gps_gated: number
+  /** GPS fixes dropped for an injected outage. */
+  readonly gps_skipped: number
+  /** Whether the estimator has converged. */
+  readonly ekf_converged: boolean
+  /** Whether the estimator has been declared divergent. */
+  readonly ekf_diverged: boolean
   /** Current flight-phase label, lowercase. */
   phase(): string
+  /** The phase timeline as JSON: `[[time_s, "phase"], ...]`, oldest first. */
+  phases_json(): string
+  /**
+   * The samples in `[from, sample_count)` as a flat `Float64Array`,
+   * `sample_stride()` doubles per sample.
+   */
+  samples_from(from: number): Float64Array
   /** Live truth position, NED (m). */
   truth_position(): Float64Array
   /** Live truth velocity, NED (m/s). */
@@ -58,6 +77,8 @@ export interface CoreModule {
   Session: new (configJson: string) => CoreSession
   core_version(): string
   run_scenario(configJson: string, generatedUtc: string): string
+  /** Doubles per streamed sample, checked against the local decoder's layout. */
+  sample_stride(): number
 }
 
 /** The shape wasm-pack's web target emits for the module default export. */
@@ -66,6 +87,7 @@ interface WasmPackModule {
   Session: new (configJson: string) => CoreSession
   core_version: () => string
   run_scenario: (configJson: string, generatedUtc: string) => string
+  sample_stride: () => number
 }
 
 let pending: Promise<CoreModule> | null = null
@@ -81,6 +103,7 @@ async function load(): Promise<CoreModule> {
     Session: mod.Session,
     core_version: mod.core_version,
     run_scenario: mod.run_scenario,
+    sample_stride: mod.sample_stride,
   }
 }
 

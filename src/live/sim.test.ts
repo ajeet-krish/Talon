@@ -182,8 +182,37 @@ class FakeSession implements CoreSession {
   get battery_soc(): number {
     return 1
   }
+  get sample_count(): number {
+    return 42
+  }
+  get gps_accepted(): number {
+    return 90
+  }
+  get gps_gated(): number {
+    return 2
+  }
+  get gps_skipped(): number {
+    return 0
+  }
+  get ekf_converged(): boolean {
+    return true
+  }
+  get ekf_diverged(): boolean {
+    return false
+  }
+  /** Whatever the test set, so the passthrough can be observed. */
+  samplesFromReturns: Float64Array = new Float64Array(0)
+  samplesFromArgs: number[] = []
+  phasesJson = '[[0,"idle"],[0,"arm"]]'
   phase(): string {
     return 'cruise'
+  }
+  phases_json(): string {
+    return this.phasesJson
+  }
+  samples_from(from: number): Float64Array {
+    this.samplesFromArgs.push(from)
+    return this.samplesFromReturns
   }
   truth_position(): Float64Array {
     return Float64Array.from([1, 2, -10])
@@ -325,6 +354,31 @@ describe('LiveSim', () => {
     const { sim, session } = run()
     sim.dispose()
     expect(session.freeCalls).toBe(1)
+  })
+
+  it('passes the sample cursor through to the native session', () => {
+    const { sim, session } = run()
+    session.samplesFromReturns = Float64Array.from([1, 2, 3])
+    expect(sim.sampleCount).toBe(42)
+    expect([...sim.drain(0)]).toEqual([1, 2, 3])
+    expect(sim.drain(5).length).toBe(3)
+    expect(session.samplesFromArgs).toEqual([0, 5])
+  })
+
+  it('parses the phase timeline and survives a malformed one', () => {
+    const { sim, session } = run()
+    expect(sim.phases()).toEqual([
+      [0, 'idle'],
+      [0, 'arm'],
+    ])
+    session.phasesJson = 'not json'
+    expect(sim.phases()).toEqual([])
+  })
+
+  it('reads the GPS and estimator flags off the session', () => {
+    const { sim } = run()
+    expect(sim.gpsCounts()).toEqual([90, 2, 0])
+    expect(sim.ekfFlags()).toEqual([true, false])
   })
 
   it('prepares before a one-shot run', () => {
