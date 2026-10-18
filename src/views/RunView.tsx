@@ -1,23 +1,40 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useFlightStore } from '@/store/useFlightStore'
 import { loadLiveConfigs } from '@/data/live'
 import { loadEngine } from '@/live/engine'
 import type { CoreModule } from '@/live/engine'
 import { LiveSim } from '@/live/sim'
+import { DT, DT_CONTROL } from '@/live/constants'
+import { LiveBuffer, SAMPLE_STRIDE } from '@/live/stream'
+import { Pacer, RATES, rateLabel } from '@/live/pacing'
+import { bufferCapacity, readReadout } from '@/live/readout'
+import type { LiveReadout } from '@/live/readout'
+import { PHASE_COLORS } from '@/utils/colors'
+import { LiveScene } from '@/components/live/LiveScene'
+import { TelemetryRail } from '@/components/live/TelemetryRail'
+import type { RunState } from '@/components/live/TelemetryRail'
 import type { LiveConfig, LiveRunSummary } from '@/live/types'
 
 type WasmState = 'loading' | 'ready' | 'unavailable'
-type RunState = 'idle' | 'running' | 'done'
 
-/** One live read-out taken from the running native session. */
-interface LiveSample {
-  phase: string
-  /** Sim time (s). */
-  time: number
-  /** Altitude above the ground plane (m). */
-  altitude: number
-  /** Ground speed (m/s). */
-  speed: number
+/**
+ * Most plant steps one frame may run.
+ *
+ * At the maximum rate the run is limited by the frame budget rather than by the
+ * clock, and an unbounded budget would step a whole mission inside one frame and
+ * freeze the page. 4000 plant steps is 20 s of flight, so even the longest
+ * scenario finishes in a handful of frames while the tab stays interactive.
+ */
+const MAX_STEPS_PER_FRAME = 4000
+
+/** Seconds between rail updates. The scene animates from the recorder, not React. */
+const READOUT_INTERVAL_S = 0.1
+
+/** Frames between phase-timeline refreshes (about 10 Hz at 60 fps). */
+const PHASE_REFRESH_FRAMES = 6
+
+function fmt(value: number, digits = 1): string {
+  return Number.isFinite(value) ? value.toFixed(digits) : 'n/a'
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -31,16 +48,18 @@ const PHASE_LABELS: Record<string, string> = {
   emergency: 'EMERGENCY',
 }
 
-function fmt(value: number, digits = 2): string {
-  return Number.isFinite(value) ? value.toFixed(digits) : 'n/a'
-}
-
 /**
- * Live in-browser SIL. The Rust autopilot core (RK4 dynamics, Dryden wind,
- * cascaded PD, 15-state MEKF, NLGL guidance, mission manager, FDM, and the SIL
- * loop itself) is compiled to WebAssembly and stepped here, in the page, at the
- * plant rate. Pick a scenario, fly it, then open the result in the replay,
- * telemetry, and metrics sections like any recorded flight.
+ * Live ground station. The Rust autopilot core (RK4 dynamics, Dryden wind,
+ * cascaded PD, 15-state MEKF, NLGL guidance, waypoint mission, motor mixer, and
+ * the SIL loop itself) is compiled to WebAssembly and stepped in this page at the
+ * plant rate, then revealed at a pace you can watch.
+ *
+ * The run is real time by default with a speed control, because the point of a
+ * ground station is to watch the vehicle fly and read the numbers as they change.
+ * Pacing is a display concern: the core steps as fast as the frame allows and has
+ * no idea it is being paced, so a paced run and a batch run are the same flight.
+ * When a run finishes, its document is published to the replay, telemetry, and
+ * metrics sections exactly like a recorded one.
  */
 export function RunView() {
   const setView = useFlightStore((s) => s.setView)
@@ -52,12 +71,32 @@ export function RunView() {
   const [wasm, setWasm] = useState<WasmState>('loading')
   const [wasmError, setWasmError] = useState<string | null>(null)
   const [runState, setRunState] = useState<RunState>('idle')
-  const [progress, setProgress] = useState(0)
+  const [rate, setRate] = useState<number>(1)
+  const [readout, setReadout] = useState<LiveReadout | null>(null)
   const [summary, setSummary] = useState<LiveRunSummary | null>(null)
-  const [live, setLive] = useState<LiveSample | null>(null)
+  /**
+   * Bumped by Reset. The recorder is keyed on it so a reset gives the scene a
+   * fresh, empty buffer instead of one holding the previous flight.
+   */
+  const [epoch, setEpoch] = useState(0)
 
   const engineRef = useRef<CoreModule | null>(null)
+  const simRef = useRef<LiveSim | null>(null)
+  const pacerRef = useRef<Pacer | null>(null)
   const rafRef = useRef<number | null>(null)
+  const lastFrameRef = useRef<number | null>(null)
+  const lastReadoutRef = useRef<number>(Number.NEGATIVE_INFINITY)
+  const frameCountRef = useRef(0)
+  const lastPhaseRef = useRef<string | null>(null)
+
+  const selected = configs?.find((c) => c.id === selectedId) ?? null
+
+  // One recorder per scenario per run, sized to the config's length. Recreating
+  // it is what gives the scene a clean slate on a new scenario or a reset.
+  const buffer = useMemo(
+    () => (selected === null ? null : new LiveBuffer(bufferCapacity(selected, DT_CONTROL))),
+    [selected, epoch],
+  )
 
   // Scenario configs (one fetch per session; safe to refetch on remount).
   useEffect(() => {
@@ -76,12 +115,22 @@ export function RunView() {
     }
   }, [])
 
-  // WebAssembly kernel: loaded once; if it fails, Run is disabled with a clear note.
+  // WebAssembly kernel: loaded once. The sample layout is a hand-mirrored
+  // contract with the Rust side, so a mismatch is caught here rather than
+  // showing plausible but mislabelled numbers.
   useEffect(() => {
     let cancelled = false
     loadEngine()
       .then((mod) => {
         if (cancelled) return
+        const stride = mod.sample_stride()
+        if (stride !== SAMPLE_STRIDE) {
+          setWasm('unavailable')
+          setWasmError(
+            `The wasm build streams ${stride} doubles per sample but this page decodes ${SAMPLE_STRIDE}. Rebuild with ./wasm/build.sh.`,
+          )
+          return
+        }
         engineRef.current = mod
         setWasm('ready')
       })
@@ -95,75 +144,165 @@ export function RunView() {
     }
   }, [])
 
-  useEffect(
-    () => () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+  const stopLoop = useCallback(() => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+  }, [])
+
+  const disposeRun = useCallback(() => {
+    stopLoop()
+    simRef.current?.dispose()
+    simRef.current = null
+    pacerRef.current = null
+    lastFrameRef.current = null
+  }, [stopLoop])
+
+  useEffect(() => disposeRun, [disposeRun])
+
+  /**
+   * Advance the native session to where the pacer says it should be, drain the
+   * samples it recorded, and refresh the rail on a slow cadence.
+   *
+   * The step count is derived from the difference between the pacer's target and
+   * the session's own clock, so the rounding of "how many plant steps fit in a
+   * frame" never accumulates into a drift.
+   */
+  const startRun = useCallback(() => {
+    const engine = engineRef.current
+    if (selected === null || buffer === null || engine === null) return
+
+    disposeRun()
+    buffer.reset()
+    setSummary(null)
+    setReadout(null)
+    lastReadoutRef.current = Number.NEGATIVE_INFINITY
+    frameCountRef.current = 0
+    lastPhaseRef.current = null
+
+    const sim = LiveSim.create(selected, engine.Session)
+    sim.prepare()
+    const pacer = new Pacer(selected.duration_s, rate, 0)
+    simRef.current = sim
+    pacerRef.current = pacer
+    setRunState('running')
+    pacer.start(sim.time)
+
+    const tick = (nowMs: number): void => {
+      const active = simRef.current
+      const activePacer = pacerRef.current
+      if (active === null || activePacer === null) return
+
+      const previous = lastFrameRef.current
+      lastFrameRef.current = nowMs
+      const deltaMs = previous === null ? 0 : nowMs - previous
+      frameCountRef.current += 1
+
+      if (activePacer.isRunning) {
+        activePacer.tick(deltaMs)
+        const needed = Math.round((activePacer.targetTime() - active.time) / DT)
+        if (needed > 0) active.advanceMany(Math.min(needed, MAX_STEPS_PER_FRAME))
+      }
+
+      // Refresh the phase timeline before draining, so the samples appended this
+      // frame are tagged with the timeline that produced them.
+      const label = active.phase
+      if (label !== lastPhaseRef.current || frameCountRef.current % PHASE_REFRESH_FRAMES === 1) {
+        lastPhaseRef.current = label
+        buffer.setPhases(active.phases())
+      }
+
+      if (active.sampleCount > buffer.count) {
+        buffer.append(active.drain(buffer.count))
+      }
+      buffer.clock = active.time
+
+      if (
+        active.time - lastReadoutRef.current >= READOUT_INTERVAL_S ||
+        active.time < lastReadoutRef.current
+      ) {
+        lastReadoutRef.current = active.time
+        setReadout(readReadout(active, buffer, selected))
+      }
+
+      if (active.finished) {
+        const result = active.finish()
+        setReadout(readReadout(active, buffer, selected))
+        setLiveRun(result.data, result.summary)
+        setSummary(result.summary)
+        activePacer.pause(active.time)
+        active.dispose()
+        simRef.current = null
+        pacerRef.current = null
+        rafRef.current = null
+        setRunState('done')
+        return
+      }
+
+      rafRef.current = requestAnimationFrame(tick)
+    }
+
+    rafRef.current = requestAnimationFrame(tick)
+  }, [selected, buffer, rate, disposeRun, setLiveRun])
+
+  const togglePause = useCallback(() => {
+    const sim = simRef.current
+    const pacer = pacerRef.current
+    if (sim === null || pacer === null) return
+    if (pacer.isRunning) {
+      pacer.pause(sim.time)
+      setRunState('paused')
+    } else {
+      pacer.start(sim.time)
+      setRunState('running')
+    }
+  }, [])
+
+  const resetRun = useCallback(() => {
+    disposeRun()
+    setRunState('idle')
+    setReadout(null)
+    setSummary(null)
+    setEpoch((e) => e + 1)
+  }, [disposeRun])
+
+  const changeRate = useCallback(
+    (next: number) => {
+      setRate(next)
+      const sim = simRef.current
+      const pacer = pacerRef.current
+      if (sim !== null && pacer !== null) pacer.setRate(next, sim.time)
     },
     [],
   )
 
-  const startRun = useCallback(() => {
-    const cfg = configs?.find((c) => c.id === selectedId)
-    const engine = engineRef.current
-    if (cfg === undefined || engine === null || runState === 'running') return
+  const selectScenario = useCallback(
+    (id: string) => {
+      if (id === selectedId) return
+      disposeRun()
+      setSelectedId(id)
+      setRunState('idle')
+      setReadout(null)
+      setSummary(null)
+    },
+    [selectedId, disposeRun],
+  )
 
-    const sim = LiveSim.create(cfg, engine.Session)
-    sim.prepare()
-    setRunState('running')
-    setProgress(0)
-    setSummary(null)
-    setLive(null)
-
-    const sample = (): LiveSample => ({
-      phase: sim.phase,
-      time: sim.time,
-      altitude: sim.altitudeM,
-      speed: sim.groundSpeed,
-    })
-
-    // Drive the 200 Hz plant loop from animation frames so the panel stays
-    // responsive: run as many native plant steps as fit in a ~12 ms budget per
-    // frame, and read the live pose back out of the running session.
-    const tick = () => {
-      const deadline = performance.now() + 12
-      let done = false
-      while (performance.now() < deadline) {
-        done = sim.advance()
-        if (done) break
-      }
-      setLive(sample())
-      setProgress(sim.progress)
-      if (done) {
-        const result = sim.finish()
-        setLiveRun(result.data, result.summary)
-        setSummary(result.summary)
-        sim.dispose()
-        setRunState('done')
-        rafRef.current = null
-        return
-      }
-      rafRef.current = requestAnimationFrame(tick)
-    }
-    rafRef.current = requestAnimationFrame(tick)
-  }, [configs, selectedId, runState, setLiveRun])
-
-  const selected = configs?.find((c) => c.id === selectedId) ?? null
   const canRun = wasm === 'ready' && selected !== null && runState !== 'running'
+  const busy = runState === 'running'
+  const phase = readout?.phase ?? 'idle'
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-5">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <div className="flex items-baseline gap-3">
-            <h1 className="font-mono text-[12px] font-semibold tracking-[0.2em] text-ink">
-              LIVE RUN
-            </h1>
-            <span className="font-mono text-[9px] tracking-[0.2em] text-ink-faint">
-              RUST CORE / WASM / STEPPED IN-PAGE
-            </span>
-          </div>
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Control strip */}
+      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-grid bg-panel-2 px-3 py-2">
+        <div className="flex items-baseline gap-2">
+          <span className="font-mono text-[11px] font-semibold tracking-[0.2em] text-ink">
+            LIVE RUN
+          </span>
           <span
-            className={`font-mono text-[9px] tracking-[0.2em] ${
+            className={`font-mono text-[9px] tracking-[0.18em] ${
               wasm === 'ready'
                 ? 'text-signal'
                 : wasm === 'loading'
@@ -175,197 +314,216 @@ export function RunView() {
           </span>
         </div>
 
-        <p className="max-w-2xl text-[11px] leading-relaxed text-ink-dim">
-          Fly a scenario here and now: the autopilot is the Rust GNC core (RK4
-          dynamics, Dryden turbulence, cascaded PD, 15-state MEKF, NLGL guidance,
-          waypoint mission, motor mixer, and the SIL loop itself) compiled to
-          WebAssembly and stepped in this page at the 200 Hz plant rate. There is
-          no server and no recording: the numbers below come out of the browser,
-          and the result drops into the replay, telemetry, and metrics sections
-          exactly like a recorded flight.
-        </p>
+        <div className="flex flex-wrap items-center gap-1">
+          {(configs ?? []).map((cfg) => {
+            const isSelected = cfg.id === selectedId
+            return (
+              <button
+                key={cfg.id}
+                type="button"
+                disabled={busy}
+                aria-pressed={isSelected}
+                onClick={() => selectScenario(cfg.id)}
+                className={`border px-2 py-1 font-mono text-[10px] tracking-wider transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-signal disabled:opacity-50 ${
+                  isSelected
+                    ? 'border-signal bg-panel-3 text-signal'
+                    : 'border-grid text-ink-dim hover:bg-panel-3'
+                }`}
+              >
+                {cfg.label.toUpperCase()}
+              </button>
+            )
+          })}
+          {configs === null && configError === null && (
+            <span className="font-mono text-[10px] text-ink-faint">LOADING CONFIGS</span>
+          )}
+        </div>
 
-        {configError !== null && (
-          <div className="border-l-2 border-amber-400 bg-panel-2 px-3 py-2 font-mono text-[10px] text-amber-400">
-            LIVE CONFIGS UNAVAILABLE: {configError}
-          </div>
-        )}
+        <div className="flex items-center gap-1">
+          <span className="font-mono text-[9px] tracking-[0.18em] text-ink-faint">RATE</span>
+          {RATES.map((r) => (
+            <button
+              key={r}
+              type="button"
+              aria-pressed={rate === r}
+              onClick={() => changeRate(r)}
+              className={`border px-2 py-1 font-mono text-[10px] tabular-nums transition-colors ${
+                rate === r
+                  ? 'border-signal bg-panel-3 text-signal'
+                  : 'border-grid text-ink-dim hover:bg-panel-3'
+              }`}
+            >
+              {rateLabel(r)}
+            </button>
+          ))}
+        </div>
 
-        {wasm === 'unavailable' && (
-          <div className="border-l-2 border-amber-400 bg-panel-2 px-3 py-2 text-[10px] leading-relaxed text-ink-dim">
-            <span className="font-mono text-amber-400">KERNEL NOT LOADED.</span>{' '}
-            The WebAssembly build was not found, so Run is disabled. Recorded
-            scenarios are unaffected. Build it with{' '}
-            <span className="font-mono text-ink">./wasm/build.sh</span>.
-            {wasmError !== null && (
-              <>
-                <br />
-                <span className="font-mono text-ink-faint">{wasmError}</span>
-              </>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={busy || runState === 'paused' ? togglePause : startRun}
+            disabled={!canRun && runState !== 'paused'}
+            className={`border px-3 py-1 font-mono text-[11px] tracking-[0.2em] transition-colors ${
+              busy
+                ? 'border-signal bg-panel-3 text-signal'
+                : canRun || runState === 'paused'
+                  ? 'border-signal text-signal hover:bg-panel-3'
+                  : 'border-grid text-ink-faint'
+            }`}
+          >
+            {busy ? 'PAUSE' : runState === 'paused' ? 'RESUME' : 'RUN'}
+          </button>
+          <button
+            type="button"
+            onClick={resetRun}
+            disabled={runState === 'idle' && summary === null}
+            className="border border-grid px-2 py-1 font-mono text-[10px] tracking-[0.2em] text-ink-dim transition-colors hover:bg-panel-3 disabled:opacity-40"
+          >
+            RESET
+          </button>
+        </div>
+
+        <div className="ml-auto flex items-center gap-3">
+          <span className="font-mono text-[10px] tabular-nums text-ink-dim">
+            T+ {fmt(readout?.time ?? 0, 2)} s
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span
+              className="inline-block h-2 w-2"
+              style={{ backgroundColor: PHASE_COLORS[phase] }}
+            />
+            <span className="font-mono text-[10px] tracking-[0.15em] text-ink">
+              {PHASE_LABELS[phase] ?? phase.toUpperCase()}
+            </span>
+          </span>
+        </div>
+      </div>
+
+      {configError !== null && (
+        <div className="shrink-0 border-b border-grid bg-panel-2 px-3 py-2 font-mono text-[10px] text-amber-400">
+          LIVE CONFIGS UNAVAILABLE: {configError}
+        </div>
+      )}
+
+      {wasm === 'unavailable' && (
+        <div className="shrink-0 border-b border-grid bg-panel-3 px-3 py-2 text-[10px] leading-relaxed text-ink-dim">
+          <span className="font-mono text-amber-400">KERNEL NOT LOADED.</span> The WebAssembly
+          build was not found or does not match this page, so the live run is disabled. Recorded
+          scenarios are unaffected. Build it with{' '}
+          <span className="font-mono text-ink">./wasm/build.sh</span>.
+          {wasmError !== null && (
+            <>
+              <br />
+              <span className="font-mono text-ink-faint">{wasmError}</span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Scene and rail */}
+      <div className="min-h-0 flex-1 overflow-y-auto xl:overflow-hidden">
+        <div className="flex min-h-0 flex-col xl:h-full xl:flex-row">
+          <div className="relative h-[54vh] min-h-0 w-full shrink-0 xl:h-auto xl:flex-1">
+            {selected !== null && buffer !== null ? (
+              <LiveScene cfg={selected} buffer={buffer} />
+            ) : (
+              <div className="flex h-full items-center justify-center bg-panel-2 font-mono text-[10px] tracking-[0.2em] text-ink-faint">
+                SELECT A SCENARIO
+              </div>
             )}
-          </div>
-        )}
 
-        <section className="border border-grid">
-          <div className="border-b border-grid px-3 py-1.5 font-mono text-[9px] tracking-[0.2em] text-ink-faint">
-            SCENARIO
-          </div>
-          <div className="grid grid-cols-1 gap-px bg-grid sm:grid-cols-2">
-            {(configs ?? []).map((cfg) => {
-              const isSelected = cfg.id === selectedId
-              return (
-                <button
-                  key={cfg.id}
-                  type="button"
-                  onClick={() => setSelectedId(cfg.id)}
-                  className={`flex flex-col items-start gap-1 px-3 py-2.5 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-signal ${
-                    isSelected ? 'bg-panel-3' : 'bg-panel hover:bg-panel-2'
-                  }`}
-                >
-                  <span className="flex w-full items-baseline justify-between gap-2">
-                    <span
-                      className={`font-mono text-[11px] font-semibold tracking-wider ${
-                        isSelected ? 'text-signal' : 'text-ink-dim'
-                      }`}
-                    >
-                      {cfg.label.toUpperCase()}
-                    </span>
-                    <span className="font-mono text-[9px] text-ink-faint">
-                      {cfg.duration_s.toFixed(0)} s
-                    </span>
-                  </span>
-                  <span className="text-[10px] leading-tight text-ink-faint">
-                    {cfg.blurb}
-                  </span>
-                </button>
-              )
-            })}
-            {configs === null && configError === null && (
-              <div className="bg-panel px-3 py-3 font-mono text-[10px] text-ink-faint">
-                LOADING CONFIGS
+            {/* Overlay: what is being flown, and how to look around. */}
+            <div className="pointer-events-none absolute left-3 top-3 flex flex-col gap-1">
+              <span className="font-mono text-[11px] font-semibold tracking-[0.18em] text-ink">
+                {selected?.label.toUpperCase() ?? 'NO SCENARIO'}
+              </span>
+              <span className="max-w-md font-mono text-[9px] leading-relaxed text-ink-faint">
+                {selected?.blurb ?? ''}
+              </span>
+            </div>
+            <div className="pointer-events-none absolute bottom-3 left-3 font-mono text-[9px] tracking-[0.18em] text-ink-faint">
+              DRAG TO ORBIT / SCROLL TO ZOOM
+            </div>
+            {runState === 'idle' && readout === null && selected !== null && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-10 flex justify-center">
+                <span className="border border-grid bg-panel/90 px-3 py-1.5 font-mono text-[10px] tracking-[0.18em] text-signal">
+                  PRESS RUN TO FLY THE NATIVE CORE
+                </span>
               </div>
             )}
           </div>
-        </section>
 
-        <section className="flex flex-wrap items-center gap-3 border border-grid px-3 py-3">
-          <button
-            type="button"
-            onClick={startRun}
-            disabled={!canRun}
-            className={`border px-4 py-2 font-mono text-[11px] tracking-[0.2em] transition-colors ${
-              canRun
-                ? 'border-signal text-signal hover:bg-panel-2'
-                : 'border-grid text-ink-faint'
-            }`}
-          >
-            {runState === 'running' ? 'RUNNING' : 'RUN'}
-          </button>
-
-          <div className="min-w-40 flex-1">
-            <div className="h-1 w-full bg-panel-3">
-              <div
-                className="h-1 bg-signal transition-[width] duration-75"
-                style={{ width: `${Math.round(progress * 100)}%` }}
+          <aside className="w-full shrink-0 border-t border-grid p-2 xl:flex xl:h-full xl:w-[380px] xl:flex-col xl:border-l xl:border-t-0">
+            {selected !== null && buffer !== null ? (
+              <TelemetryRail
+                cfg={selected}
+                buffer={buffer}
+                readout={readout}
+                runState={runState}
               />
-            </div>
-            <div className="mt-1.5 flex justify-between font-mono text-[9px] text-ink-faint">
-              <span>
-                {selected !== null
-                  ? `${selected.duration_s.toFixed(0)} s AT 200 Hz (PLANT) / 100 Hz (CONTROL)`
-                  : 'SELECT A SCENARIO'}
-              </span>
-              <span>{Math.round(progress * 100)}%</span>
-            </div>
-          </div>
-        </section>
-
-        {live !== null && (
-          <section className="border border-grid">
-            <div className="border-b border-grid px-3 py-1.5 font-mono text-[9px] tracking-[0.2em] text-ink-faint">
-              {runState === 'running' ? 'LIVE TELEMETRY' : 'FINAL TELEMETRY'}
-            </div>
-            <dl className="grid grid-cols-2 gap-px bg-grid sm:grid-cols-4">
-              {[
-                { label: 'PHASE', value: PHASE_LABELS[live.phase] ?? live.phase },
-                { label: 'T+', value: `${fmt(live.time, 1)} s` },
-                { label: 'ALT', value: `${fmt(live.altitude, 1)} m` },
-                { label: 'GND SPD', value: `${fmt(live.speed, 1)} m/s` },
-              ].map((tile) => (
-                <div key={tile.label} className="bg-panel px-3 py-2">
-                  <dt className="font-mono text-[9px] tracking-[0.15em] text-ink-faint">
-                    {tile.label}
-                  </dt>
-                  <dd
-                    className={`mt-1 font-mono text-[11px] ${
-                      tile.label === 'PHASE' ? 'text-signal' : 'text-ink'
-                    }`}
-                  >
-                    {tile.value}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          </section>
-        )}
-
-        {summary !== null && (
-          <section className="border border-grid">
-            <div className="flex items-center justify-between border-b border-grid px-3 py-1.5">
-              <span className="font-mono text-[9px] tracking-[0.2em] text-ink-faint">
-                LAST RUN
-              </span>
-              <button
-                type="button"
-                onClick={() => setView('replay')}
-                className="font-mono text-[9px] tracking-[0.2em] text-signal hover:underline"
-              >
-                OPEN IN REPLAY
-              </button>
-            </div>
-            <dl className="grid grid-cols-2 gap-px bg-grid sm:grid-cols-3">
-              {[
-                { label: 'PHASES', value: summary.phases.map((p) => PHASE_LABELS[p] ?? p).join('  \u203a  ') },
-                {
-                  label: 'WAYPOINTS',
-                  value: `${summary.waypoints_reached} / ${summary.waypoint_count}`,
-                },
-                {
-                  label: 'MISSION',
-                  value: summary.mission_complete ? 'COMPLETE' : 'INCOMPLETE',
-                },
-                { label: 'EKF RMSE', value: `${fmt(summary.ekf_position_rmse_m)} m` },
-                {
-                  label: 'MIN CLEARANCE',
-                  value:
-                    summary.min_clearance_m === null
-                      ? 'n/a'
-                      : `${fmt(summary.min_clearance_m)} m`,
-                },
-                {
-                  label: 'GPS FIXES',
-                  value: `${summary.gps_accepted} / ${summary.gps_accepted + summary.gps_gated}`,
-                },
-              ].map((tile) => (
-                <div key={tile.label} className="bg-panel px-3 py-2">
-                  <dt className="font-mono text-[9px] tracking-[0.15em] text-ink-faint">
-                    {tile.label}
-                  </dt>
-                  <dd
-                    className={`mt-1 text-[11px] ${
-                      tile.label === 'PHASES'
-                        ? 'font-mono text-[10px] text-ink-dim'
-                        : 'font-mono text-ink'
-                    }`}
-                  >
-                    {tile.value}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-          </section>
-        )}
+            ) : (
+              <div className="font-mono text-[10px] tracking-[0.18em] text-ink-faint">
+                AWAITING SCENARIO
+              </div>
+            )}
+          </aside>
+        </div>
       </div>
+
+      {summary !== null && (
+        <section className="shrink-0 border-t border-grid bg-panel">
+          <div className="flex items-center justify-between border-b border-grid px-3 py-1.5">
+            <span className="font-mono text-[9px] tracking-[0.2em] text-ink-faint">LAST RUN</span>
+            <button
+              type="button"
+              onClick={() => setView('replay')}
+              className="font-mono text-[9px] tracking-[0.2em] text-signal hover:underline"
+            >
+              OPEN IN REPLAY
+            </button>
+          </div>
+          <dl className="grid grid-cols-2 gap-px bg-grid sm:grid-cols-3 lg:grid-cols-6">
+            {[
+              {
+                label: 'PHASES',
+                value: summary.phases.map((p) => PHASE_LABELS[p] ?? p).join(' / '),
+              },
+              {
+                label: 'WAYPOINTS',
+                value: `${summary.waypoints_reached} / ${summary.waypoint_count}`,
+              },
+              { label: 'MISSION', value: summary.mission_complete ? 'COMPLETE' : 'INCOMPLETE' },
+              { label: 'EKF RMSE', value: `${fmt(summary.ekf_position_rmse_m, 2)} m` },
+              {
+                label: 'MIN CLEARANCE',
+                value:
+                  summary.min_clearance_m === null
+                    ? 'n/a'
+                    : `${fmt(summary.min_clearance_m, 2)} m`,
+              },
+              {
+                label: 'GPS FIXES',
+                value: `${summary.gps_accepted} / ${summary.gps_accepted + summary.gps_gated}`,
+              },
+            ].map((tile) => (
+              <div key={tile.label} className="bg-panel px-3 py-2">
+                <dt className="font-mono text-[9px] tracking-[0.15em] text-ink-faint">
+                  {tile.label}
+                </dt>
+                <dd
+                  className={`mt-1 ${
+                    tile.label === 'PHASES'
+                      ? 'font-mono text-[10px] text-ink-dim'
+                      : 'font-mono text-[11px] tabular-nums text-ink'
+                  }`}
+                >
+                  {tile.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      )}
     </div>
   )
 }
