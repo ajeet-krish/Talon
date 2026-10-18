@@ -605,6 +605,75 @@ confusing `_PyObject_*` link failure; doing it in `build.rs` fixes it once.
 binding tests, which is already the documented order (`uv sync` first). The
 x86_64 and Linux equivalents of the link flags are handled by the same call.
 
+## Altitude legibility (Phase 7, 2026-10-18)
+
+### D31: Altitude is stated by a mission-derived ladder and a screen-space plumb line
+
+**Decision.** The live scene gains a graduated altitude ladder standing at the
+pad (`components/live/LiveAltitude.tsx`), and the vehicle's plumb line is drawn
+at a constant on-screen width. The ladder's rungs come from
+`altitudeLadder(cfg)` in `src/live/view.ts`, which is pure and unit tested: a
+measurement grid sized from the mission's own scale (a `niceStep` interval from
+0.5 m to 100 m, at most six rungs), with the rung at an altitude the mission
+actually flies drawn longer and in the signal colour, and the mission's ceiling
+always present as a rung. Flown altitudes are the takeoff column and every
+waypoint's altitude; ground level is excluded, it is the datum. The ladder is
+static, so it costs no per-frame work.
+
+The plumb line keeps its constant model radius of 1.2 cm but is scaled per
+frame by the camera distance (0.0016 world metres of radius per metre of
+distance), so it stays a hairline at any zoom, and its opacity grows a little
+with height so a long line carries a little more ink.
+
+The replay scene is deliberately untouched: it keeps its shadow cue and its
+ground-track yaw.
+
+**Rationale.** Altitude is the one quantity a perspective camera cannot read.
+The shadow says where the vehicle is over the ground and the plumb line says
+how far above it, but neither states a number: an absolute claim needs
+something that stands still to measure against. The rungs must come from the
+mission rather than a generic 5/10/20 ladder, because a ruler with the wrong
+major marks is worse than no ruler, and the run's own flight level is the
+interesting mark.
+
+The fixed-radius stem was measurably broken, which is what surfaced the phase.
+At the default circuit frame the camera sits about 79 m from the pad, the
+viewport covers roughly 60 m vertically, and a 1.2 cm cylinder is therefore
+about 0.14 px wide: the cue was absent exactly when the scene was most
+cluttered.
+
+**Trade-off.** A world-scaled sprite label cannot be readable across the whole
+mission scale, and this scene labels with sprites rather than DOM overlays
+(D-labels decision in `labels.ts`). At the default frame for the two circuit
+scenarios the rungs read but the numbers need the pad zoom an operator would
+use to read a ruler anyway; for the hover and wind scenarios, whose missions
+are small, the numbers are readable immediately. The alternative was to keep
+the numbers readable at 80 m by making the quads about 4 m tall, which would
+have dwarfed the vehicle. The second trade-off is asymmetry: the replay views
+now state altitude less loudly than the live view does, because this phase was
+scoped to the live ground station.
+
+### D32: Scene code that cannot be rendered in CI is guarded by pure tests and the build
+
+**Decision.** The ladder's decision logic lives in `src/live/view.ts` as pure
+functions (`niceStep`, `missionAltitudes`, `altitudeLadder`) with vitest
+coverage, including a test that reads the committed
+`public/data/live/configs.json` and asserts every served scenario has a ladder
+whose ceiling is its highest flown altitude. The React components hold only
+geometry and materials, and are guarded by the typecheck in `npm run build`.
+
+**Rationale.** The repository has no browser in CI: `npm run smoke:wasm` flies
+the wasm engine headlessly but never touches the R3F tree, so a scene component
+can only be verified by its build. Pushing the arithmetic into pure functions is
+the only way to make the interesting part of a visual change checkable, and
+reading the shipped configs rather than a fixture makes the drift check real
+(the ladder is derived from the same file the browser loads at run time).
+
+**Trade-off.** Geometry, colour, and proportions are not covered by anything
+automated; they were reasoned about from the mission scale and the default
+frame distance, and a human still has to look at the page. This is recorded as
+a residual risk rather than papered over.
+
 ## Open decisions (resolved at Phase 4)
 
 - Acceptance metrics for v2 reactive avoidance: still open (no live

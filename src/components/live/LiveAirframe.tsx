@@ -8,19 +8,28 @@
  * with what the picture does. A nose that only yawed to the ground track would
  * hide the attitude the estimator is doing work to hold.
  *
- * Two altitude cues travel with the vehicle: a soft shadow on the ground plane
- * and a thin stem from the vehicle down to it. Altitude is the quantity that
- * does not read from a perspective camera on its own, so it is stated twice.
+ * Three altitude cues now state the same quantity at three ranges. A soft
+ * shadow says where the vehicle is over the ground. A plumb line joins the
+ * vehicle to that shadow at a constant on-screen width, so it survives the
+ * zoom that a fixed-radius cylinder does not (1.2 cm is sub-pixel past about
+ * 30 m). And the pad's graduated ladder, placed by LiveAltitude, states the
+ * absolute values, which neither of the first two can: they answer "how high",
+ * only a number answers "ten metres".
  */
 
 import { useMemo, useRef } from 'react'
-import { useFrame } from '@react-three/fiber'
+import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { nedToScene } from '@/utils/interpolation'
 import { emptyFrame, type LiveBuffer } from '@/live/stream'
 import { SCENE_FROM_NED } from '@/live/view'
 
 const scratch = emptyFrame()
+
+/** On-screen radius of the plumb line, per metre of camera distance. */
+const PLUMB_RADIUS_PER_M = 0.0016
+/** Radius of the stem cylinder in the model, before the per-frame scale. */
+const PLUMB_MODEL_RADIUS = 0.012
 
 /** Rotor arm angles in the body x-y plane (a plus frame, four arms). */
 const ARM_ANGLES = [Math.PI / 4, (3 * Math.PI) / 4, (5 * Math.PI) / 4, (7 * Math.PI) / 4]
@@ -40,6 +49,7 @@ export function LiveAirframe({ buffer }: { buffer: LiveBuffer }) {
   const stem = useRef<THREE.Mesh>(null)
   const rotors = useRef<(THREE.Group | null)[]>([])
   const q = useMemo(() => new THREE.Quaternion(), [])
+  const camera = useThree((s) => s.camera)
 
   useFrame((_, delta) => {
     const g = body.current
@@ -80,10 +90,19 @@ export function LiveAirframe({ buffer }: { buffer: LiveBuffer }) {
 
     const st = stem.current
     if (st) {
-      st.visible = y > 0.4
+      const height = Math.max(y, 0)
+      st.visible = height > 0.4
       if (st.visible) {
-        st.scale.y = Math.max(y, 0.001)
-        st.position.y = y / 2
+        // Constant on-screen width: the world radius grows with the camera
+        // distance, so the plumb line is the same hairline whether the pad is
+        // framed from 20 m or the whole field from 200 m.
+        const distance = camera.position.distanceTo(g.position)
+        const scale = (distance * PLUMB_RADIUS_PER_M) / PLUMB_MODEL_RADIUS
+        st.scale.set(scale, height, scale)
+        st.position.y = height / 2
+        const mat = st.material as THREE.MeshBasicMaterial
+        // A tall line reads as more of the cue, so it carries a little more ink.
+        mat.opacity = 0.26 + Math.min(height / 40, 1) * 0.18
       }
     }
   })
@@ -97,7 +116,7 @@ export function LiveAirframe({ buffer }: { buffer: LiveBuffer }) {
           <meshBasicMaterial color="#000000" transparent opacity={0.3} depthWrite={false} />
         </mesh>
         <mesh ref={stem}>
-          <cylinderGeometry args={[0.012, 0.012, 1, 6]} />
+          <cylinderGeometry args={[PLUMB_MODEL_RADIUS, PLUMB_MODEL_RADIUS, 1, 6]} />
           <meshBasicMaterial color="#26b8d9" transparent opacity={0.3} depthWrite={false} />
         </mesh>
       </group>

@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-18
 
-## Current-state snapshot (FlightLab Phase 5b, complete)
+## Current-state snapshot (FlightLab Phase 7, complete)
 
 Talon is a single-vehicle UAV GNC stack whose autopilot is one Rust library,
 `talon-core`, plus a Python analysis harness and a TypeScript flight tool.
@@ -25,6 +25,12 @@ own higher-level layers (guidance, mission, motors, sensors, state machine) for
 the recorded runs, while its plant, controller, estimator and wind come from the
 Rust `_core`. The recorded telemetry, the validation report, and the five videos
 remain frozen as produced by the Python stack and are not regenerated.
+
+Phase 6 gave the live run a ground-station shell: a scene framed from the
+mission, an instrument rail, strip charts, and per-phase teaching captions
+(D26, D27). Phase 7 made altitude legible in that scene: the pad carries a
+graduated ladder derived from the altitudes the mission flies, and the
+vehicle's plumb line is drawn at a constant on-screen width (D31).
 
 ### Repository layout
 
@@ -271,6 +277,8 @@ Layers, all reading the same recorder:
 | Keep-out zones | `components/live/LiveField.tsx` | `config.obstacles` + live clearance |
 | Trail | `components/live/LiveTrail.tsx` | recorded samples, phase-colored |
 | Vehicle | `components/live/LiveAirframe.tsx` | recorded attitude, body axes |
+| Altitude ladder | `components/live/LiveAltitude.tsx` | `config.takeoff_altitude` + waypoint altitudes, static |
+| Plumb line and shadow | `components/live/LiveAirframe.tsx` | the vehicle's own pose, per frame |
 | Bloom | `components/live/LiveScene.tsx` | `@react-three/postprocessing` |
 | Numbers, health, captions | `components/live/TelemetryRail.tsx` | `readReadout` at ~10 Hz |
 | Strip charts | `components/live/LiveSpark.tsx` | recorded series |
@@ -288,6 +296,12 @@ trajectory, because a live trajectory is a single point on the first frame and
 would drag the camera out to the launch pad. And the vehicle is drawn in body
 axes with the truth attitude applied, so the nose visibly drops in cruise and
 leans in a gust, with the roll and pitch in the rail agreeing with the picture.
+The third fact is altitude. A shadow and a plumb line can both answer "how
+high", but only a number answers "ten metres", and a number needs something
+that stands still to be measured against. So the pad carries a graduated
+ladder, derived from the altitudes the mission actually flies, and the vehicle
+carries a plumb line drawn at a constant on-screen width so the cue survives
+the zoom that a fixed-radius stem does not.
 
 `scripts/smoke_live_wasm.mjs` (`npm run smoke:wasm`) flies every live config
 through the built wasm the way the page does and asserts the outcomes, since no
@@ -307,6 +321,6 @@ lands), and that a paced 1x run tracks the wall clock without drift.
 | 5b | WASM + PyO3 bindings, retire the C++ and TypeScript autopilots | Complete |
 | 5c | Generated TypeScript type mirrors (ts-rs) | Not started |
 | 6 | GCS shell with live telemetry and teaching captions | Complete |
-| 7 | Altitude legibility in the scene | In Progress |
+| 7 | Altitude legibility in the scene | Complete |
 | 8 | Mission authoring (waypoints, wind, faults) | Not started |
 | 9 | Reactive avoidance in Rust, with validation | Not started |

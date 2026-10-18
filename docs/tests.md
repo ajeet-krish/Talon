@@ -2,6 +2,48 @@
 
 Last updated: 2026-10-18
 
+## Altitude legibility in the live scene (Phase 7, 2026-10-18)
+
+| Suite | Command | Result |
+|-------|---------|--------|
+| Web unit tests (vitest) | `npm test` | 131 pass (10 files) |
+| Typecheck + production build | `npm run build` | clean, 647 modules |
+| Live wasm smoke test | `npm run smoke:wasm` | all checks pass, 4 of 4 configs |
+| Served build | `npm run preview` + curl | 200 for the page, the wasm module, and the live configs |
+
+Vitest moved from 122 to 131 (9 new tests). Nothing else in the suite changed:
+the phase touches the live scene only, so the Rust and Python suites were not
+re-run for it.
+
+### New tests
+
+Nine of the new tests are added to `src/live/view.test.ts`:
+
+- `altitudeLadder` (6). A 10 m mission gets 2 m rungs, 2 through 10, with 10
+  flagged as the flight level. A waypoint altitude is flagged too
+  (`takeoff 10, waypoint 6`). An off-grid ceiling is appended rather than lost
+  (`takeoff 7` gives rungs 2, 4, 6, then the ceiling at 7). An off-grid
+  waypoint altitude is flagged over the grid rung below it (`takeoff 9,
+  waypoint 6` gives 2, 4, 6, 8, 9 with 6 and 9 flagged). A large mission stays
+  bounded (100 m gives at most seven rungs, the highest exactly 100). A mission
+  that never leaves the ground gets no ladder and no altitudes.
+- `niceStep` (2). The interval snaps down to something an operator would print
+  (16.67 to 10, 2.4 to 2, 0.6 to 0.5) and falls back to the finest interval
+  when the value is below all of them.
+- Shipped configs (1). Every scenario in the committed
+  `public/data/live/configs.json` produces a non-empty ladder whose highest
+  rung is its highest flown altitude and is flagged. This is the drift check
+  that ties the ruler to the scenarios the app actually loads.
+
+### Not covered
+
+The ladder's geometry, proportions, and colours, and the plumb line's width,
+have no automated coverage: there is no browser in CI and `npm run smoke:wasm`
+flies the wasm engine rather than the React Three Fiber tree. The decision
+logic is pure and tested; the drawing is guarded by the typecheck in
+`npm run build` and recorded as a residual risk in `docs/reviews.md`. A human
+has to look at the page.
+
 ## Rust core behind both wrappers (FlightLab Phase 5b, 2026-10-18)
 
 | Suite | Command | Result |

@@ -2,6 +2,96 @@
 
 Last updated: 2026-10-18
 
+## Altitude legibility in the live scene (Phase 7, 2026-10-18)
+
+Scope: `src/live/view.ts` (new `AltitudeTick`, `niceStep`, `missionAltitudes`,
+`altitudeLadder`), `src/live/view.test.ts` (the ladder suites, including one
+that reads the committed `public/data/live/configs.json`),
+`src/components/live/LiveAltitude.tsx` (new), the plumb-line frame logic and
+header comment in `src/components/live/LiveAirframe.tsx`, and the mount in
+`src/components/live/LiveScene.tsx`. The replay scene is untouched by design.
+
+Verdict: PASS, with residual risk on the things no automated check can see.
+
+### Correctness
+
+- PASS: `altitudeLadder` always ends on the mission's ceiling. The grid is
+  built at `floor(top / step)`, and the top (always a flown altitude) is
+  appended when the grid falls short, so the highest rung equals
+  `max(missionAltitudes(cfg))`. This is asserted directly, and again against
+  every shipped config.
+- PASS: the flight-level flag is not merely a rung existence check. A rung is
+  flagged when it is within a tenth of the spacing of a flown altitude, so an
+  off-grid waypoint altitude is flagged at its own ceiling rung rather than
+  being lost, which the `takeoff 9, waypoint 6` case pins.
+- PASS: altitude sign. Waypoint altitudes are read as `-w.position[2]`, the same
+  NED-down to up conversion `nedToScene` uses. A reversed sign would have made
+  every waypoint altitude negative, `missionAltitudes` would have filtered them
+  out, and the ladder would have been empty; both the unit tests and the
+  shipped-config test would have failed loudly.
+- PASS: the rung count is bounded. Small missions get fine intervals and large
+  ones coarse ones (`niceStep`), and the doubling loop caps the grid at
+  `maxTicks` rungs, so a 100 m mission draws five rungs rather than twenty.
+  Asserted for a 100 m takeoff altitude.
+- PASS: the plumb line is scaled on all three axes, so the cylinder's radius
+  scales with it; scaling only `y` (the previous behaviour) is what left the
+  stem at a fixed world radius. The model radius is a single constant used in
+  both the geometry argument and the scale arithmetic.
+- PASS: visibility gates are unchanged in kind. The plumb line hides below
+  0.4 m of height and the shadow fades out entirely, so a landed or idle
+  vehicle shows no phantom cue.
+- PASS: label textures are disposed on unmount and on scenario change
+  (`textures` is the effect dependency), matching `LiveField`'s existing
+  disposal discipline.
+
+### Conventions
+
+- PASS: no em dashes, double hyphens used as dashes, or dash equivalents in the
+  new files.
+- PASS: pure logic sits in `src/live/view.ts` with vitest coverage; the
+  component holds geometry and materials only, which is the stated split for
+  `src/live` and the reason the arithmetic is testable at all.
+- PASS: the ladder reuses `labelTexture` rather than introducing a second
+  labelling mechanism, so the "sprites, not DOM overlays" decision holds.
+- PASS: no new hue. The measuring grid is steel, the axis and labels are the
+  existing grid greys, and only the flight level uses the signal cyan that the
+  route, the waypoint rings, and the nose already own, where "this is where we
+  fly" is the same meaning.
+
+### Maintainability
+
+- PASS: one helper module owns the ladder's arithmetic, and the component is a
+  direct drawing of its output, so a change to the rule is a change in one
+  place with tests around it.
+- PASS: the shipped-config test reads the same JSON the page fetches, so the
+  ladder cannot drift from the scenarios the app actually serves.
+- PASS: the header comments state why the ladder exists and what the three
+  altitude cues each do, so the next reader does not add a fourth.
+
+### Security
+
+- PASS: no new input surface. The only text rendered is `String(altitude)` from
+  numbers derived from committed config, and the sprites are canvas-drawn, so
+  there is no injection path.
+- PASS: no network, filesystem, or user data access in the scene; the test's
+  `readFileSync` is a fixed repository path.
+
+### Residual risk
+
+- No browser runs in CI, and `npm run smoke:wasm` exercises the engine rather
+  than the R3F tree, so nothing automated has looked at this geometry. Sizes,
+  proportions, and colours were derived from the mission scale and the default
+  frame distance (about 79 m for the circuit scenarios, roughly 11 px per metre)
+  and the reasoning is recorded in D31, but a human still has to open the page.
+- Sprite labels are world-scaled, so at the default frame for the two circuit
+  scenarios the rungs read and the numbers need a pad zoom. This is inherent to
+  the no-DOM-overlay decision, not a bug to fix here.
+- The live and replay scenes now state altitude differently, because this phase
+  was scoped to the live ground station. If the replay is brought up to match,
+  the plumb-line logic in `LiveAirframe` and the ladder's helper are both
+  reusable, but `DroneMarker` yaws to the ground track rather than showing
+  attitude, so it is not a straight port.
+
 ## PyO3 bindings and the C++ retirement (FlightLab Phase 5b, 2026-10-18)
 
 Scope: `bindings/` (`Cargo.toml`, `build.rs`, `build.sh`, `src/lib.rs`,

@@ -77,6 +77,69 @@ export function missionBounds(cfg: LiveConfig): SceneBounds {
   return { center, radius }
 }
 
+/** One rung of the pad-side altitude ladder. */
+export interface AltitudeTick {
+  /** Height above the ground plane (m). */
+  altitude: number
+  /** True for the rung at an altitude the mission actually flies. */
+  flightLevel: boolean
+}
+
+/** Measurement intervals the ladder may use (m), ascending. */
+const NICE_STEPS = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100]
+
+/** The largest measurement interval at or below `value` (m), so the ladder
+ *  never uses a rung spacing nobody measures in. Falls back to the finest
+ *  interval when `value` is below all of them. */
+export function niceStep(value: number): number {
+  let step = NICE_STEPS[0] ?? 1
+  for (const candidate of NICE_STEPS) {
+    if (candidate <= value) step = candidate
+  }
+  return step
+}
+
+/** Altitudes the mission actually uses (m above the ground plane): the takeoff
+ *  column and every waypoint. Ground level is excluded, it is the datum. */
+export function missionAltitudes(cfg: LiveConfig): number[] {
+  const altitudes = [cfg.takeoff_altitude, ...cfg.waypoints.map((w) => -w.position[2])]
+  return altitudes.filter((a) => Number.isFinite(a) && a > 0)
+}
+
+/**
+ * The graduated altitude ladder drawn beside the pad.
+ *
+ * The rungs are a regular measurement grid, sized from the mission's own
+ * scale, and the rung at an altitude the mission flies is flagged: the ladder
+ * states the plan, not just the grid. The top rung is always the highest
+ * altitude flown, so the ladder reaches the mission's ceiling even when the
+ * grid runs out below it (at most `maxTicks` grid rungs, plus that ceiling).
+ */
+export function altitudeLadder(cfg: LiveConfig, maxTicks = 6): AltitudeTick[] {
+  const flown = missionAltitudes(cfg)
+  if (flown.length === 0) return []
+  const top = Math.max(...flown)
+
+  let step = niceStep(top / maxTicks)
+  while (top / step > maxTicks) step *= 2
+
+  const ticks: AltitudeTick[] = []
+  const rungs = Math.floor(top / step + 1e-9)
+  for (let i = 1; i <= rungs; i += 1) {
+    const altitude = i * step
+    ticks.push({
+      altitude,
+      flightLevel: flown.some((f) => Math.abs(f - altitude) <= step * 0.1),
+    })
+  }
+
+  const highest = ticks.length > 0 ? (ticks[ticks.length - 1]?.altitude ?? 0) : 0
+  if (top - highest > step * 0.1) {
+    ticks.push({ altitude: top, flightLevel: true })
+  }
+  return ticks
+}
+
 /** Roll, pitch, and heading in radians, from a body-to-NED quaternion. */
 export interface Attitude {
   roll: number

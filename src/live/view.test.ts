@@ -7,8 +7,16 @@
  * dive, which an educational tool can not afford).
  */
 
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { missionBounds, rollPitchYaw, SCENE_FROM_NED } from './view'
+import {
+  altitudeLadder,
+  missionAltitudes,
+  missionBounds,
+  niceStep,
+  rollPitchYaw,
+  SCENE_FROM_NED,
+} from './view'
 import { nedToScene } from '@/utils/interpolation'
 import type { LiveConfig } from './types'
 
@@ -75,6 +83,90 @@ describe('missionBounds', () => {
     const bounds = missionBounds(config({ takeoff_altitude: 0 }))
     expect(Number.isFinite(bounds.center[0])).toBe(true)
     expect(bounds.radius).toBeGreaterThanOrEqual(14)
+  })
+})
+
+describe('altitudeLadder', () => {
+  it('puts a rung at the altitude the mission holds, on a metred grid', () => {
+    const ticks = altitudeLadder(config({ takeoff_altitude: 10 }))
+    // A 10 m mission gets 2 m rungs, 2 through 10, and 10 is the flight level.
+    expect(ticks.map((t) => t.altitude)).toEqual([2, 4, 6, 8, 10])
+    expect(ticks.filter((t) => t.flightLevel).map((t) => t.altitude)).toEqual([10])
+  })
+
+  it('marks every altitude the mission flies, waypoints included', () => {
+    const ticks = altitudeLadder(
+      config({
+        takeoff_altitude: 10,
+        waypoints: [{ position: [40, 0, -6], speed: 8, heading: 0, radius: 3 }],
+      }),
+    )
+    const flagged = ticks.filter((t) => t.flightLevel).map((t) => t.altitude)
+    expect(flagged).toContain(6)
+    expect(flagged).toContain(10)
+  })
+
+  it('adds the ceiling rung when the flight level falls between two rungs', () => {
+    const ticks = altitudeLadder(config({ takeoff_altitude: 7 }))
+    // 7 m: 1 m rungs would be 7 of them, so the spacing doubles to 2 m and the
+    // flight level is appended above the last grid rung.
+    expect(ticks.map((t) => t.altitude)).toEqual([2, 4, 6, 7])
+    expect(ticks.filter((t) => t.flightLevel).map((t) => t.altitude)).toEqual([7])
+  })
+
+  it('flags an off-grid waypoint altitude over the grid rung below it', () => {
+    const ticks = altitudeLadder(
+      config({
+        takeoff_altitude: 9,
+        waypoints: [{ position: [40, 0, -6], speed: 8, heading: 0, radius: 3 }],
+      }),
+    )
+    // Grid at 2 m; 6 is a rung and 9 is the ceiling, 8 is neither.
+    expect(ticks.map((t) => t.altitude)).toEqual([2, 4, 6, 8, 9])
+    expect(ticks.filter((t) => t.flightLevel).map((t) => t.altitude)).toEqual([6, 9])
+  })
+
+  it('stays bounded on a large mission: the grid plus the ceiling', () => {
+    const ticks = altitudeLadder(config({ takeoff_altitude: 100 }))
+    // At most maxTicks grid rungs, plus the ceiling when the grid misses it.
+    expect(ticks.length).toBeLessThanOrEqual(7)
+    expect(Math.max(...ticks.map((t) => t.altitude))).toBe(100)
+  })
+
+  it('returns nothing when the mission never leaves the ground', () => {
+    expect(missionAltitudes(config({ takeoff_altitude: 0 }))).toEqual([])
+    expect(altitudeLadder(config({ takeoff_altitude: 0 }))).toEqual([])
+  })
+})
+
+describe('niceStep', () => {
+  it('snaps down to an interval an operator would actually print', () => {
+    expect(niceStep(16.67)).toBe(10)
+    expect(niceStep(2.4)).toBe(2)
+    expect(niceStep(0.6)).toBe(0.5)
+  })
+
+  it('falls back to the finest interval below its own range', () => {
+    expect(niceStep(0.2)).toBe(0.5)
+  })
+})
+
+describe('altitudeLadder against the shipped live configs', () => {
+  // The ladder is the only absolute altitude statement in the scene, so it is
+  // checked against the configs the app actually serves, not a fixture.
+  const shipped = JSON.parse(readFileSync('public/data/live/configs.json', 'utf8')) as {
+    configs: LiveConfig[]
+  }
+
+  it('gives every runnable scenario a ladder that reaches its flight level', () => {
+    expect(shipped.configs.length).toBeGreaterThan(0)
+    for (const cfg of shipped.configs) {
+      const ticks = altitudeLadder(cfg)
+      expect(ticks.length, cfg.id).toBeGreaterThan(0)
+      const ceiling = ticks[ticks.length - 1]
+      expect(ceiling?.altitude, cfg.id).toBe(Math.max(...missionAltitudes(cfg)))
+      expect(ceiling?.flightLevel, cfg.id).toBe(true)
+    }
   })
 })
 

@@ -26,6 +26,7 @@ import { GroundPlane } from '@/components/scene/GroundPlane'
 import { LiveField } from './LiveField'
 import { LiveTrail } from './LiveTrail'
 import { LiveAirframe } from './LiveAirframe'
+import { LiveAltitude } from './LiveAltitude'
 
 /** Places the camera and the orbit target from the mission bounds. */
 function LiveCamera({ bounds }: { bounds: SceneBounds }) {
@@ -85,6 +86,7 @@ export const LiveScene = memo(function LiveScene({
         maxPolarAngle={Math.PI * 0.495}
       />
       <GroundPlane />
+      <LiveAltitude cfg={cfg} />
       <LiveField cfg={cfg} buffer={buffer} />
       <LiveTrail buffer={buffer} />
       <LiveAirframe buffer={buffer} />
