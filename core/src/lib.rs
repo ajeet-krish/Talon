@@ -10,6 +10,7 @@
 pub mod constants;
 pub mod controller;
 pub mod dynamics;
+pub mod ekf;
 pub mod math;
 pub mod rng;
 pub mod types;
