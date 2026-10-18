@@ -243,6 +243,67 @@ impl Session {
         ground - self.runner.truth().position[2]
     }
 
+    /// Samples recorded so far, at the control rate (100 Hz).
+    #[wasm_bindgen(getter)]
+    pub fn sample_count(&self) -> usize {
+        self.runner.sample_count()
+    }
+
+    /// Pull the samples in `[from, sample_count())` as a flat `Float64Array`,
+    /// `sample_stride()` doubles per sample.
+    ///
+    /// This is what a live display consumes: ask for the new tail since the last
+    /// read, append it, and never materialize a whole document mid-flight. The
+    /// layout is documented on the Rust side (`sim::sample_field`); the field
+    /// offsets there and the parser in `src/live/stream.ts` must agree, which a
+    /// test on each side pins.
+    pub fn samples_from(&self, from: usize) -> Vec<f64> {
+        self.runner.samples_from(from)
+    }
+
+    /// The phase timeline as JSON: `[[time_s, "phase"], ...]`, oldest first.
+    ///
+    /// Small enough to re-read on a display tick rather than track increments.
+    pub fn phases_json(&self) -> String {
+        let entries: Vec<(f64, &str)> = self
+            .runner
+            .phase_timeline()
+            .iter()
+            .map(|(t, p)| (*t, p.as_str()))
+            .collect();
+        serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// Accepted GPS fixes since the run started.
+    #[wasm_bindgen(getter)]
+    pub fn gps_accepted(&self) -> u64 {
+        self.runner.gps_counts().0
+    }
+
+    /// GPS fixes rejected by the innovation gate.
+    #[wasm_bindgen(getter)]
+    pub fn gps_gated(&self) -> u64 {
+        self.runner.gps_counts().1
+    }
+
+    /// GPS fixes dropped for an injected outage.
+    #[wasm_bindgen(getter)]
+    pub fn gps_skipped(&self) -> u64 {
+        self.runner.gps_counts().2
+    }
+
+    /// Whether the estimator has converged.
+    #[wasm_bindgen(getter)]
+    pub fn ekf_converged(&self) -> bool {
+        self.runner.ekf_flags().0
+    }
+
+    /// Whether the estimator has been declared divergent.
+    #[wasm_bindgen(getter)]
+    pub fn ekf_diverged(&self) -> bool {
+        self.runner.ekf_flags().1
+    }
+
     /// The schema 1.1 flight document for the run so far, as JSON.
     ///
     /// `generated_utc` is supplied by the caller because this crate has no clock.
@@ -273,6 +334,15 @@ pub fn run_scenario(config_json: &str, generated_utc: &str) -> Result<String, Js
 #[wasm_bindgen]
 pub fn core_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// Doubles per streamed sample, matching `talon_core::sim::SAMPLE_STRIDE`.
+///
+/// Exported so the JavaScript parser can assert its own layout against the
+/// build it is actually running, rather than trusting a hard-coded copy.
+#[wasm_bindgen]
+pub fn sample_stride() -> usize {
+    talon_core::sim::SAMPLE_STRIDE
 }
 
 #[cfg(test)]
@@ -428,6 +498,68 @@ mod tests {
             best = best.max(-runner.truth().position[2]);
         }
         assert!(best > 5.0, "should climb, best altitude {best}");
+    }
+
+    #[test]
+    fn the_streaming_layout_is_exported_and_consistent() {
+        assert_eq!(sample_stride(), talon_core::sim::SAMPLE_STRIDE);
+        assert_eq!(sample_stride(), 36);
+    }
+
+    #[test]
+    fn a_streamed_read_covers_every_recorded_sample() {
+        let config = waypoint_scenario();
+        let mut runner = prepared_runner(&config);
+        let steps = (config.duration_s / DT).round() as usize;
+        for i in 0..steps {
+            runner.step_once(i);
+        }
+        let count = runner.sample_count();
+        assert!(count > 1000, "{count}");
+        let flat = runner.samples_from(0);
+        assert_eq!(flat.len(), count * sample_stride());
+        // The counter the page polls and the buffer it pulls agree.
+        assert!(runner.samples_from(count).is_empty());
+    }
+
+    #[test]
+    fn the_phase_timeline_serializes_as_ordered_pairs() {
+        let config = waypoint_scenario();
+        let mut runner = prepared_runner(&config);
+        let steps = (config.duration_s / DT).round() as usize;
+        for i in 0..steps {
+            runner.step_once(i);
+        }
+        let entries: Vec<(f64, String)> = runner
+            .phase_timeline()
+            .iter()
+            .map(|(t, p)| (*t, p.as_str().to_string()))
+            .collect();
+        let text = serde_json::to_string(&entries).unwrap();
+        let parsed: Vec<(f64, String)> = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed.len(), entries.len());
+        assert!(parsed.len() >= 5, "a full mission visits several phases");
+        for pair in parsed.windows(2) {
+            assert!(pair[0].0 <= pair[1].0);
+        }
+        assert_eq!(parsed[0].1, "idle");
+        assert!(parsed.iter().any(|(_, p)| p == "land"));
+    }
+
+    #[test]
+    fn the_fix_counters_come_straight_off_the_runner() {
+        let config = waypoint_scenario();
+        let mut runner = prepared_runner(&config);
+        for i in 0..4000 {
+            runner.step_once(i);
+        }
+        let (accepted, gated, skipped) = runner.gps_counts();
+        assert!(accepted > 0);
+        assert_eq!(gated, 0, "the nominal scenario gates nothing");
+        assert_eq!(skipped, 0, "and has no outage");
+        let (converged, diverged) = runner.ekf_flags();
+        assert!(converged);
+        assert!(!diverged);
     }
 
     #[test]

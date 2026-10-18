@@ -338,7 +338,45 @@ pub struct SimRunner {
     history_pos_var: Vec<Arr3>,
     history_gyro_bias: Vec<Arr3>,
     history_accel_bias: Vec<Arr3>,
+    history_quat: Vec<[f64; 4]>,
+    history_omega: Vec<Arr3>,
     phase_timeline: Vec<(f64, FlightPhase)>,
+}
+
+/// Doubles per streamed sample in [`SimRunner::samples_from`].
+///
+/// The layout is also asserted by a test, so a change here has to be a
+/// deliberate change on both sides of the wasm boundary.
+pub const SAMPLE_STRIDE: usize = 36;
+
+/// Offsets within one [`SAMPLE_STRIDE`] block, in doubles.
+pub mod sample_field {
+    /// Sim time at the sample (s).
+    pub const TIME: usize = 0;
+    /// Truth position, NED (m).
+    pub const TRUTH_POSITION: usize = 1;
+    /// Truth velocity, NED (m/s).
+    pub const TRUTH_VELOCITY: usize = 4;
+    /// Truth attitude, Hamilton quaternion `[w, x, y, z]`, body to NED.
+    pub const TRUTH_QUATERNION: usize = 7;
+    /// Truth body angular rate (rad/s).
+    pub const TRUTH_ANGULAR_RATE: usize = 11;
+    /// Estimated position, NED (m).
+    pub const EKF_POSITION: usize = 14;
+    /// Estimated velocity, NED (m/s).
+    pub const EKF_VELOCITY: usize = 17;
+    /// Estimated position variance diagonal (m^2).
+    pub const POSITION_VARIANCE: usize = 20;
+    /// Estimated gyro bias (rad/s).
+    pub const GYRO_BIAS: usize = 23;
+    /// Estimated accelerometer bias (m/s^2).
+    pub const ACCEL_BIAS: usize = 26;
+    /// Wind, NED (m/s).
+    pub const WIND: usize = 29;
+    /// Delivered thrust (N).
+    pub const THRUST: usize = 32;
+    /// Delivered body moment (N*m).
+    pub const MOMENT: usize = 33;
 }
 
 impl SimRunner {
@@ -456,8 +494,68 @@ impl SimRunner {
             history_pos_var: Vec::new(),
             history_gyro_bias: Vec::new(),
             history_accel_bias: Vec::new(),
+            history_quat: Vec::new(),
+            history_omega: Vec::new(),
             phase_timeline: vec![(0.0, FlightPhase::Idle)],
         })
+    }
+
+    /// Samples recorded so far, at the control rate (100 Hz).
+    ///
+    /// A live display polls this to learn how much new material there is, then
+    /// pulls it with [`SimRunner::samples_from`].
+    pub fn sample_count(&self) -> usize {
+        self.history_time.len()
+    }
+
+    /// Pack the samples in `[from, sample_count())` into a flat `f64` buffer,
+    /// [`SAMPLE_STRIDE`] doubles per sample.
+    ///
+    /// This is the streaming counterpart of [`SimRunner::snapshot`]: the same
+    /// recorded history, handed out incrementally so a display can consume it
+    /// without materializing a whole document every frame. It carries attitude
+    /// and body rates as well, which the schema document deliberately does not,
+    /// so a live GCS can show them.
+    ///
+    /// `from` is clamped to the recorded length, so a caller that has fallen
+    /// behind (or asked for the future) gets what exists and no more.
+    pub fn samples_from(&self, from: usize) -> Vec<f64> {
+        let start = from.min(self.history_time.len());
+        let n = self.history_time.len() - start;
+        let mut out = Vec::with_capacity(n * SAMPLE_STRIDE);
+        for i in start..self.history_time.len() {
+            let q = self.history_quat[i];
+            let omega = self.history_omega[i];
+            out.push(self.history_time[i]);
+            out.extend_from_slice(&self.history_truth_pos[i]);
+            out.extend_from_slice(&self.history_truth_vel[i]);
+            out.extend_from_slice(&[q[0], q[1], q[2], q[3]]);
+            out.extend_from_slice(&omega);
+            out.extend_from_slice(&self.history_ekf_pos[i]);
+            out.extend_from_slice(&self.history_ekf_vel[i]);
+            out.extend_from_slice(&self.history_pos_var[i]);
+            out.extend_from_slice(&self.history_gyro_bias[i]);
+            out.extend_from_slice(&self.history_accel_bias[i]);
+            out.extend_from_slice(&self.history_wind[i]);
+            out.push(self.history_thrust[i]);
+            out.extend_from_slice(&self.history_moment[i]);
+        }
+        out
+    }
+
+    /// Phase transitions, oldest first.
+    pub fn phase_timeline(&self) -> &[(f64, FlightPhase)] {
+        &self.phase_timeline
+    }
+
+    /// GPS fix accounting: `(accepted, gated, skipped)`.
+    pub fn gps_counts(&self) -> (u64, u64, u64) {
+        (self.gps_accepted, self.gps_gated, self.gps_skipped)
+    }
+
+    /// Estimator flags: `(converged, diverged)`.
+    pub fn ekf_flags(&self) -> (bool, bool) {
+        (self.ekf_converged, self.ekf_diverged)
     }
 
     /// The live flight phase machine.
@@ -1091,6 +1189,9 @@ impl SimRunner {
         let nominal = self.ekf.nominal();
         self.history_gyro_bias.push(to_arr3(&nominal.gyro_bias));
         self.history_accel_bias.push(to_arr3(&nominal.accel_bias));
+        let q = self.truth.orientation;
+        self.history_quat.push([q.w, q.x, q.y, q.z]);
+        self.history_omega.push(to_arr3(&self.truth.angular_rate));
     }
 
     fn finish(&self, duration_s: f64) -> SimResult {
@@ -1411,6 +1512,138 @@ mod tests {
         let first = result.wind_ned.first().copied().unwrap_or([0.0; 3]);
         let last = result.wind_ned.last().copied().unwrap_or([0.0; 3]);
         assert!(first != last, "turbulence should evolve");
+    }
+
+    #[test]
+    fn the_streamed_sample_layout_is_consistent() {
+        use crate::sim::sample_field as f;
+        assert_eq!(f::TIME, 0);
+        assert_eq!(f::TRUTH_POSITION, 1);
+        assert_eq!(f::TRUTH_VELOCITY, 4);
+        assert_eq!(f::TRUTH_QUATERNION, 7);
+        assert_eq!(f::TRUTH_ANGULAR_RATE, 11);
+        assert_eq!(f::EKF_POSITION, 14);
+        assert_eq!(f::EKF_VELOCITY, 17);
+        assert_eq!(f::POSITION_VARIANCE, 20);
+        assert_eq!(f::GYRO_BIAS, 23);
+        assert_eq!(f::ACCEL_BIAS, 26);
+        assert_eq!(f::WIND, 29);
+        assert_eq!(f::THRUST, 32);
+        assert_eq!(f::MOMENT, 33);
+        // Every field must end inside the stride, and the last one must close it.
+        assert_eq!(f::MOMENT + 3, SAMPLE_STRIDE);
+    }
+
+    #[test]
+    fn a_streamed_sample_carries_a_unit_quaternion_with_thrust_below_weight() {
+        let cfg = SimConfig {
+            waypoints: vec![waypoint(50.0, 0.0, -10.0, 3.0)],
+            ..Default::default()
+        };
+        let mut r = SimRunner::new(cfg).unwrap();
+        r.request_event("arm", None);
+        r.request_event("takeoff", None);
+        r.preroll();
+        for i in 0..3000 {
+            r.step_once(i);
+        }
+        let flat = r.samples_from(0);
+        assert_eq!(flat.len(), r.sample_count() * SAMPLE_STRIDE);
+        let last = flat.len() - SAMPLE_STRIDE;
+        let w = flat[last + sample_field::TRUTH_QUATERNION];
+        let x = flat[last + sample_field::TRUTH_QUATERNION + 1];
+        let y = flat[last + sample_field::TRUTH_QUATERNION + 2];
+        let z = flat[last + sample_field::TRUTH_QUATERNION + 3];
+        assert!((w * w + x * x + y * y + z * z - 1.0).abs() < 1e-9);
+        // A 1.5 kg quad needs about 14.7 N to hover; in flight it is in that
+        // range, not zero and not at the motor limit.
+        let thrust = flat[last + sample_field::THRUST];
+        assert!(thrust > 10.0 && thrust < 20.0, "thrust {thrust}");
+    }
+
+    #[test]
+    fn the_streamed_samples_agree_with_the_finished_document() {
+        // The streaming path and the document path are the same history, so a
+        // live display and a replay cannot disagree.
+        let cfg = SimConfig {
+            waypoints: vec![waypoint(30.0, 0.0, -10.0, 3.0)],
+            ..Default::default()
+        };
+        let mut r = SimRunner::new(cfg).unwrap();
+        r.request_event("arm", None);
+        r.request_event("takeoff", None);
+        let result = r.run(20.0).unwrap();
+
+        let flat = r.samples_from(0);
+        assert_eq!(flat.len(), result.time_s.len() * SAMPLE_STRIDE);
+        for i in 0..result.time_s.len() {
+            let base = i * SAMPLE_STRIDE;
+            assert_eq!(flat[base + sample_field::TIME], result.time_s[i]);
+            let p = result.truth_position[i];
+            assert_eq!(
+                [
+                    flat[base + sample_field::TRUTH_POSITION],
+                    flat[base + sample_field::TRUTH_POSITION + 1],
+                    flat[base + sample_field::TRUTH_POSITION + 2],
+                ],
+                p
+            );
+            let e = result.ekf_position[i];
+            assert_eq!(
+                [
+                    flat[base + sample_field::EKF_POSITION],
+                    flat[base + sample_field::EKF_POSITION + 1],
+                    flat[base + sample_field::EKF_POSITION + 2],
+                ],
+                e
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_new_samples_come_out_of_a_delta_read() {
+        let cfg = SimConfig {
+            waypoints: vec![waypoint(40.0, 0.0, -10.0, 3.0)],
+            ..Default::default()
+        };
+        let mut r = SimRunner::new(cfg).unwrap();
+        r.request_event("arm", None);
+        r.request_event("takeoff", None);
+        r.preroll();
+
+        assert_eq!(r.sample_count(), 0);
+        for i in 0..200 {
+            r.step_once(i);
+        }
+        let first = r.sample_count();
+        assert!(first > 0);
+        let a = r.samples_from(0);
+        assert_eq!(a.len(), first * SAMPLE_STRIDE);
+        // Nothing new yet.
+        assert!(r.samples_from(first).is_empty());
+
+        for i in 200..400 {
+            r.step_once(i);
+        }
+        let second = r.sample_count();
+        assert!(second > first);
+        let b = r.samples_from(first);
+        assert_eq!(b.len(), (second - first) * SAMPLE_STRIDE);
+        // The delta picks up exactly where the first read stopped: the last
+        // sample of `a` and the first of `b` are one control period apart.
+        let gap = b[sample_field::TIME] - a[a.len() - SAMPLE_STRIDE + sample_field::TIME];
+        assert!((gap - DT_CONTROL).abs() < 1e-9, "gap {gap}");
+    }
+
+    #[test]
+    fn a_read_past_the_end_returns_nothing_rather_than_panicking() {
+        let mut r = SimRunner::new(SimConfig::default()).unwrap();
+        r.request_event("arm", None);
+        for i in 0..100 {
+            r.step_once(i);
+        }
+        assert!(r.samples_from(usize::MAX).is_empty());
+        assert!(r.samples_from(r.sample_count()).is_empty());
     }
 
     #[test]
