@@ -281,7 +281,7 @@ trustworthy.
 Talon/
 ├── index.html               # web app entry (Vite)
 ├── package.json             # web deps and scripts (dev/build/test)
-├── vite.config.ts           # base '/', '@' alias to src/
+├── vite.config.ts           # base '/Talon/', '@' alias to src/
 ├── src/                     # web app: React 19 + react-three-fiber
 │   ├── views/               #   Replay, Telemetry, Metrics, Videos, Run
 │   ├── components/scene/    #   R3F layers + FlightScene

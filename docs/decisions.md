@@ -1,6 +1,6 @@
 # Talon Decisions
 
-Last updated: 2026-10-17
+Last updated: 2026-10-18
 
 ## FlightLab visual tool (2026-10-16)
 
@@ -217,8 +217,11 @@ this size; regenerate with `copy_data.sh` after `run_all.py`.
 
 **Decision.** The web app moved to the repository root (it is the product:
 Talon FlightLab). The header-only C++ kernel moved to `core/`, and the Python
-package, simulations, and tests moved to `python/`. Vite `base` becomes `/`,
-so GitHub Pages serves the app at the repository Pages root.
+package, simulations, and tests moved to `python/`. Vite `base` becomes `/`.
+
+**Superseded in part by D21.** The base is now `/Talon/`: the repository is a
+GitHub Pages project site served from a subpath, so a root base emitted asset
+URLs one level above the site.
 
 **Rationale.** One repository, one product: the simulator ships as the root
 app rather than as a `talon-replay/` subfolder. The three trees gain single
@@ -312,6 +315,36 @@ only to keep the low-battery guard dormant.
 
 **Trade-off.** The live run cannot demonstrate FDIR. Stated in the Run view
 copy and in docs/tests.md; the recorded scenarios keep that coverage.
+
+## Pages deployment (2026-10-18)
+
+### D21: Project-site base path and GitHub Actions as the Pages source
+
+**Decision.** Vite `base` is `/Talon/`, defaulted in `vite.config.ts` and
+overridable with `VITE_BASE`. The deploy workflow derives the same value from
+`GITHUB_REPOSITORY` (project pages under `/<repo>/`, a `<name>.github.io` page
+at `/`) and passes it as `VITE_BASE`, asserts that the built HTML carries the
+prefix, and adds `wasm/**` to its trigger paths. The repository's Pages source
+is **GitHub Actions**, and `public/.nojekyll` is committed.
+
+**Rationale.** The repository is `ajeet-krish/Talon`, so Pages serves the site
+from `https://ajeet-krish.github.io/Talon/`. With `base: '/'`, `dist/index.html`
+referenced `/assets/index-*.js`, which resolves one level above the site and
+404s, leaving a blank page. That fault was invisible because the repository's
+Pages source was still `legacy` with source `main` `/`: GitHub published the
+raw repository through Jekyll, so `/Talon/` returned the untranspiled source
+`index.html` (`script src="/src/main.tsx"`) while the Actions workflow failed at
+`actions/configure-pages@v5` with "Get Pages site failed ... configured to build
+using GitHub Actions". Deriving the base from the repository name in CI keeps it
+correct across a rename, and the guard step turns a base regression into a build
+failure instead of a silently blank deployment.
+
+**Trade-off.** A root-served local session now needs `VITE_BASE=/ npm run dev`,
+and the dev and preview servers serve under `/Talon/` rather than `/`. That is a
+visible change, but it reproduces production paths exactly, which is what would
+have caught this class of bug. The workflow's `enablement: true` lets
+`configure-pages` switch the source to Actions by itself when the token has the
+`pages: write` scope; otherwise the setting must be flipped by hand.
 
 ## Open decisions (resolved at Phase 4)
 

@@ -1,6 +1,6 @@
 # Talon Architecture
 
-Last updated: 2026-10-17
+Last updated: 2026-10-18
 
 ## Current-state snapshot (FlightLab Phase 4)
 
@@ -15,8 +15,10 @@ TypeScript port of the Python glue, behind a fifth Run section.
 
 ### Repository layout
 
-The web app owns the repository root, so static hosting serves `dist/` from
-the Pages root with no subpath.
+The web app owns the repository root. Hosting publishes the built `dist/`
+from that root as a GitHub Pages *project* site, served from a subpath
+(`https://<owner>.github.io/Talon/`), so Vite's `base` is `/Talon/` and every
+emitted asset URL carries that prefix (D21).
 
     /                      web app (Vite + React 19 + R3F)
       index.html  package.json  vite.config.ts  tsconfig*.json
