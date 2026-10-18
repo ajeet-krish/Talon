@@ -28,3 +28,18 @@ export const SCENARIOS: Record<ScenarioId, ScenarioMeta> = {
     subtitle: 'detour avoidance around keep-out zones',
   },
 }
+
+/** Meta for the in-browser live run, which has no recorded scenario entry. */
+export const LIVE_RUN_META: ScenarioMeta = {
+  label: 'LIVE RUN',
+  subtitle: 'in-browser WASM run',
+}
+
+/**
+ * Meta for any scenario key, including the live run slot. Recorded scenario
+ * ids resolve to their SCENARIOS entry; anything else (the live run) falls
+ * back to LIVE_RUN_META.
+ */
+export function scenarioMeta(id: string): ScenarioMeta {
+  return (SCENARIOS as Record<string, ScenarioMeta | undefined>)[id] ?? LIVE_RUN_META
+}

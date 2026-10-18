@@ -19,6 +19,10 @@ npm run dev                                        # vite dev server
 npm run build                                      # typecheck + production build into dist/
 npm test                                           # vitest unit tests
 scripts/copy_data.sh                               # refresh public/data + public/videos from the driver output
+
+# WebAssembly kernel for the in-browser live run (needs Emscripten)
+./wasm/build.sh                                    # -> public/wasm/talon.js + talon.wasm.wasm
+uv run python python/sims/export_live_configs.py   # -> public/data/live/configs.json + fixtures
 ```
 
 ## Conventions
@@ -31,7 +35,9 @@ scripts/copy_data.sh                               # refresh public/data + publi
 
 ## Project Map
 
-- `src/`: web app source. `views/` (Replay, Telemetry, Metrics, Videos), `components/` (scene, charts, ui), `utils/` (pure), `store/` (Zustand), `data/` (scenario + recording metadata), `hooks/`.
+- `src/`: web app source. `views/` (Replay, Telemetry, Metrics, Videos, Run), `components/` (scene, charts, ui), `live/` (TypeScript glue for the WASM run), `utils/` (pure), `store/` (Zustand), `data/` (scenario + recording + live-run metadata), `hooks/`.
+- `wasm/`: Emscripten build of the kernel (`exports.cpp` embind `Kernel`, `CMakeLists.txt`, `build.sh` -> `public/wasm/`).
+- `fixtures/`: Python-generated parity fixtures for the live-run tests (committed).
 - `core/include/talon/`: header-only C++17 kernel. `dynamics.hpp` (RK4), `wind.hpp` (Dryden), `controller.hpp` (cascaded PD), `ekf.hpp` (MEKF), `types.hpp`, `constants.hpp`.
 - `core/tests/`: Google Test suites.
 - `bindings/pytalon.cpp`: pybind11 module `talon._core`.
@@ -48,7 +54,7 @@ scripts/copy_data.sh                               # refresh public/data + publi
 | Phase 1 | Obstacle scenario + schema 1.1 (offline detour avoidance) | Complete |
 | Phase 2 | Interactive obstacle scene (R3F + bloom + labels) | Complete |
 | Phase 3 | Unified entry point (videos + scene + metrics) | Complete |
-| Phase 4 | In-browser WASM run | Pending |
+| Phase 4 | In-browser WASM run | Complete |
 
 ## Deep Docs
 

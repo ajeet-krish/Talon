@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { useFlightStore } from '@/store/useFlightStore'
-import { SCENARIOS } from '@/data/scenarios'
+import { scenarioMeta } from '@/data/scenarios'
 import { StatTile } from '@/components/ui/StatTile'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { summarizeRun } from '@/utils/telemetry'
@@ -36,7 +36,7 @@ export function MetricsView() {
       <section>
         <SectionHeader
           title="RUN SUMMARY"
-          note={SCENARIOS[activeId].label}
+          note={scenarioMeta(activeId).label}
           hint="derived from the recorded samples"
         />
         {summary ? (

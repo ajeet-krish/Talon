@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useFlightStore } from '@/store/useFlightStore'
-import { SCENARIOS } from '@/data/scenarios'
+import { scenarioMeta } from '@/data/scenarios'
 import { LineChart } from '@/components/charts/LineChart'
 import { StatTile } from '@/components/ui/StatTile'
 import { StatusPanel } from '@/components/ui/StatusPanel'
@@ -31,7 +31,7 @@ export function TelemetryView() {
     )
   }
 
-  const meta = SCENARIOS[activeId]
+  const meta = scenarioMeta(activeId)
   const t1 = data.meta.duration_s
 
   return (

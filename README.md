@@ -1,22 +1,25 @@
 # Talon FlightLab: UAV Autopilot Simulator
 
-Talon FlightLab is a drone autopilot simulator you can fly and inspect in the
-browser. It pairs a validated guidance, navigation, and control (GNC) core
-with a web tool that presents the results: a replayable 3D flight, live
-telemetry channels, the automated validation report, and the recorded flight
-videos.
+Talon FlightLab is a drone autopilot simulator you can fly and inspect in
+the browser. It pairs a validated guidance, navigation, and control (GNC)
+core with a web tool that presents the results: a replayable 3D flight,
+live telemetry channels, the automated validation report, the recorded
+flight videos, and a live run that executes the autopilot itself in the
+browser.
 
 The core is a complete autopilot for a 1.5 kg Crazyflie-class quadrotor: a
 15-state multiplicative error-state Kalman filter, NLGL line-of-sight
 guidance, a cascaded PD controller, an 8-state flight-phase state machine
 with FDIR, and a UDP MAVLink software-in-the-loop (SIL) runner, all closed
 loop against a C++17 rigid-body truth plant. The computational kernel
-(dynamics, Dryden wind, controller, EKF) is header-only C++17 exposed through
-pybind11; the mission, guidance, estimation glue, SIL, and analysis tooling
-are Python. Talon is the single-agent companion to SwarmGNC: where SwarmGNC
-studies multi-agent formation flight, Talon proves one vehicle done honestly,
-estimator in the loop, with every acceptance number checked by an automated
-report.
+(dynamics, Dryden wind, controller, EKF) is header-only C++17, exposed
+through pybind11 for the recorded runs and through Emscripten/embind for
+the web app; the mission, guidance, estimation glue, SIL, and analysis
+tooling are Python, with the browser-side subset ported to TypeScript.
+Talon is the single-agent companion to SwarmGNC: where SwarmGNC studies
+multi-agent formation flight, Talon proves one vehicle done honestly,
+estimator in the loop, with every acceptance number checked by an
+automated report.
 
 ## Run the app
 
@@ -32,54 +35,36 @@ npm test         # vitest unit tests
 The app is served at the Pages root once deployed
 (`https://<user>.github.io/<repo>/`).
 
+The Run section needs the WebAssembly kernel. Build it once with
+`./wasm/build.sh` (Emscripten); without it every other section still works
+and Run disables itself with a clear message.
+
 ## Sections
 
-One entry point, four sections (the replay and telemetry sections share the
+One entry point, five sections (the replay and telemetry sections share the
 playback clock; the left rail always carries the scenario list):
 
-- **Replay**: a full-bleed 3D scene. Scrub a recorded flight and read the
-  autopilot working: EKF state estimation with a 3-sigma covariance
-  ellipsoid, the flight-phase state machine (phase-colored trail and
-  phase-segmented timeline), NLGL guidance, and detour avoidance around
-  spherical keep-out zones with a live clearance readout.
-- **Telemetry**: the recorded channels as time-series (altitude, ground
-  speed, EKF error, wind, thrust, 3-sigma, obstacle clearance).
-- **Metrics**: a run summary derived from the active scenario plus the
-  validation driver's own acceptance table.
-- **Videos**: the recorded Matplotlib flight exports, with an "open in
-  replay" jump for the runs that have a scenario.
+- **Replay**: a full-bleed 3D scene. Scrub a recorded flight and read the autopilot working: EKF state estimation with a 3-sigma covariance ellipsoid, the flight-phase state machine (phase-colored trail and phase-segmented timeline), NLGL guidance, and detour avoidance around spherical keep-out zones with a live clearance readout.
+- **Telemetry**: the recorded channels as time-series (altitude, ground speed, EKF error, wind, thrust, 3-sigma, obstacle clearance).
+- **Metrics**: a run summary derived from the active scenario plus the validation driver's own acceptance table.
+- **Videos**: the recorded Matplotlib flight exports, with an "open in replay" jump for the runs that have a scenario.
+- **Run**: fly a scenario in the browser. The C++ kernel compiled to WebAssembly is driven by the TypeScript mission, guidance, motor, sensor, and state-machine glue at 200 Hz plant / 100 Hz control / 10 Hz GPS; the finished run appears in the rail and drops into Replay, Telemetry, and Metrics like a recorded flight.
 
 ## Highlights
 
-- **15-state MEKF**: position, velocity, attitude (multiplicative error),
-  gyro bias, accel bias; chi2-gated 10 Hz GPS updates, covariance-based
-  convergence and divergence detection.
-- **Cascaded PD autopilot** at 100 Hz with zero-order hold: altitude /
-  velocity outer loop, attitude / rate inner loop, saturating mixer-aware
-  commands, 200 Hz RK4 truth with first-order motor lag.
-- **NLGL guidance** (Park, Deyst and How 2004, ArduPilot clipped form):
-  look-ahead line-of-sight steering with ground-velocity Nu2, behind-A
-  recovery, and per-leg cross-track diagnostics.
-- **Flight-phase state machine**: IDLE, ARM, TAKEOFF, CRUISE, WAYPOINT,
-  RTL, LAND, EMERGENCY with guarded transitions, an event audit log, and
-  automatic critical-fault response to EKF divergence.
-- **UDP MAVLink SIL**: real MAVLink v2 frames (pymavlink codec) for
-  telemetry (HEARTBEAT, ATTITUDE, LOCAL_POSITION_NED, GPS_RAW_INT,
-  BATTERY_STATUS) and COMMAND_LONG events on loopback ports 14550/14551,
-  plus fault injection (GPS outage, EKF corruption, battery drain).
-- **Deterministic obstacle avoidance**: a pure-Python leg-detour planner
-  inserts waypoints around spherical keep-out zones, and the schema 1.1
-  telemetry export carries the zones so the web scene can render them.
-- **7 closed-loop scenarios** with printed acceptance metrics, plus a
-  validation driver that runs everything, generates seven publication plots
-  and five flight videos, exports schema 1.1 telemetry JSON, and writes an
-  automated validation report plus a machine-readable copy.
-- **Test suites**: 186 pytest, 34 Google Test, and 60 vitest, all passing.
+- **15-state MEKF**: position, velocity, attitude (multiplicative error), gyro bias, accel bias; chi2-gated 10 Hz GPS updates, covariance-based convergence and divergence detection.
+- **Cascaded PD autopilot** at 100 Hz with zero-order hold: altitude / velocity outer loop, attitude / rate inner loop, saturating mixer-aware commands, 200 Hz RK4 truth with first-order motor lag.
+- **NLGL guidance** (Park, Deyst and How 2004, ArduPilot clipped form): look-ahead line-of-sight steering with ground-velocity Nu2, behind-A recovery, and per-leg cross-track diagnostics.
+- **Flight-phase state machine**: IDLE, ARM, TAKEOFF, CRUISE, WAYPOINT, RTL, LAND, EMERGENCY with guarded transitions, an event audit log, and automatic critical-fault response to EKF divergence.
+- **UDP MAVLink SIL**: real MAVLink v2 frames (pymavlink codec) for telemetry (HEARTBEAT, ATTITUDE, LOCAL_POSITION_NED, GPS_RAW_INT, BATTERY_STATUS) and COMMAND_LONG events on loopback ports 14550/14551, plus fault injection (GPS outage, EKF corruption, battery drain).
+- **Deterministic obstacle avoidance**: a pure-Python leg-detour planner inserts waypoints around spherical keep-out zones, and the schema 1.1 telemetry export carries the zones so the web scene can render them.
+- **7 closed-loop scenarios** with printed acceptance metrics, plus a validation driver that runs everything, generates seven publication plots and five flight videos, exports schema 1.1 telemetry JSON, and writes an automated validation report plus a machine-readable copy.
+- **In-browser WASM run**: the same C++ kernel (dynamics, Dryden wind, cascaded PD, 15-state MEKF) built to WebAssembly with Emscripten + embind and driven by a faithful TypeScript port of the Python mission, guidance, motor, sensor, and state-machine glue, so hover, waypoints, obstacle field, and wind fly live in the browser with no server round trip.
+- **Test suites**: 186 pytest, 34 Google Test, and 80 vitest, all passing.
 
 ## Architecture
 
-Data flow of one 200 Hz SIL step (sensors and estimator at their own
-rates, controller at 100 Hz):
+Data flow of one 200 Hz SIL step (sensors and estimator at their own rates, controller at 100 Hz):
 
 ```mermaid
 flowchart LR
@@ -112,13 +97,21 @@ Module ownership (single source of truth per layer):
 | Battery | - | `battery.py` |
 | Plots / report / video | - | `plotting.py`, `export_json.py`, `animation.py` |
 
-The web app consumes the exported JSON and the validation report; it holds no
-simulation logic of its own.
+The web app consumes the exported JSON and the validation report for the
+recorded sections. The Run section adds a second, browser-side path: the
+same C++ kernel built to WebAssembly (`wasm/exports.cpp`, an embind
+`Kernel` class) plus a TypeScript port of the Python glue under `src/live/`
+(mission, NLGL guidance, motor mixer and lag, truth-side sensors, the
+flight-phase machine, and a line-for-line mirror of the SIL loop in
+`sim.ts`). The live-run configs are exported from the Python scenario
+definitions by `python/sims/export_live_configs.py`, so the browser can
+never drift from the recorder. The estimator is not reimplemented: the
+15-state MEKF runs in WASM, since a second implementation of the most
+safety-critical math would be a second source of truth.
 
 ## Build and test
 
-The native extension `talon._core` is built by CMake (not by the Python
-build backend). From the repository root:
+The native extension `talon._core` is built by CMake (not by the Python build backend). From the repository root:
 
 ```bash
 # Build the C++ kernel, GTest binary, and the pybind11 module
@@ -133,18 +126,20 @@ uv sync                              # Python environment (.venv)
 uv run pytest python/tests/ -q       # 186 Python tests
 
 uv run python python/sims/run_all.py # 7 scenarios + plots + videos + reports
+
+# WebAssembly kernel for the in-browser live run (needs Emscripten)
+./wasm/build.sh                      # writes public/wasm/talon.js + .wasm
 ```
 
 Individual scenarios also run standalone, for example
-`uv run python python/sims/scenario_waypoints.py`. The validation driver
-writes `plots/*.png`, `plots/validation_report.md`, and
-`plots/json/validation.json` (the plots/ directory is gitignored; regenerate
+`uv run python python/sims/scenario_waypoints.py`. The validation driver writes `plots/*.png`, `plots/validation_report.md`, and `plots/json/validation.json` (the plots/ directory is gitignored; regenerate
 on demand).
 
 To refresh the web app's telemetry and recordings after a driver run:
 
 ```bash
 scripts/copy_data.sh   # copies plots/json/*.json and docs/videos/*.mp4 into public/
+                       # and regenerates public/data/live/configs.json
 ```
 
 ## Scenarios
@@ -161,9 +156,7 @@ scripts/copy_data.sh   # copies plots/json/*.json and docs/videos/*.mp4 into pub
 
 ## Validation summary
 
-Headline numbers from `uv run python python/sims/run_all.py` (the full 25-row
-table lands in `plots/validation_report.md` on every run, and the same rows
-land in `plots/json/validation.json` for the web report):
+Headline numbers from `uv run python python/sims/run_all.py` (the full 25-row table lands in `plots/validation_report.md` on every run, and the same rows land in `plots/json/validation.json` for the web report):
 
 | Metric | Target | Achieved |
 |--------|--------|----------|
@@ -181,37 +174,23 @@ land in `plots/json/validation.json` for the web report):
 | State machine phases covered (SIL union) | 8 of 8 | 8 of 8 |
 | Test suites | 139+ pytest, 34 GTest | 186 pytest, 34 GTest |
 
-Two example plots (generated by the validation driver into the gitignored
-`plots/` directory; regenerate with
-`uv run python python/sims/run_all.py`):
+Two example plots (generated by the validation driver into the gitignored `plots/` directory; regenerate with `uv run python python/sims/run_all.py`):
 
 ![3D truth trajectory of the GPS-outage circuit: climb, two-waypoint
 out-and-back, RTL descent to home](plots/trajectory_3d.png)
 
-*3D NED truth trajectory with waypoint and home markers: takeoff climb,
-two 40 m legs at 10 m, then the RTL climb-over-home and descent. The
-cross-track samples for both legs come from the NLGL diagnostics.*
+*3D NED truth trajectory with waypoint and home markers: takeoff climb, two 40 m legs at 10 m, then the RTL climb-over-home and descent. The cross-track samples for both legs come from the NLGL diagnostics.*
 
 ![Flight phase Gantt of the emergency scenario: idle, arm, takeoff,
 cruise, emergency, land, idle with accepted event markers](plots/state_machine.png)
 
-*Flight-phase Gantt from the emergency scenario: the corrupted EKF
-estimate trips `critical_fault` at 20 s, the machine owns a controlled
-descent through EMERGENCY and LAND, and the settled vehicle returns to
-IDLE. Dotted lines are accepted guarded events; down-ticks are rejected
-attempts in the audit log.*
+*Flight-phase Gantt from the emergency scenario: the corrupted EKF estimate trips `critical_fault` at 20 s, the machine owns a controlled descent through EMERGENCY and LAND, and the settled vehicle returns to IDLE. Dotted lines are accepted guarded events; down-ticks are rejected attempts in the audit log.*
 
-Note: `plots/` is gitignored, so the two images embedded above do not
-render on GitHub. Generate them locally with
-`uv run python python/sims/run_all.py` and open `plots/*.png` on disk.
+Note: `plots/` is gitignored, so the two images embedded above do not render on GitHub. Generate them locally with `uv run python python/sims/run_all.py` and open `plots/*.png` on disk.
 
 ## Frames and conventions
 
-NED world frame, aerospace body frame, Hamilton scalar-first
-quaternions, thrust along -body-z, gravity [0, 0, +g] in NED. The full
-single source of truth for frames, signs, units, and the motor mixer is
-[docs/conventions.md](docs/conventions.md); every C++ header and Python
-module is checked against it.
+NED world frame, aerospace body frame, Hamilton scalar-first quaternions, thrust along -body-z, gravity [0, 0, +g] in NED. The full single source of truth for frames, signs, units, and the motor mixer is [docs/conventions.md](docs/conventions.md); every C++ header and Python module is checked against it.
 
 ## Guidance note
 
@@ -294,15 +273,20 @@ Talon/
 ├── package.json             # web deps and scripts (dev/build/test)
 ├── vite.config.ts           # base '/', '@' alias to src/
 ├── src/                     # web app: React 19 + react-three-fiber
-│   ├── views/               #   Replay, Telemetry, Metrics, Videos
+│   ├── views/               #   Replay, Telemetry, Metrics, Videos, Run
 │   ├── components/scene/    #   R3F layers + FlightScene
 │   ├── components/charts/   #   SVG time-series chart
 │   ├── components/ui/       #   rail, tabs, HUD, legend, timeline
+│   ├── live/                #   TS glue for the WASM run (guidance, mission,
+│   │                        #   motors, sensors, state machine, SIL loop)
 │   ├── utils/               #   interpolation, clearance, chart, telemetry (pure)
 │   ├── store/               #   scenario cache, clock, toggles, active section
-│   └── data/                #   scenario and recording metadata
-├── public/data/             # exported telemetry JSON (committed)
+│   └── data/                #   scenario, recording, and live-run metadata
+├── wasm/                    # Emscripten build of the kernel (embind exports)
+├── public/data/             # exported telemetry JSON + live configs (committed)
+├── public/wasm/             # compiled kernel glue + wasm (committed)
 ├── public/videos/           # recorded MP4s (committed)
+├── fixtures/                # Python-generated parity fixtures (committed)
 ├── scripts/copy_data.sh     # stage JSON + recordings into public/
 ├── core/                    # header-only C++17 kernel + Google Tests
 │   ├── include/talon/       #   dynamics, wind, controller, ekf, types, constants
@@ -310,7 +294,7 @@ Talon/
 ├── bindings/pytalon.cpp     # pybind11 module talon._core
 ├── python/                  # Python package, simulations, and tests
 │   ├── talon/               #   package (_core*.so built here by CMake)
-│   ├── sims/                #   7 scenarios + run_all.py validation driver
+│   ├── sims/                #   7 scenarios, run_all.py, export_live_configs.py
 │   └── tests/               #   186 pytest tests
 ├── docs/                    # conventions, architecture, decisions, research,
 │                            #   reviews, tests, videos, portfolio

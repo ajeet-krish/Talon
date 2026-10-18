@@ -25,6 +25,10 @@ done
 cp "$JSON_DIR/validation.json" "$DATA_DEST/validation.json"
 echo "copied validation.json"
 
+# Live in-browser run configs (Phase 4): regenerated from the Python scenario
+# definitions so the WASM run can never drift from the recorder.
+(cd "$ROOT_DIR" && uv run python python/sims/export_live_configs.py)
+
 mkdir -p "$VIDEO_DEST"
 for name in "${VIDEOS[@]}"; do
   if [ -f "$VIDEO_DIR/$name.mp4" ]; then

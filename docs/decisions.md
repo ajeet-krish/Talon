@@ -233,11 +233,92 @@ re-running every suite at the new paths (see docs/tests.md).
 **Supersedes** the location named in D1, not its intent (still one app, no
 fork).
 
-## Open decisions (Phase 4)
+## In-browser live run (Phase 4, 2026-10-17)
 
-- Acceptance metrics for v2 reactive avoidance (min clearance margin,
-  allowed e_ct degradation, Monte Carlo min-clearance stats).
-- WASM boundary: which Python glue functions are ported to TS versus
-  trimmed for the sandbox.
-- Whether the live WASM source reuses the recorded `FlightDataSource`
-  interface or streams frames into a ring buffer first.
+### D17: The estimator and plant stay in C++; only the glue is ported to TypeScript
+
+**Decision.** The WebAssembly module (`wasm/exports.cpp`, built by
+`wasm/build.sh` with Emscripten + embind) owns dynamics (RK4), Dryden wind,
+the cascaded PD controller, and the 15-state MEKF. The Python glue that has
+no native counterpart is ported to TypeScript under `src/live/`: mission
+bookkeeping, NLGL guidance, the motor mixer and first-order lag, the
+truth-side IMU/GPS sensor models, the flight-phase state machine, and a
+line-for-line mirror of the SIL orchestration loop (`sim.ts`).
+
+**Rationale.** The estimator and controller are the safety-critical math; a
+second implementation would be a second source of truth and would silently
+diverge from the validated Python/C++ stack. The glue is thin, deterministic,
+and already exercised by the Python suites, so porting it is cheap and its
+behavior is checkable against Python-computed fixtures.
+
+**Trade-off.** The browser and the recorder share the kernel but not the
+sensor-noise realization (see D18), and the TypeScript port must be kept in
+step with the Python glue by hand. Parity is enforced by fixtures, not by
+shared code.
+
+### D18: Statistical, not bit-exact, noise parity; fixtures for the deterministic math
+
+**Decision.** The TypeScript noise generator is mulberry32 seeded per run with
+Box-Muller normals, not numpy's PCG64/ziggurat. Browser runs are therefore
+statistically equivalent to the recorded Python runs but not bit-identical.
+Parity is enforced on the deterministic math instead:
+`python/sims/export_live_configs.py` computes reference outputs from the
+Python modules (NLGL cases, a waypoint sequence, the mixer and lag, plus
+WASM-side propagate/EKF/controller values) into
+`fixtures/live_fixtures.json`, and the vitest suites assert the TS and WASM
+sides match within tolerance. `fixtures/sil_reference.json` (optional, from
+`--with-sil`) carries two full Python SIL trajectories for a statistical
+end-to-end check.
+
+**Rationale.** Matching numpy's exact normal stream would mean porting
+PCG64 plus the ziggurat tables, a large surface with no engineering payoff:
+the noise is already a modeling choice, and every acceptance number is a
+statistic. The deterministic math is where a port silently breaks, so that is
+where parity is pinned.
+
+**Trade-off.** A browser run cannot be replayed byte-for-byte against the
+recorded scenario JSON. Documented in the Run view and here; the integration
+test compares against the Python SIL trajectory within a stated tolerance.
+
+### D19: A missing WASM module disables Run rather than falling back to a TS MEKF
+
+**Decision.** If the Emscripten module fails to load (not built, blocked, or
+unsupported), the Run section shows an explicit "kernel not loaded" state and
+disables the run button. Every other section is unaffected. There is no
+TypeScript MEKF fallback.
+
+**Rationale.** A JS estimator would (a) be a second source of truth for the
+hardest math and (b) produce results that look authoritative while differing
+from the validated filter, which is worse than an honest "unavailable".
+
+**Trade-off.** A checkout without Emscripten cannot demo the live run. The
+committed `public/wasm/` artifacts mean the deployed site always can.
+
+### D20: The live run covers the nominal mission; fault paths stay recorded-only
+
+**Decision.** The four runnable live configs are hover, waypoints, obstacle
+field, and wind. GPS outage, EKF divergence/emergency, and low-battery RTL
+are not injectable in the browser, the battery state of charge is held at
+1.0 so the low-battery guard never fires, and the obstacle-field waypoints
+are passed pre-planned (the Python detour planner runs offline, in the
+exporter, not in the browser).
+
+**Rationale.** The three fault scenarios are about FDIR behavior and are
+already recorded and inspectable in Replay; re-running them live would add a
+large amount of ported fault-injection surface for no new insight. Porting
+`avoidance.py` would duplicate a planner that is not needed for a
+pre-planned mission, and porting `battery.py` would add a fifth state model
+only to keep the low-battery guard dormant.
+
+**Trade-off.** The live run cannot demonstrate FDIR. Stated in the Run view
+copy and in docs/tests.md; the recorded scenarios keep that coverage.
+
+## Open decisions (resolved at Phase 4)
+
+- Acceptance metrics for v2 reactive avoidance: still open (no live
+  reactive avoidance in v2; the detour planner remains pre-flight).
+- WASM boundary: resolved by D17 (kernel in WASM, glue in TypeScript).
+- FlightDataSource reuse: resolved by keeping the recorded whole-history
+  `FlightData` path and having the live run emit the same `FlightData`
+  document on completion, rather than a parallel frame stream. The scene and
+  chart layers are unchanged.

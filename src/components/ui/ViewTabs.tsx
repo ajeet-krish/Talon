@@ -6,6 +6,7 @@ const VIEWS: { id: ViewId; label: string }[] = [
   { id: 'telemetry', label: 'TELEMETRY' },
   { id: 'metrics', label: 'METRICS' },
   { id: 'videos', label: 'VIDEOS' },
+  { id: 'run', label: 'RUN' },
 ]
 
 /**

@@ -1,0 +1,285 @@
+{
+  "generated_utc": "2026-10-18T00:09:28Z",
+  "configs": [
+    {
+      "id": "hover",
+      "label": "Hover",
+      "blurb": "Climb to 10 m and hold station for 60 s in calm air.",
+      "duration_s": 60.0,
+      "takeoff_altitude": 10.0,
+      "start_position_ned": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "waypoints": [],
+      "obstacles": [],
+      "wind_sigma": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "wind_steady_ned": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "seed": 20261012,
+      "gps_position_noise": 0.3,
+      "gps_position_noise_vertical": 0.5,
+      "gps_velocity_noise": 0.05,
+      "cruise_hold_s": 2.0,
+      "auto_arm": true
+    },
+    {
+      "id": "waypoints",
+      "label": "Waypoint circuit",
+      "blurb": "40 m x 30 m rectangle at 10 m, 5 m/s legs, light turbulence.",
+      "duration_s": 120.0,
+      "takeoff_altitude": 10.0,
+      "start_position_ned": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "waypoints": [
+        {
+          "position": [
+            0.0,
+            0.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            40.0,
+            0.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            40.0,
+            30.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            0.0,
+            30.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            0.0,
+            0.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        }
+      ],
+      "obstacles": [],
+      "wind_sigma": [
+        2.0,
+        2.0,
+        1.0
+      ],
+      "wind_steady_ned": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "seed": 20261012,
+      "gps_position_noise": 0.3,
+      "gps_position_noise_vertical": 0.5,
+      "gps_velocity_noise": 0.05,
+      "cruise_hold_s": 2.0,
+      "auto_arm": true
+    },
+    {
+      "id": "obstacle_field",
+      "label": "Obstacle field",
+      "blurb": "The waypoint circuit flown around three keep-out spheres via the planned detours.",
+      "duration_s": 70.0,
+      "takeoff_altitude": 10.0,
+      "start_position_ned": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "waypoints": [
+        {
+          "position": [
+            0.0,
+            0.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            20.0,
+            -6.5,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            40.0,
+            0.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            46.0,
+            15.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            40.0,
+            30.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            0.0,
+            30.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            -7.0,
+            22.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            0.0,
+            0.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        }
+      ],
+      "obstacles": [
+        {
+          "id": "obs_north",
+          "center_ned": [
+            20.0,
+            3.0,
+            -10.0
+          ],
+          "radius_m": 4.0
+        },
+        {
+          "id": "obs_east",
+          "center_ned": [
+            37.0,
+            15.0,
+            -10.0
+          ],
+          "radius_m": 3.5
+        },
+        {
+          "id": "obs_west",
+          "center_ned": [
+            3.0,
+            22.0,
+            -10.0
+          ],
+          "radius_m": 4.5
+        }
+      ],
+      "wind_sigma": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "wind_steady_ned": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "seed": 20261012,
+      "gps_position_noise": 0.3,
+      "gps_position_noise_vertical": 0.5,
+      "gps_velocity_noise": 0.05,
+      "cruise_hold_s": 2.0,
+      "auto_arm": true
+    },
+    {
+      "id": "wind",
+      "label": "Hold in wind",
+      "blurb": "Hover at 10 m against 2 m/s north wind with strong Dryden turbulence.",
+      "duration_s": 60.0,
+      "takeoff_altitude": 10.0,
+      "start_position_ned": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "waypoints": [],
+      "obstacles": [],
+      "wind_sigma": [
+        3.0,
+        3.0,
+        1.5
+      ],
+      "wind_steady_ned": [
+        2.0,
+        0.0,
+        0.0
+      ],
+      "seed": 20261012,
+      "gps_position_noise": 0.3,
+      "gps_position_noise_vertical": 0.5,
+      "gps_velocity_noise": 0.05,
+      "cruise_hold_s": 2.0,
+      "auto_arm": true
+    }
+  ]
+}

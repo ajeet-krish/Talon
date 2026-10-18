@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { FlightData, ScenarioId } from '@/types/flight'
+import type { LiveRunSummary } from '@/live/types'
 
 export interface DisplayToggles {
   trail: boolean
@@ -10,7 +11,7 @@ export interface DisplayToggles {
 }
 
 /** Top-level tool sections. */
-export type ViewId = 'replay' | 'telemetry' | 'metrics' | 'videos'
+export type ViewId = 'replay' | 'telemetry' | 'metrics' | 'videos' | 'run'
 
 /** One row of the validation driver's machine-readable report. */
 export interface ValidationRow {
@@ -35,10 +36,17 @@ export const SCENARIO_IDS: ScenarioId[] = [
   'obstacle_field',
 ]
 
+/**
+ * Key into the scenario map: a recorded scenario id, or the single 'live'
+ * slot holding the most recent in-browser WASM run. The live slot is only
+ * present after a run completes; it is never fetched.
+ */
+export type ScenarioKey = ScenarioId | 'live'
+
 interface FlightStore {
-  /** Loaded scenario payloads, keyed by scenario id. */
-  scenarios: Map<ScenarioId, FlightData>
-  activeScenario: ScenarioId
+  /** Loaded scenario payloads, keyed by scenario id (or the live slot). */
+  scenarios: Map<ScenarioKey, FlightData>
+  activeScenario: ScenarioKey
   loading: boolean
   error: string | null
   /** Playback cursor, seconds into the active scenario. */
@@ -51,11 +59,15 @@ interface FlightStore {
   /** Validation driver report (lazy; fetched by the Metrics view). */
   validation: ValidationReport | null
   validationError: string | null
+  /** Summary of the most recent live run, or null before the first run. */
+  liveRun: LiveRunSummary | null
 
-  /** Fetch scenario JSON (no-op if already cached). */
-  loadScenario: (id: ScenarioId) => Promise<void>
+  /** Fetch scenario JSON (no-op if already cached, or if id is 'live'). */
+  loadScenario: (id: ScenarioKey) => Promise<void>
   /** Switch the active scenario, resetting the playhead. */
-  setActive: (id: ScenarioId) => Promise<void>
+  setActive: (id: ScenarioKey) => Promise<void>
+  /** Store a completed live run under the 'live' key and select it. */
+  setLiveRun: (data: FlightData, summary: LiveRunSummary) => void
   /** Move the playhead, clamped to [0, duration]. */
   setTime: (t: number) => void
   togglePlay: () => void
@@ -86,8 +98,10 @@ export const useFlightStore = create<FlightStore>((set, get) => ({
   activeView: 'replay',
   validation: null,
   validationError: null,
+  liveRun: null,
 
   loadScenario: async (id) => {
+    if (id === 'live') return
     if (get().scenarios.has(id)) return
     set({ loading: true, error: null })
     try {
@@ -115,6 +129,16 @@ export const useFlightStore = create<FlightStore>((set, get) => ({
     set({ activeScenario: id, currentTime: 0, isPlaying: false, error: null })
     await get().loadScenario(id)
   },
+
+  setLiveRun: (data, summary) =>
+    set((s) => ({
+      scenarios: new Map(s.scenarios).set('live', data),
+      liveRun: summary,
+      activeScenario: 'live',
+      currentTime: 0,
+      isPlaying: false,
+      error: null,
+    })),
 
   setTime: (t) => {
     const data = get().scenarios.get(get().activeScenario)

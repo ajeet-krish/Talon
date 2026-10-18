@@ -9,6 +9,7 @@ import { ReplayView } from '@/views/ReplayView'
 import { TelemetryView } from '@/views/TelemetryView'
 import { MetricsView } from '@/views/MetricsView'
 import { VideosView } from '@/views/VideosView'
+import { RunView } from '@/views/RunView'
 
 /**
  * Talon FlightLab shell: a header carrying the wordmark and the section tabs,
@@ -82,6 +83,7 @@ export function App() {
           {activeView === 'telemetry' && <TelemetryView />}
           {activeView === 'metrics' && <MetricsView />}
           {activeView === 'videos' && <VideosView />}
+          {activeView === 'run' && <RunView />}
         </main>
       </div>
 
