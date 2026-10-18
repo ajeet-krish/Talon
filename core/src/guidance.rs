@@ -156,7 +156,7 @@ impl NlglGuidance {
         // Look-ahead distance from the true ground speed, floored at l1_min.
         let l1 = f64::max(cfg.l1_min, cfg.zeta * cfg.period_t * ground_speed / math::PI);
 
-        let (e_ct, nu1, nu2, nu, mut chi_d, behind_a_recovery);
+        let (e_ct, nu1, nu2, nu, chi_d, behind_a_recovery);
         if leg_length < LEG_LENGTH_EPS {
             // Degenerate leg: no track direction, steer straight at wp_b.
             e_ct = 0.0;
