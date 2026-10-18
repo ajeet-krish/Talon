@@ -81,6 +81,22 @@ export class Session {
         return ret;
     }
     /**
+     * Whether the estimator has converged.
+     * @returns {boolean}
+     */
+    get ekf_converged() {
+        const ret = wasm.session_ekf_converged(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Whether the estimator has been declared divergent.
+     * @returns {boolean}
+     */
+    get ekf_diverged() {
+        const ret = wasm.session_ekf_diverged(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * Live estimated position, NED (m).
      * @returns {Float64Array}
      */
@@ -97,6 +113,30 @@ export class Session {
     get finished() {
         const ret = wasm.session_finished(this.__wbg_ptr);
         return ret !== 0;
+    }
+    /**
+     * Accepted GPS fixes since the run started.
+     * @returns {bigint}
+     */
+    get gps_accepted() {
+        const ret = wasm.session_gps_accepted(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
+     * GPS fixes rejected by the innovation gate.
+     * @returns {bigint}
+     */
+    get gps_gated() {
+        const ret = wasm.session_gps_gated(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
+     * GPS fixes dropped for an injected outage.
+     * @returns {bigint}
+     */
+    get gps_skipped() {
+        const ret = wasm.session_gps_skipped(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
     }
     /**
      * Create a session from a scenario JSON document.
@@ -126,6 +166,24 @@ export class Session {
         let deferred1_1;
         try {
             const ret = wasm.session_phase(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The phase timeline as JSON: `[[time_s, "phase"], ...]`, oldest first.
+     *
+     * Small enough to re-read on a display tick rather than track increments.
+     * @returns {string}
+     */
+    phases_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.session_phases_json(this.__wbg_ptr);
             deferred1_0 = ret[0];
             deferred1_1 = ret[1];
             return getStringFromWasm0(ret[0], ret[1]);
@@ -166,6 +224,32 @@ export class Session {
     run_to_end() {
         const ret = wasm.session_run_to_end(this.__wbg_ptr);
         return ret >>> 0;
+    }
+    /**
+     * Samples recorded so far, at the control rate (100 Hz).
+     * @returns {number}
+     */
+    get sample_count() {
+        const ret = wasm.session_sample_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Pull the samples in `[from, sample_count())` as a flat `Float64Array`,
+     * `sample_stride()` doubles per sample.
+     *
+     * This is what a live display consumes: ask for the new tail since the last
+     * read, append it, and never materialize a whole document mid-flight. The
+     * layout is documented on the Rust side (`sim::sample_field`); the field
+     * offsets there and the parser in `src/live/stream.ts` must agree, which a
+     * test on each side pins.
+     * @param {number} from
+     * @returns {Float64Array}
+     */
+    samples_from(from) {
+        const ret = wasm.session_samples_from(this.__wbg_ptr, from);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
     }
     /**
      * Scenario id, written to `meta.scenario`.
@@ -301,6 +385,18 @@ export function run_scenario(config_json, generated_utc) {
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
+}
+
+/**
+ * Doubles per streamed sample, matching `talon_core::sim::SAMPLE_STRIDE`.
+ *
+ * Exported so the JavaScript parser can assert its own layout against the
+ * build it is actually running, rather than trusting a hard-coded copy.
+ * @returns {number}
+ */
+export function sample_stride() {
+    const ret = wasm.sample_stride();
+    return ret >>> 0;
 }
 function __wbg_get_imports() {
     const import0 = {

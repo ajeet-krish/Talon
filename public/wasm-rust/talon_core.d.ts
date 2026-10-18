@@ -44,6 +44,12 @@ export class Session {
      */
     phase(): string;
     /**
+     * The phase timeline as JSON: `[[time_s, "phase"], ...]`, oldest first.
+     *
+     * Small enough to re-read on a display tick rather than track increments.
+     */
+    phases_json(): string;
+    /**
      * Convene the estimator at rest, on a negative clock, before the timed run.
      *
      * Idempotent, so a caller that prepares twice does not pay twice or shift
@@ -55,6 +61,17 @@ export class Session {
      * Advance to the end of the run. Returns the number of steps advanced.
      */
     run_to_end(): number;
+    /**
+     * Pull the samples in `[from, sample_count())` as a flat `Float64Array`,
+     * `sample_stride()` doubles per sample.
+     *
+     * This is what a live display consumes: ask for the new tail since the last
+     * read, append it, and never materialize a whole document mid-flight. The
+     * layout is documented on the Rust side (`sim::sample_field`); the field
+     * offsets there and the parser in `src/live/stream.ts` must agree, which a
+     * test on each side pins.
+     */
+    samples_from(from: number): Float64Array;
     /**
      * Advance one plant step. Returns true once the run is finished.
      */
@@ -80,9 +97,29 @@ export class Session {
      */
     readonly duration_s: number;
     /**
+     * Whether the estimator has converged.
+     */
+    readonly ekf_converged: boolean;
+    /**
+     * Whether the estimator has been declared divergent.
+     */
+    readonly ekf_diverged: boolean;
+    /**
      * Whether the run has reached its configured duration.
      */
     readonly finished: boolean;
+    /**
+     * Accepted GPS fixes since the run started.
+     */
+    readonly gps_accepted: bigint;
+    /**
+     * GPS fixes rejected by the innovation gate.
+     */
+    readonly gps_gated: bigint;
+    /**
+     * GPS fixes dropped for an injected outage.
+     */
+    readonly gps_skipped: bigint;
     /**
      * Whether the convergence pre-roll has run.
      */
@@ -91,6 +128,10 @@ export class Session {
      * Fraction of the run completed, in [0, 1].
      */
     readonly progress: number;
+    /**
+     * Samples recorded so far, at the control rate (100 Hz).
+     */
+    readonly sample_count: number;
     /**
      * Scenario id, written to `meta.scenario`.
      */
@@ -122,6 +163,14 @@ export function core_version(): string;
  */
 export function run_scenario(config_json: string, generated_utc: string): string;
 
+/**
+ * Doubles per streamed sample, matching `talon_core::sim::SAMPLE_STRIDE`.
+ *
+ * Exported so the JavaScript parser can assert its own layout against the
+ * build it is actually running, rather than trusting a hard-coded copy.
+ */
+export function sample_stride(): number;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -129,19 +178,28 @@ export interface InitOutput {
     readonly __wbg_session_free: (a: number, b: number) => void;
     readonly core_version: () => [number, number];
     readonly run_scenario: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly sample_stride: () => number;
     readonly session_advance: (a: number, b: number) => number;
     readonly session_altitude_m: (a: number) => number;
     readonly session_battery_soc: (a: number) => number;
     readonly session_document_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly session_duration_s: (a: number) => number;
+    readonly session_ekf_converged: (a: number) => number;
+    readonly session_ekf_diverged: (a: number) => number;
     readonly session_ekf_position: (a: number) => [number, number];
     readonly session_finished: (a: number) => number;
+    readonly session_gps_accepted: (a: number) => bigint;
+    readonly session_gps_gated: (a: number) => bigint;
+    readonly session_gps_skipped: (a: number) => bigint;
     readonly session_new: (a: number, b: number) => [number, number, number];
     readonly session_phase: (a: number) => [number, number];
+    readonly session_phases_json: (a: number) => [number, number];
     readonly session_prepare: (a: number) => void;
     readonly session_prepared: (a: number) => number;
     readonly session_progress: (a: number) => number;
     readonly session_run_to_end: (a: number) => number;
+    readonly session_sample_count: (a: number) => number;
+    readonly session_samples_from: (a: number, b: number) => [number, number];
     readonly session_scenario_id: (a: number) => [number, number];
     readonly session_step: (a: number) => number;
     readonly session_steps_done: (a: number) => number;
