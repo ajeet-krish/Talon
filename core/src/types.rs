@@ -191,7 +191,7 @@ impl FlightPhase {
 /// `radius` is the horizontal acceptance radius: the mission advances when the
 /// vehicle is within `radius` of `position` in the north-east plane. Altitude is
 /// handled by the guidance channel, not the acceptance test.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Waypoint {
     pub position: Arr3,
     pub speed: f64,

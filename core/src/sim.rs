@@ -211,6 +211,14 @@ pub struct SimResult {
     pub gps_skipped: u64,
     pub gps_gated: u64,
     pub gps_accepted: u64,
+    /// Waypoints in the configured mission (0 when there was no mission).
+    pub mission_waypoint_count: usize,
+    /// Waypoints actually reached. Counts a waypoint as reached once the
+    /// mission has advanced past it, so the active index itself does not count
+    /// while it is still being flown toward.
+    pub mission_waypoints_reached: usize,
+    /// Whether the mission ran to completion.
+    pub mission_complete: bool,
     pub home_ned: Arr3,
     pub waypoints_ned: Vec<Arr3>,
     pub command_thrust: Vec<f64>,
@@ -253,14 +261,6 @@ impl SimResult {
             .last()
             .map(|p| ground - p[2])
             .unwrap_or(0.0)
-    }
-
-    /// Number of waypoints the mission reached (0 when there was no mission).
-    pub fn waypoints_reached(&self) -> u64 {
-        self.e_ct_leg
-            .last()
-            .map(|leg| *leg as u64 + 1)
-            .unwrap_or(0)
     }
 }
 
@@ -558,6 +558,16 @@ impl SimRunner {
             self.step(i, steps_per_control, steps_per_gps);
         }
         Ok(self.finish(duration_s))
+    }
+
+    /// Assemble a [`SimResult`] from the histories accumulated so far.
+    ///
+    /// [`SimRunner::run`] calls this once at the end. An interactive or
+    /// streaming loop can call it between steps to read out a partial flight
+    /// without stopping the run, which is what the browser does while the
+    /// vehicle is still flying.
+    pub fn snapshot(&self, duration_s: f64) -> SimResult {
+        self.finish(duration_s)
     }
 
     /// Advance exactly one plant step, for an interactive or streaming loop.
@@ -1084,6 +1094,15 @@ impl SimRunner {
     }
 
     fn finish(&self, duration_s: f64) -> SimResult {
+        let (mission_waypoint_count, mission_waypoints_reached, mission_complete) =
+            match self.mission.as_ref() {
+                Some(mission) => (
+                    mission.waypoints().len(),
+                    mission.active_index() + if mission.complete() { 1 } else { 0 },
+                    mission.complete(),
+                ),
+                None => (0, 0, false),
+            };
         SimResult {
             time_s: self.history_time.clone(),
             truth_position: self.history_truth_pos.clone(),
@@ -1097,6 +1116,9 @@ impl SimRunner {
             gps_skipped: self.gps_skipped,
             gps_gated: self.gps_gated,
             gps_accepted: self.gps_accepted,
+            mission_waypoint_count,
+            mission_waypoints_reached,
+            mission_complete,
             home_ned: self.home,
             waypoints_ned: self.config.waypoints.iter().map(|w| w.position).collect(),
             command_thrust: self.history_thrust.clone(),
@@ -1389,6 +1411,56 @@ mod tests {
         let first = result.wind_ned.first().copied().unwrap_or([0.0; 3]);
         let last = result.wind_ned.last().copied().unwrap_or([0.0; 3]);
         assert!(first != last, "turbulence should evolve");
+    }
+
+    #[test]
+    fn the_mission_outcome_is_reported() {
+        let cfg = SimConfig {
+            waypoints: vec![
+                waypoint(20.0, 0.0, -10.0, 3.0),
+                waypoint(20.0, 20.0, -10.0, 3.0),
+            ],
+            ..Default::default()
+        };
+        let mut r = SimRunner::new(cfg).unwrap();
+        r.request_event("arm", None);
+        r.request_event("takeoff", None);
+        let result = r.run(90.0).unwrap();
+        assert_eq!(result.mission_waypoint_count, 2);
+        assert!(
+            result.mission_complete,
+            "should have finished the mission, timeline {:?}",
+            result.phase_timeline
+        );
+        assert_eq!(result.mission_waypoints_reached, 2);
+    }
+
+    #[test]
+    fn a_run_with_no_mission_reports_no_waypoints() {
+        let mut r = SimRunner::new(SimConfig::default()).unwrap();
+        r.request_event("arm", None);
+        r.request_event("takeoff", None);
+        let result = r.run(10.0).unwrap();
+        assert_eq!(result.mission_waypoint_count, 0);
+        assert_eq!(result.mission_waypoints_reached, 0);
+        assert!(!result.mission_complete);
+    }
+
+    #[test]
+    fn a_partly_flown_mission_counts_only_the_waypoints_passed() {
+        // One waypoint far away, stopped early: it is still being flown toward,
+        // so nothing counts as reached yet.
+        let cfg = SimConfig {
+            waypoints: vec![waypoint(500.0, 0.0, -10.0, 3.0)],
+            ..Default::default()
+        };
+        let mut r = SimRunner::new(cfg).unwrap();
+        r.request_event("arm", None);
+        r.request_event("takeoff", None);
+        let result = r.run(30.0).unwrap();
+        assert_eq!(result.mission_waypoint_count, 1);
+        assert!(!result.mission_complete);
+        assert_eq!(result.mission_waypoints_reached, 0);
     }
 
     #[test]

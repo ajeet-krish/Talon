@@ -18,6 +18,7 @@ pub mod math;
 pub mod mission;
 pub mod motors;
 pub mod rng;
+pub mod scenario;
 pub mod sensors;
 pub mod sim;
 pub mod state_machine;
