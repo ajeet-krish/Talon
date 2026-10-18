@@ -1,9 +1,9 @@
 """UDP MAVLink software-in-the-loop runner (Phase 5).
 
 SILRunner owns the complete flight stack and closes the loop against the
-C++ truth plant:
+Rust truth plant:
 
-    dynamics (truth, C++ RK4) -> motors -> wind -> sensors -> EKF -> state
+    dynamics (truth, Rust RK4) -> motors -> wind -> sensors -> EKF -> state
     machine -> phase setpoints -> NLGL guidance -> cascaded PD -> motors
 
 All new Phase 5 scenarios (wind, GPS outage, emergency) and the
@@ -45,7 +45,7 @@ DERIVED ESTIMATE FLAGS (Telemetry contract):
 - gps_outage_duration: 0.0 when no outage is active, else sim time since
   inject_gps_outage() was called (outages are only ever fault-injected).
 
-GROUND. The truth plant has no ground plane in C++; the SIL applies a
+GROUND. The truth plant has no ground plane in the core; the SIL applies a
 simple contact clamp after every propagate step: z is capped at the home
 altitude and any downward velocity is zeroed. That is what lets ARM/IDLE
 rest on the deck and LAND -> IDLE detect a settled touchdown.

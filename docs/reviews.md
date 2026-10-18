@@ -2,6 +2,91 @@
 
 Last updated: 2026-10-18
 
+## PyO3 bindings and the C++ retirement (FlightLab Phase 5b, 2026-10-18)
+
+Scope: `bindings/` (`Cargo.toml`, `build.rs`, `build.sh`, `src/lib.rs`,
+`src/convert.rs`, `src/types.rs`, `src/control.rs`, `src/estimation.rs`), the
+two call sites changed in `python/talon/mavlink_sil.py`, the deletions
+(`core/include/talon/`, `core/tests/`, the root `CMakeLists.txt`,
+`bindings/pytalon.cpp`, `wasm/CMakeLists.txt`, `wasm/src/exports.cpp`,
+`public/wasm/`, `src/live/{guidance,mission,motors,sensors,stateMachine}.ts`
+with their tests, `src/live/math.ts`), the trimmed `src/live/constants.ts`, and
+the rewritten `.github/workflows/ci.yml`.
+
+Verdict: PASS.
+
+### Correctness
+
+- PASS: the 186 pytest tests, written against the C++ kernel and unedited
+  through the port, pass against the Rust `_core`. Numeric parity rests on that
+  pre-existing suite rather than on a fresh oracle.
+- PASS: the two covariance call sites sum the same three diagonal entries in
+  the same order (`P00 + P11 + P22`), so the convergence flag and the recorded
+  position variance are unchanged, and the 200 Hz path no longer builds a
+  15x15 nested list per step.
+- PASS: the fault-injection rewrite preserves the one-shot +25 m north
+  corruption exactly: copy the position, offset index 0, assign the field,
+  write the nominal back into the filter. The innovation gate then rejects
+  every later fix, which is what makes the corruption persist and
+  `ekf_diverged` trip.
+- PASS: `test_controller.py::test_reset_makes_output_repeatable` still passes,
+  which is the assertion that each `step()` returns an owned command rather
+  than a view into controller state.
+- PASS: `src/live/math.ts` was only deletable after both importers (`sim.ts`,
+  `types.ts`) moved `Vec3` to the schema type; vitest and the production build
+  were re-run after the swap, and the wasm smoke test still passes.
+- PASS: a clean `./wasm/build.sh` reproduces the committed
+  `public/wasm-rust/` bundle byte for byte, so the drift check added to CI is
+  meaningful rather than flaky.
+
+### Conventions
+
+- PASS: no em dashes, double hyphens used as dashes, or dash equivalents in
+  the new files.
+- PASS: the binding crate holds no autopilot logic; every method delegates
+  into `talon-core`.
+- PASS: `bindings/` names only the core's own type aliases (`Vec3`, `Mat3`,
+  `Matrix15`, `Vector6`), so it never names `nalgebra` and cannot drift from
+  the core's linear-algebra version.
+
+### Maintainability
+
+- PASS: the retired files are deleted rather than commented out, with git
+  history as the record, and AGENTS.md notes the deletion so a later session
+  does not go looking for `core/include`.
+- PASS: AGENTS.md, README, architecture, the module map, and CI now describe
+  the same three-crate workspace; no document still tells a reader to run
+  cmake or to build the Emscripten kernel.
+- PASS: the extension build resolves its own interpreter
+  (`.cargo/config.toml` plus `bindings/build.sh`), so `cargo test` and
+  `uv run pytest` cannot silently disagree about which Python they target.
+
+### Security
+
+- PASS: no hand-written `unsafe` in the crate; PyO3 generates the FFI shims.
+- PASS: setter input is validated. `vec3_from` reports a `PyValueError` naming
+  the argument when fewer than three numbers arrive, and the conversion reads
+  into a fixed three-element array with a counter, so a short or wrong-typed
+  sequence can neither index out of bounds nor shift the vector.
+- PASS: no new network, filesystem, or process surface. The extension reads
+  numbers and returns numbers and new objects.
+- PASS: the shared object lands at `python/talon/_core<EXT_SUFFIX>` and `*.so`
+  is gitignored, so no binary is committed to the repository.
+
+### Residual risk
+
+- The CI drift check rebuilds the wasm bundle and diffs the generated JS and
+  declarations. It depends on the pinned wasm-pack (v0.15.0) and the committed
+  `Cargo.lock`. It was validated locally (a clean rebuild produces no diff) but
+  not executed on GitHub from this session; the `.wasm` binary is deliberately
+  excluded from the comparison.
+- `cargo test --workspace` must link libpython for the binding tests on Linux.
+  PyO3 adds the rpath and this works on macOS, but the Linux path was not
+  exercised here.
+- The pytest suite now needs the extension. CI sets `TALON_REQUIRE_CORE=1` so a
+  missing `_core` fails the run instead of skipping it and reporting zero
+  tests.
+
 ## Live ground station and pacing (FlightLab Phase 6, 2026-10-18)
 
 Scope: `src/live/stream.ts` (sample codec and recorder), `src/live/pacing.ts`,

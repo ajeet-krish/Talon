@@ -148,9 +148,9 @@
       "passed": true
     },
     {
-      "test": "C++ tests (GTest)",
-      "target": "34",
-      "achieved": "34",
+      "test": "Rust core tests (cargo)",
+      "target": "181",
+      "achieved": "181",
       "passed": true
     }
   ]

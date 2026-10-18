@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-18
 
-## Current-state snapshot (FlightLab Phase 5b, in progress)
+## Current-state snapshot (FlightLab Phase 5b, complete)
 
 Talon is a single-vehicle UAV GNC stack whose autopilot is one Rust library,
 `talon-core`, plus a Python analysis harness and a TypeScript flight tool.
@@ -16,9 +16,15 @@ puts the browser run on it: the wasm-bindgen session in D24 replaces the
 TypeScript loop, and the schema 1.1 document is now assembled in Rust (D25) so
 the scene, charts, and metrics are unchanged.
 
-The Python and C++ stacks are still present while the port is finished; the
-recorded telemetry, the validation report, and the five videos are frozen as
-produced by the Python stack and are not regenerated.
+Phase 5b finished the move. The autopilot is now one Rust library with two
+thin wrappers: `wasm/` (wasm-bindgen) drives the browser run, and `bindings/`
+(PyO3) publishes `talon._core` for the Python harness. The C++17 kernel, CMake,
+Google Test, pybind11 and the Emscripten build are gone, and the `src/live/`
+TypeScript autopilot modules went with them (D28). The Python harness keeps its
+own higher-level layers (guidance, mission, motors, sensors, state machine) for
+the recorded runs, while its plant, controller, estimator and wind come from the
+Rust `_core`. The recorded telemetry, the validation report, and the five videos
+remain frozen as produced by the Python stack and are not regenerated.
 
 ### Repository layout
 
@@ -29,31 +35,27 @@ emitted asset URL carries that prefix (D21).
 
     /                      web app (Vite + React 19 + R3F) + Cargo workspace
       index.html  package.json  vite.config.ts  tsconfig*.json
-      Cargo.toml           Cargo workspace (members: core, wasm)
+      Cargo.toml           Cargo workspace (members: core, wasm, bindings)
       src/                 views, components, utils, store, data, hooks
       src/components/live/ the live ground-station scene and instrument rail
       src/live/            engine loader, recorder, pacer, display geometry
       public/data/         exported telemetry JSON + live configs (committed)
       public/wasm-rust/    talon-core via wasm-bindgen, web target (committed)
-      public/wasm/         the retiring Emscripten kernel (still committed)
       public/videos/       recorded MP4s (committed)
       scripts/             copy_data.sh, smoke_live_wasm.mjs
     core/                  talon-core Rust GNC library (the autopilot)
       src/                 math, constants, rng, types, dynamics, wind,
                            controller, ekf, guidance, mission, state_machine,
                            motors, battery, sensors, sim, scenario, export
-      tests/               GTest suites for the retiring C++ kernel
-      include/talon/       the retiring C++17 header-only kernel
-    wasm/                  wasm-bindgen crate (plus the retiring Emscripten build)
-      src/lib.rs           the Session the browser drives
+    wasm/                  wasm-bindgen crate: the Session the browser drives
+    bindings/              PyO3 crate: the talon._core extension module
     fixtures/              Python-generated parity fixtures (committed)
-    bindings/pytalon.cpp   pybind11 module talon._core (to become a PyO3 crate)
     python/                Python package, simulations, and tests
-      talon/               package (CMake drops _core*.so here)
+      talon/               package (bindings/build.sh drops _core*.so here)
       sims/                scenarios, run_all.py, export_live_configs.py
       tests/
     docs/                  conventions, architecture, decisions, reviews, tests
-    CMakeLists.txt  pyproject.toml  uv.lock
+    .cargo/config.toml  pyproject.toml  uv.lock
 
 Import path note: `python/` is on the pytest and driver `sys.path`, so
 `import talon` and `import sims` resolve without an install step; the
@@ -61,7 +63,7 @@ editable install additionally maps the `talon` package to `python/talon`.
 
 ### Data flow (one 200 Hz SIL step)
 
-    dynamics (truth, C++ RK4) -> motors -> wind -> sensors -> EKF -> state
+    dynamics (truth, Rust RK4) -> motors -> wind -> sensors -> EKF -> state
     machine -> phase setpoints -> NLGL guidance -> cascaded PD -> motors
 
 ### Obstacle avoidance pipeline
@@ -88,19 +90,25 @@ editable install additionally maps the `talon` package to `python/talon`.
 
 ### Module ownership
 
-| Layer | C++17 kernel (`core/include/talon/`) | Python (`python/talon/`) |
-|-------|--------------------------------------|------------------------|
-| Dynamics / RK4 | `dynamics.hpp` (`propagate`) | re-export only |
-| Wind | `wind.hpp` (`DrydenWind`) | re-export only |
-| Controller | `controller.hpp` (cascaded PD) | `controller.py` binding |
-| Estimator | `ekf.hpp` (15-state MEKF) | `ekf.py` binding |
-| Motors | constants in `constants.hpp` | `motors.py` (lag + mix) |
-| Sensors | constants | `sensors.py` (truth-side IMU/GPS) |
-| Guidance / mission | - | `guidance.py` (NLGL), `mission.py` |
-| Obstacle avoidance | - | `avoidance.py` (detour planner, clearance) |
-| State machine / FDIR | - | `state_machine.py` |
-| SIL + MAVLink | - | `mavlink_sil.py`, `mavlink_codec.py` |
-| Battery | - | `battery.py` |
+The Rust core (`core/src/`) is the autopilot and the single source of truth for
+every law below. The Python package keeps its own implementations of the
+higher-level layers for the recorded-run harness; the plant, controller,
+estimator and wind in a Python SIL run now come from the Rust `_core`.
+
+| Layer | Rust core (`core/src/`) | Python (`python/talon/`) |
+|-------|-------------------------|--------------------------|
+| Dynamics / RK4 | `dynamics.rs` (`propagate`) | via `_core` (`bindings/`) |
+| Wind | `wind.rs` (`DrydenWind`) | via `_core` (`bindings/`) |
+| Controller | `controller.rs` (cascaded PD) | via `_core` (`bindings/`) |
+| Estimator | `ekf.rs` (15-state MEKF) | via `_core` (`bindings/`) |
+| Motors | `motors.rs` (lag + X mixer) | `motors.py` (harness) |
+| Sensors | `sensors.rs` (truth-side IMU/GPS) | `sensors.py` (harness) |
+| Guidance / mission | `guidance.rs` (NLGL), `mission.rs` | `guidance.py`, `mission.py` (harness) |
+| Obstacle avoidance | - (offline detours are planned in Python) | `avoidance.py` (detour planner, clearance) |
+| State machine / FDIR | `state_machine.rs` | `state_machine.py` (harness) |
+| SIL loop | `sim.rs` (pure stepper, no transport) | `mavlink_sil.py` + `mavlink_codec.py` (MAVLink edge) |
+| Battery | `battery.rs` | `battery.py` (harness) |
+| Determinism | `rng.rs` (`libm`, seeded) | `numpy` RNG (recorded runs only) |
 | Plots / report / video | - | `plotting.py`, `export_json.py`, `animation.py` |
 
 ### Schema 1.1 JSON contract
@@ -296,7 +304,8 @@ lands), and that a paced 1x run tracks the wall clock without drift.
 | 3 | Unified entry point (videos + scene + metrics) | Complete |
 | 4 | In-browser WASM run | Complete |
 | 5a | Rust `talon-core` library + native tests | Complete |
-| 5b | WASM + PyO3 bindings, generated type mirrors, retire the C++ stack | In Progress |
+| 5b | WASM + PyO3 bindings, retire the C++ and TypeScript autopilots | Complete |
+| 5c | Generated TypeScript type mirrors (ts-rs) | Not started |
 | 6 | GCS shell with live telemetry and teaching captions | Complete |
 | 7 | Altitude legibility in the scene | In Progress |
 | 8 | Mission authoring (waypoints, wind, faults) | Not started |

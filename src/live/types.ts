@@ -7,8 +7,7 @@
  * drifts from the Python scenario definitions.
  */
 
-import type { FlightData, FlightPhase, Obstacle } from '@/types/flight'
-import type { Vec3 } from './math'
+import type { FlightData, FlightPhase, Obstacle, Vec3 } from '@/types/flight'
 
 /** One mission waypoint (talon.types.Waypoint). */
 export interface Waypoint {

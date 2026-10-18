@@ -2,6 +2,51 @@
 
 Last updated: 2026-10-18
 
+## Rust core behind both wrappers (FlightLab Phase 5b, 2026-10-18)
+
+| Suite | Command | Result |
+|-------|---------|--------|
+| Rust core (cargo) | `cargo test -p talon-core` | 181 pass |
+| Rust wasm bindings (cargo) | `cargo test -p talon-wasm` | 11 pass, run natively |
+| PyO3 bindings (cargo) | `cargo test -p talon-py` | 2 pass |
+| Whole workspace (cargo) | `cargo test` | 194 pass across the three crates |
+| Python against the Rust `_core` (pytest) | `uv run pytest python/tests/ -q` | 186 pass |
+| Web unit tests (vitest) | `npm test` | 122 pass (10 files) |
+| Typecheck + production build | `npm run build` | clean, 646 modules |
+| Live wasm smoke test | `npm run smoke:wasm` | all checks pass, 4 of 4 configs |
+| wasm bundle determinism | `./wasm/build.sh`, then `git status public/wasm-rust` | clean (byte-identical rebuild) |
+
+### The parity proof
+
+The 186 pytest tests were written against the C++ kernel and were not touched
+while the kernel moved to Rust. They now run against `talon._core`, the PyO3
+extension over `talon-core`, and pass unchanged. That is the evidence that let
+the C++ stack go, rather than a separate golden-vector harness.
+
+Two call sites changed on the Python side, neither altering numerics:
+
+- `mavlink_sil._update_derived` and `mavlink_sil._record_history` read the
+  position variance through the new `Ekf.position_covariance_trace()` and
+  `Ekf.position_variance()`, which sum the same three diagonal entries in the
+  same order. The 200 Hz convergence check no longer converts a 15x15 nested
+  list every step.
+- `inject_ekf_divergence` uses `nominal()` plus `set_nominal()` instead of the
+  `mutable_nominal()` aliasing hook, which PyO3 cannot express safely.
+
+### New binding tests
+
+- `bindings/src/convert.rs` (2): the 3-vector round trip preserves index order,
+  and the 3x3 round trip is row major. These run without a GIL, so
+  `cargo test -p talon-py` needs no interpreter.
+
+### Deleted suites
+
+Retired with the C++ stack: 34 Google Tests (`./build/talon_tests`). Retired
+with the TypeScript autopilot: 13 vitest tests across `guidance.test.ts`,
+`mission.test.ts` and `motors.test.ts`. The same laws are covered in Rust by 16
+`guidance`, 13 `mission`, 15 `motors`, 13 `sensors` and 21 `state_machine`
+tests. Vitest therefore fell 135 to 122 and the file count 13 to 10.
+
 ## Live ground station and pacing (FlightLab Phase 6, 2026-10-18)
 
 | Suite | Command | Result |

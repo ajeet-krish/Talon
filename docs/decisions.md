@@ -529,6 +529,82 @@ a determinant of +1, so geometry is not mirrored, and the replay framing and
 the vehicle's nose both changed for the better. The change touches the replay
 view as well as the live one, which is correct because it was wrong in both.
 
+### D28: The Python extension is PyO3, and the retired stacks are gone
+
+**Decision.** `bindings/` is a PyO3 crate (`talon-py`) that publishes the
+`talon._core` extension module over `talon-core`. With that in place the C++
+stack was deleted outright: `core/include/talon/`, `core/tests/`, the root
+`CMakeLists.txt`, `bindings/pytalon.cpp`, `wasm/CMakeLists.txt`,
+`wasm/src/exports.cpp` and the Emscripten output `public/wasm/`. The
+`src/live/` TypeScript autopilot modules went in the same pass: `guidance.ts`,
+`mission.ts`, `motors.ts`, `sensors.ts`, `stateMachine.ts` and their tests,
+plus `src/live/math.ts`, whose only remaining role was a duplicated `Vec3`.
+
+**Rationale.** One implementation of the flight-critical math, reached two
+ways: `wasm/` for the browser and `bindings/` for Python. Keeping a second
+implementation alive would be a second source of truth for the parts a
+reviewer is most likely to check.
+
+**Evidence.** The 186 pytest tests were written against the C++ kernel and
+were not edited while the kernel changed. They pass against the Rust `_core`
+unchanged, so the port is behaviourally pinned by the pre-existing suite
+rather than by a new oracle. The Python tests that the deleted TS modules
+mirrored are covered in Rust by 16 `guidance`, 13 `mission`, 15 `motors`, 13
+`sensors` and 21 `state_machine` tests.
+
+**Trade-off.** The Python column of the module map stops being the reference
+implementation. A Python SIL run is now hybrid by construction: plant,
+controller, estimator and wind come from the Rust `_core`, while guidance,
+mission, motors, sensors, the phase machine and the MAVLink edge stay Python.
+That is deliberate, because the recorded telemetry, the validation report and
+the five videos are frozen artifacts produced by that harness and are not
+regenerated; rewriting the harness would invalidate them for no gain.
+
+### D29: The PyO3 boundary is Python sequences, and the hot paths get their own accessors
+
+**Decision.** Vector fields cross the boundary as `list[float]`; setters use
+`try_iter` so a numpy array, a list, a tuple or a generator all work.
+`Ekf.position_variance()` and `Ekf.position_covariance_trace()` return the
+three position diagonal entries and their sum, so the 200 Hz convergence check
+never builds a 15x15 matrix. `covariance()` still returns the full list of
+rows for the tests. `Ekf.nominal()` returns a snapshot and a new
+`Ekf.set_nominal(state)` writes one back; `mutable_nominal()` and
+`mutable_covariance()` are not exposed.
+
+**Rationale.** The pybind11 module exposed `Eigen` types through rust-numpy's
+equivalent; doing that here would add a second dependency and a second ABI to
+keep aligned for a boundary that moves three or six numbers at a time. A list
+of floats is `np.asarray`-able for free and is trivially inspectable. Measured
+cost is nil: the pytest suite runs in 8.6 s against the Rust extension, the
+same as it did against C++. `mutable_nominal()` cannot be expressed safely
+under PyO3's ownership model (it returned a live reference into the filter),
+and it had exactly one caller, which now reads a snapshot and writes it back.
+
+**Trade-off.** `covariance()` copies 225 floats per call, and only tests call
+it. The Python harness's list-typed fields are copies, not views, so in-place
+element assignment (`state.position[0] = x`) is not supported; nothing in the
+tree did that, and the harness assigns whole fields.
+
+### D30: The extension build resolves its own interpreter
+
+**Decision.** `bindings/build.sh` builds with `--features extension-module` and
+copies the `cdylib` to `python/talon/_core<EXT_SUFFIX>`. `.cargo/config.toml`
+sets `PYO3_PYTHON` to `.venv/bin/python` (overridable), and
+`bindings/build.rs` calls `pyo3_build_config::add_extension_module_link_args()`
+so the macOS `cdylib` resolves CPython symbols at load time. The
+`extension-module` feature is not a default, so `cargo test -p talon-py` links
+libpython and runs the marshalling tests natively.
+
+**Rationale.** Without the venv pointer, cargo and pytest can disagree about
+the interpreter, and on macOS the pybind11-era CMake find-module behaviour is
+not available to reproduce the old setup. PyO3 delegates the extension-module
+link flags to the consuming build script, which is easy to miss and produces a
+confusing `_PyObject_*` link failure; doing it in `build.rs` fixes it once.
+
+**Trade-off.** `.venv` must exist before `cargo test --workspace` can link the
+binding tests, which is already the documented order (`uv sync` first). The
+x86_64 and Linux equivalents of the link flags are handled by the same call.
+
 ## Open decisions (resolved at Phase 4)
 
 - Acceptance metrics for v2 reactive avoidance: still open (no live

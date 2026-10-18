@@ -2,7 +2,7 @@
 Dryden wind, full EKF-in-the-loop stack.
 
 Architecture (documented choices):
-- Truth dynamics: C++ propagate (RK4, DT = 0.005 s / 200 Hz) with the
+- Truth dynamics: Rust propagate (RK4, DT = 0.005 s / 200 Hz) with the
   Phase 1 DrydenWind (sigma_u = sigma_v = 2.0, sigma_w = 1.0 m/s) stepped
   every dynamics tick at the current ground-speed magnitude; the returned
   NED wind vector is fed to propagate.

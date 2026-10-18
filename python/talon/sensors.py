@@ -1,7 +1,7 @@
 """Sensor measurement models for the Phase 3 INS/GPS stack.
 
 Truth-side models used by SIL tests and scenarios: the EKF itself lives in
-C++ (core/include/talon/ekf.hpp, exposed via talon._core); this module only
+Rust (core/src/ekf.rs, exposed via talon._core); this module only
 GENERATES measurements from a true vehicle state, so its sign conventions
 must match docs/conventions.md exactly:
 

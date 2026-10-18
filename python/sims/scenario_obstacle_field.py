@@ -17,7 +17,7 @@ Architecture (documented choices):
   replay and the clearance margin is meaningfully exercised.
 - Avoidance: talon.avoidance.plan_avoidance_mission runs BEFORE the
   simulation and returns the augmented waypoint list. No change to
-  guidance.py or the C++ kernel.
+  guidance.py or the Rust core.
 - SIL: SILRunner with enable_udp=False (headless, no loopback sockets)
   and the augmented waypoints. The full closed loop (EKF, state machine,
   NLGL, cascaded PD, motor lag, Dryden wind) runs exactly as in the

@@ -23,7 +23,8 @@ What it does, in order:
    acceptance shape) to measure rise time, overshoot, and steady-state
    error for the report.
 4. Counts the test suites at runtime: pytest by collection (subprocess,
-   no test execution), GTest by running ./build/talon_tests (fast).
+   no test execution), and the Rust core by running
+   `cargo test -p talon-core` (native, fast).
 5. Generates seven publication plots into plots/ (gitignored). Plot
    scenario assignment (documented choice):
 
@@ -190,7 +191,7 @@ GUARD_TRANSITIONS_MIN = 9
 # The pytest row passes when the runtime count is >= the expected size,
 # so growing the suite does not fail the report.
 PYTEST_EXPECTED = 139
-GTEST_EXPECTED = 34  # was 31; Sprint 2.1 added 3 controller tests
+RUST_CORE_EXPECTED = 181  # talon-core native tests (crate lives in core/)
 
 
 @dataclass(slots=True)
@@ -282,22 +283,28 @@ def _count_pytest() -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _count_gtest() -> int | None:
-    """Number of GTest tests: run the binary (fast) and parse PASSED."""
-    binary = REPO_ROOT / "build" / "talon_tests"
-    if not binary.exists():
-        return None
+def _count_rust_core() -> int | None:
+    """Number of Rust core tests: run `cargo test -p talon-core`, sum PASSED.
+
+    The crate is the autopilot itself, so this is the suite that pins the
+    flight-critical math; it replaced the C++ Google Test binary when the
+    kernel moved to Rust.
+    """
     try:
         proc = subprocess.run(
-            [str(binary), "--gtest_brief=1"],
+            ["cargo", "test", "-p", "talon-core"],
+            cwd=REPO_ROOT,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=900,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    match = re.search(r"\[\s*PASSED\s*\]\s*(\d+) tests?", proc.stdout)
-    return int(match.group(1)) if match else None
+    counts = [
+        int(match)
+        for match in re.findall(r"test result: ok\. (\d+) passed", proc.stdout)
+    ]
+    return sum(counts) if counts else None
 
 
 def _phases_and_transitions(
@@ -636,7 +643,7 @@ def _build_report(
     wind_result: SILResult,
     emergency_result: SILResult,
     pytest_count: int | None,
-    gtest_count: int | None,
+    rust_core_count: int | None,
 ) -> list[ReportRow]:
     """Assemble every ReportRow from parsed scenario outputs + SIL data."""
     rows: list[ReportRow] = []
@@ -912,10 +919,10 @@ def _build_report(
     )
     rows.append(
         ReportRow(
-            "C++ tests (GTest)",
-            str(GTEST_EXPECTED),
-            str(gtest_count) if gtest_count is not None else "n/a",
-            gtest_count is not None and gtest_count >= GTEST_EXPECTED,
+            "Rust core tests (cargo)",
+            str(RUST_CORE_EXPECTED),
+            str(rust_core_count) if rust_core_count is not None else "n/a",
+            rust_core_count is not None and rust_core_count >= RUST_CORE_EXPECTED,
         )
     )
     return rows
@@ -1193,8 +1200,8 @@ def main() -> int:
     # 4. Test suite counts (runtime).
     print("counting test suites ...", flush=True)
     pytest_count = _count_pytest()
-    gtest_count = _count_gtest()
-    print(f"  pytest: {pytest_count}, gtest: {gtest_count}")
+    rust_core_count = _count_rust_core()
+    print(f"  pytest: {pytest_count}, rust core: {rust_core_count}")
 
     # 5. SIL re-runs for histories (plots + derived metrics).
     print("SIL re-run: gps_outage (plots: trajectory, e_ct, EKF) ...",
@@ -1254,7 +1261,7 @@ def main() -> int:
         wind_result,
         emergency_result,
         pytest_count,
-        gtest_count,
+        rust_core_count,
     )
     report_path = _write_report(rows, plot_paths)
     validation_json_path = _write_report_json(rows)

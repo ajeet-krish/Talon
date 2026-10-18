@@ -1,8 +1,8 @@
 """Phase 2 hover scenario: 60 s hover at 10 m altitude.
 
 Architecture (documented choices):
-- C++ dynamics (talon.propagate, RK4 at DT = 0.005 s / 200 Hz).
-- C++ cascaded PD controller (talon.CascadedController) running at
+- Rust dynamics (talon.propagate, RK4 at DT = 0.005 s / 200 Hz).
+- Rust cascaded PD controller (talon.CascadedController) running at
   DT_CONTROL = 0.01 s (100 Hz) with zero-order hold between control ticks,
   matching docs/conventions.md. Every second dynamics step triggers a new
   controller step (2 RK4 steps per control tick).

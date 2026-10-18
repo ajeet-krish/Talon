@@ -20,10 +20,9 @@
  * run is statistically equivalent to a recorded one, not bit-identical.
  */
 
-import type { FlightData, FlightPhase, Obstacle, PhaseEvent } from '@/types/flight'
+import type { FlightData, FlightPhase, Obstacle, PhaseEvent, Vec3 } from '@/types/flight'
 import type { CoreSession } from './engine'
 import type { LiveConfig, LiveRunResult, LiveRunSummary } from './types'
-import type { Vec3 } from './math'
 
 const KNOWN_PHASES: readonly FlightPhase[] = [
   'idle',

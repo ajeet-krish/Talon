@@ -1,22 +1,13 @@
-# Talon CI: build the C++17 kernel + pybind11 bindings and run the native
-# suites, and typecheck, test, and build the FlightLab web app.
+# Talon CI: the Rust GNC core, its two wrappers, and the web app.
 #
-# Layout: the C++ core lives in core/, the Python package and simulations in
-# python/, and the web app (Vite + React) owns the repository root. See
-# AGENTS.md for the map.
+# Layout: the autopilot lives in core/ and nowhere else. wasm/ wraps it for the
+# browser, bindings/ wraps it for Python (PyO3), and the web app (Vite + React)
+# owns the repository root. See AGENTS.md for the map.
 #
-# Interpreter note: pybind11 builds the `_core` extension against the
-# Python it finds at CMake configure time. `uv sync` creates .venv but
-# does not activate it in the shell, so this workflow passes the venv
-# interpreter explicitly with -DPython_EXECUTABLE (the FindPython /
-# pybind11 v3 variable; CMakeLists.txt also honors $VIRTUAL_ENV as a
-# fallback for local builds run under `uv run`).
-#
-# Timing: everything runs in a few minutes on ubuntu-latest. FetchContent
-# caching (gtest / eigen / pybind11 downloads under build/_deps) is a
-# straightforward future optimization, deliberately skipped here to keep
-# the workflow simple; add actions/cache keyed on CMakeLists.txt if the
-# configure step ever dominates the budget.
+# Three jobs, one per consumer of the core, so a failure names the wrapper it
+# came from: `core` (Rust + PyO3 + pytest), `wasm` (browser bundle), `web`
+# (typecheck, vitest, production build).
+
 name: CI
 
 on:
@@ -24,7 +15,8 @@ on:
   pull_request:
 
 jobs:
-  build-and-test:
+  core:
+    name: Rust core, PyO3 bindings, pytest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,22 +30,22 @@ jobs:
 
       - name: Sync Python environment
         # Creates .venv with numpy, scipy, matplotlib, pymavlink, pytest.
+        # .cargo/config.toml points PYO3_PYTHON at .venv/bin/python, so cargo
+        # builds the extension against the same interpreter pytest imports it
+        # with, without any extra wiring here.
         run: uv sync
 
-      - name: Configure C++ build
-        # Release build; point FindPython at the uv-created venv so the
-        # _core extension matches the interpreter `uv run pytest` uses.
-        run: >
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
-          -DPython_EXECUTABLE="$PWD/.venv/bin/python"
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Build kernel, tests, and bindings
-        run: cmake --build build -j
+      - name: Rust tests (talon-core, talon-wasm, talon-py)
+        # The wasm binding tests run natively; no wasm target needed here.
+        run: cargo test --workspace
 
-      - name: Run C++ unit tests (Google Test)
-        run: ./build/talon_tests
+      - name: Build the talon._core extension
+        run: ./bindings/build.sh
 
-      - name: Verify talon._core extension imports
+      - name: Verify talon._core imports
         # Hard-fail before pytest if the extension is missing or broken;
         # without this a missing _core would skip every test and the run
         # would still be green with zero tests executed.
@@ -67,7 +59,54 @@ jobs:
           TALON_REQUIRE_CORE: "1"
         run: uv run pytest python/tests/ -q
 
+  wasm:
+    name: WebAssembly bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.15.0
+
+      - name: Build the browser kernel
+        run: ./wasm/build.sh
+
+      - name: Confirm the committed bundle is current
+        # The generated JS and type declarations are a pure function of the
+        # crate's exported surface and the wasm-bindgen version (pinned by the
+        # committed Cargo.lock), so a clean rebuild must reproduce them byte for
+        # byte. A diff means the core changed without re-running
+        # ./wasm/build.sh, which would ship a stale autopilot to Pages. The
+        # .wasm binary is deliberately not compared: it varies with the exact
+        # rustc build and would be brittle.
+        run: >
+          git diff --exit-code --
+          public/wasm-rust/talon_core.js
+          public/wasm-rust/talon_core.d.ts
+          public/wasm-rust/talon_core_bg.wasm.d.ts
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Headless live-run smoke test
+        # Drives the freshly built module the way the page does: every live
+        # config, plus a paced 1x run checked against wall clock.
+        run: npm run smoke:wasm
+
   web:
+    name: Web app
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

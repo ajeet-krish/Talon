@@ -35,8 +35,8 @@ def _closed_loop(
 
     The controller runs at `control_dt` (default DT_CONTROL = 100 Hz, ZOH
     between ticks) and the plant propagates at DT = 200 Hz. Motor lag is
-    covered by sims/scenario_hover.py; this mirrors the C++ GTest setup but
-    with the realistic 100 Hz control period.
+    covered by sims/scenario_hover.py; this mirrors the retired C++ GTest
+    setup, with the realistic 100 Hz control period.
     """
     controller = CascadedController(gains, params)
     state = initial
@@ -80,7 +80,7 @@ def test_closed_loop_hover_ten_seconds() -> None:
     # Hover at 10 m altitude (NED z = -10); final error < 0.05 m. The
     # initial 10 m step saturates thrust and winds the (Sprint 2.1)
     # position integral, whose back-calculation-bounded unwind has
-    # tau_i = kp/ki = 13.3 s, so the run matches the C++ acceptance
+    # tau_i = kp/ki = 13.3 s, so the run matches the original C++ acceptance
     # window of 60 s instead of a shorter PD-era settling time.
     gains = ControlGains.defaults()
     params = VehicleParams()
@@ -95,8 +95,8 @@ def test_closed_loop_hover_ten_seconds() -> None:
 
 def test_position_step_metrics() -> None:
     # 1 m north step: rise time (0 to 90%) < 2.5 s (slightly looser than the
-    # GTest's 2.0 s to absorb the 100 Hz ZOH control period), overshoot < 10%,
-    # steady-state error < 0.05 m after 10 s.
+    # old GTest's 2.0 s to absorb the 100 Hz ZOH control period), overshoot
+    # < 10%, steady-state error < 0.05 m after 10 s.
     gains = ControlGains.defaults()
     params = VehicleParams()
     final, positions = _closed_loop(
@@ -158,9 +158,9 @@ def test_integral_position_accessor() -> None:
 
 def test_wind_rejection_sse() -> None:
     # 60 s hover at 10 m under a constant 3 m/s North wind, mirroring the
-    # C++ WindRejectionZeroSSError pattern at the 200 Hz plant rate with
-    # instantaneous motors: the position integral must null the drag-bias
-    # steady-state error, |x error| < 0.05 m over the last 10 s.
+    # original C++ WindRejectionZeroSSError pattern at the 200 Hz plant rate
+    # with instantaneous motors: the position integral must null the
+    # drag-bias steady-state error, |x error| < 0.05 m over the last 10 s.
     gains = ControlGains.defaults()
     params = VehicleParams()
     controller = CascadedController(gains, params)

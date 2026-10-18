@@ -36,8 +36,8 @@ _HOVER_ACCEL = np.array([0.0, 0.0, -GRAVITY])
 def _quiet_config() -> EKFConfig:
     """Low-noise EKF config for deterministic perfect-sensor tests.
 
-    Mirrors the C++ quiet_config() in core/tests/test_ekf.cpp so the Python
-    convergence checks do not depend on the noise floor.
+    Mirrors the retired C++ quiet_config() (core/tests/test_ekf.cpp) so the
+    Python convergence checks do not depend on the noise floor.
     """
     config = EKFConfig()
     config.accel_noise_density = 1e-4
@@ -206,9 +206,11 @@ def test_closed_loop_hover_with_ekf() -> None:
     # tightened (0.3 m horizontal / 0.5 m vertical) so the ~0.15 m
     # steady-state TRUE position envelope measures estimator-controller
     # coupling rather than the 1.5 m-class consumer GPS error floor (the
-    # realistic-noise steady state is covered by the C++ NoisySteadyState
-    # hover RMSE test). IMU keeps production densities and the SensorSuite's
-    # true accel/gyro biases, so the EKF bias-estimation path is live.
+    # realistic-noise steady state is covered by the seeded SIL hover
+    # integration test (tests/test_integration.py::test_hover_with_ekf_15s)
+    # and the scenario suite). IMU keeps production densities and the
+    # SensorSuite's true accel/gyro biases, so the EKF bias-estimation path
+    # is live.
     params = VehicleParams()
     gains = ControlGains.defaults()
     controller = CascadedController(gains, params)

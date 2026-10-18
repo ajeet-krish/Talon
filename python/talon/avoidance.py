@@ -2,7 +2,7 @@
 
 Pure-Python geometric planner that inserts detour waypoints into a
 waypoint circuit so the resulting path steers around spherical keep-out
-zones. No change to ``guidance.py`` or the C++ kernel: the augmented
+zones. No change to ``guidance.py`` or the Rust core: the augmented
 waypoint list is consumed by the ordinary WaypointMission + NLGL path.
 
 Geometry is horizontal-plane (2-D) for the detour decision because the

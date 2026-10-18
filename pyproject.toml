@@ -1,7 +1,7 @@
 [project]
 name = "talon"
 version = "0.1.0"
-description = "Single-vehicle UAV autopilot: C++ computational kernel with Python tooling"
+description = "Single-vehicle UAV autopilot: Rust computational kernel with Python tooling"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -31,7 +31,9 @@ testpaths = ["python/tests"]
 # python/talon).
 pythonpath = ["python"]
 
-# The native extension `talon._core` is built by CMake, not by the Python
-# build backend. From the repository root:
-#   cmake -B build && cmake --build build -j
-# which drops _core*.so into python/talon/. This file only manages Python deps.
+# The native extension `talon._core` is built by `bindings/build.sh` (a PyO3
+# crate over `talon-core`), not by the Python build backend. From the
+# repository root:
+#   ./bindings/build.sh
+# which drops _core<EXT_SUFFIX> into python/talon/ next to the package that
+# imports it. This file only manages Python deps.

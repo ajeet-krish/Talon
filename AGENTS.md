@@ -1,6 +1,6 @@
 # Talon FlightLab
 
-Drone autopilot simulator: a Rust GNC core (RK4 dynamics, Dryden wind, cascaded PD, 15-state MEKF, NLGL guidance, waypoint mission, phase state machine, sensors, motors, and the SIL runner) that runs natively and in the browser through wasm-bindgen, with Python simulation and analysis tooling, and a React 19 + react-three-fiber web tool that replays, inspects, and flies live runs. The autopilot lives in `core/` and nowhere else. The web app owns the repository root; the Python package, simulations, and tests live in `python/`. The C++ kernel, CMake, pybind11, and the Emscripten build are still in the tree until the Phase 5b deletion step.
+Drone autopilot simulator: a Rust GNC core (RK4 dynamics, Dryden wind, cascaded PD, 15-state MEKF, NLGL guidance, waypoint mission, phase state machine, sensors, motors, and the SIL runner) that runs natively and in the browser through wasm-bindgen, with Python simulation and analysis tooling, and a React 19 + react-three-fiber web tool that replays, inspects, and flies live runs. The autopilot lives in `core/` and nowhere else: the browser (`wasm/`) and Python (`bindings/`, a PyO3 extension) are thin wrappers over it. The web app owns the repository root; the Python package, simulations, and tests live in `python/`.
 
 ## Quick Commands
 
@@ -8,15 +8,12 @@ Drone autopilot simulator: a Rust GNC core (RK4 dynamics, Dryden wind, cascaded 
 # Rust core (the autopilot), from the repository root
 cargo test -p talon-core                           # native GNC tests
 cargo test -p talon-wasm                           # wasm-binding tests, run natively
+cargo test -p talon-py                             # binding-level marshalling tests
 ./wasm/build.sh                                    # -> public/wasm-rust/talon_core.js + _bg.wasm
-
-# Retiring C++ kernel (still present, still green)
-uv run cmake -B build -DCMAKE_BUILD_TYPE=Release
-uv run cmake --build build -j
-./build/talon_tests
 
 # Python harness
 uv sync                                            # Python environment (.venv)
+./bindings/build.sh                                # -> python/talon/_core<EXT_SUFFIX>
 uv run pytest python/tests/ -q                     # pytest suites
 uv run python python/sims/run_all.py               # validation driver (recorded data is frozen)
 
@@ -35,7 +32,6 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 
 - No em dashes, double hyphens used as dashes, or dash equivalents anywhere: code, comments, docs, commit messages.
 - Rust: standard Cargo layout and rustfmt defaults; snake_case functions, PascalCase types, SCREAMING_SNAKE constants; `Result` over panics; no autopilot logic outside `core/`.
-- C++ (retiring): header-only C++17 under `core/include/talon/`, 4-space indent, K&R braces; snake_case functions, PascalCase types, SCREAMING_SNAKE constants.
 - Python: snake_case, type hints, uv-managed dependencies; package lives under `python/talon/`.
 - Frames: NED world, aerospace body, Hamilton scalar-first quaternions, thrust along -body-z. Single source of truth is `docs/conventions.md`.
 - TypeScript (web app): `strict` with `noUncheckedIndexedAccess`; typecheck before build; pure logic in `src/utils/` with vitest coverage.
@@ -45,9 +41,7 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 - `src/`: web app source. `views/` (Replay, Telemetry, Metrics, Videos, Run), `components/` (scene, live, charts, ui), `live/` (engine loader, sample recorder, pacer, display geometry, thin LiveSim seam), `utils/` (pure), `store/` (Zustand), `data/` (scenario + recording + live-run metadata), `hooks/`.
 - `core/src/`: the Rust autopilot, `talon-core`. `sim.rs` (SIL runner), `scenario.rs` (browser config), `export.rs` (schema 1.1 document), `dynamics.rs`, `wind.rs`, `controller.rs`, `ekf.rs`, `guidance.rs`, `mission.rs`, `state_machine.rs`, `sensors.rs`, `motors.rs`, `battery.rs`, `rng.rs`, `math.rs`, `types.rs`, `constants.rs`.
 - `wasm/`: wasm-bindgen crate exposing the stepping `Session` to the browser (`src/lib.rs`), built by `build.sh` into `public/wasm-rust/`.
-- `core/include/talon/` and `core/tests/`: the retiring C++17 kernel and its Google Tests.
-- `wasm/CMakeLists.txt` and `wasm/src/exports.cpp`: the retiring Emscripten build.
-- `bindings/pytalon.cpp`: pybind11 module `talon._core`, to become a PyO3 crate.
+- `bindings/`: PyO3 crate `talon-py` publishing the `talon._core` extension module over `talon-core`, built by `build.sh` into `python/talon/`.
 - `fixtures/`: Python-generated parity fixtures for the live-run tests (committed).
 - `python/talon/`: Python package. `guidance.py` (NLGL), `mission.py`, `state_machine.py`, `sensors.py`, `motors.py`, `battery.py`, `avoidance.py`, `mavlink_sil.py`, `plotting.py`, `export_json.py`, `animation.py`.
 - `python/sims/`: seven `scenario_*.py` runs, `monte_carlo.py`, and `run_all.py` validation driver.
@@ -65,7 +59,8 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 | Phase 3 | Unified entry point (videos + scene + metrics) | Complete |
 | Phase 4 | In-browser WASM run | Complete |
 | Phase 5a | Rust `talon-core` library + native tests | Complete |
-| Phase 5b | WASM + PyO3 bindings, generated type mirrors, retire the C++ stack | In Progress |
+| Phase 5b | WASM + PyO3 bindings, retire the C++ and TypeScript autopilots | Complete |
+| Phase 5c | Generated TypeScript type mirrors (ts-rs) | Not started |
 | Phase 6 | GCS shell with live telemetry and teaching captions | Complete |
 | Phase 7 | Altitude legibility in the scene | In Progress |
 | Phase 8 | Mission authoring (waypoints, wind, faults) | Not started |

@@ -16,8 +16,8 @@ from talon import (
 
 # ---------------------------------------------------------------------------
 # Pure-Python reference implementation of the same equations, written from
-# docs/conventions.md. This catches pybind11 marshalling/sign bugs that a
-# self-consistent C++-only test would miss.
+# docs/conventions.md. This catches extension marshalling/sign bugs that a
+# self-consistent Rust-only test would miss.
 # ---------------------------------------------------------------------------
 
 

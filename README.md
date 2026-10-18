@@ -11,15 +11,14 @@ The core is a complete autopilot for a 1.5 kg Crazyflie-class quadrotor: a
 15-state multiplicative error-state Kalman filter, NLGL line-of-sight
 guidance, a cascaded PD controller, an 8-state flight-phase state machine
 with FDIR, and a UDP MAVLink software-in-the-loop (SIL) runner, all closed
-loop against a C++17 rigid-body truth plant. The computational kernel
-(dynamics, Dryden wind, controller, EKF) is header-only C++17, exposed
-through pybind11 for the recorded runs and through Emscripten/embind for
-the web app; the mission, guidance, estimation glue, SIL, and analysis
-tooling are Python, with the browser-side subset ported to TypeScript.
-Talon is the single-agent companion to SwarmGNC: where SwarmGNC studies
-multi-agent formation flight, Talon proves one vehicle done honestly,
-estimator in the loop, with every acceptance number checked by an
-automated report.
+loop against a Rust rigid-body truth plant. The autopilot is one Rust
+library, `talon-core`: the browser runs it through WebAssembly
+(`wasm/`, wasm-bindgen) and the Python analysis harness runs it through a
+PyO3 extension (`bindings/`, exposing `talon._core`). The mission,
+guidance, estimation glue, SIL, and analysis tooling are Python. Talon is
+the single-agent companion to SwarmGNC: where SwarmGNC studies multi-agent
+formation flight, Talon proves one vehicle done honestly, estimator in the
+loop, with every acceptance number checked by an automated report.
 
 ## Run the app
 
@@ -46,8 +45,10 @@ Deployment requires the repository's Pages source to be set to
 the site serves an untranspiled `index.html`.
 
 The Run section needs the WebAssembly kernel. Build it once with
-`./wasm/build.sh` (Emscripten); without it every other section still works
-and Run disables itself with a clear message.
+`./wasm/build.sh` (needs wasm-pack and the wasm32 target); the built bundle is
+committed under `public/wasm-rust/`, so a fresh clone can run it without the
+toolchain. Without a built bundle, every other section still works and Run
+disables itself with a clear message.
 
 ## Sections
 
@@ -58,7 +59,7 @@ playback clock; the left rail always carries the scenario list):
 - **Telemetry**: the recorded channels as time-series (altitude, ground speed, EKF error, wind, thrust, 3-sigma, obstacle clearance).
 - **Metrics**: a run summary derived from the active scenario plus the validation driver's own acceptance table.
 - **Videos**: the recorded Matplotlib flight exports, with an "open in replay" jump for the runs that have a scenario.
-- **Run**: fly a scenario in the browser. The C++ kernel compiled to WebAssembly is driven by the TypeScript mission, guidance, motor, sensor, and state-machine glue at 200 Hz plant / 100 Hz control / 10 Hz GPS; the finished run appears in the rail and drops into Replay, Telemetry, and Metrics like a recorded flight.
+- **Run**: fly a scenario in the browser. The Rust autopilot compiled to WebAssembly is stepped by the page at 200 Hz plant / 100 Hz control / 10 Hz GPS, with the pacing owned by the front end; the finished run appears in the rail and drops into Replay, Telemetry, and Metrics like a recorded flight.
 
 ## Highlights
 
@@ -69,8 +70,8 @@ playback clock; the left rail always carries the scenario list):
 - **UDP MAVLink SIL**: real MAVLink v2 frames (pymavlink codec) for telemetry (HEARTBEAT, ATTITUDE, LOCAL_POSITION_NED, GPS_RAW_INT, BATTERY_STATUS) and COMMAND_LONG events on loopback ports 14550/14551, plus fault injection (GPS outage, EKF corruption, battery drain).
 - **Deterministic obstacle avoidance**: a pure-Python leg-detour planner inserts waypoints around spherical keep-out zones, and the schema 1.1 telemetry export carries the zones so the web scene can render them.
 - **7 closed-loop scenarios** with printed acceptance metrics, plus a validation driver that runs everything, generates seven publication plots and five flight videos, exports schema 1.1 telemetry JSON, and writes an automated validation report plus a machine-readable copy.
-- **In-browser WASM run**: the same C++ kernel (dynamics, Dryden wind, cascaded PD, 15-state MEKF) built to WebAssembly with Emscripten + embind and driven by a faithful TypeScript port of the Python mission, guidance, motor, sensor, and state-machine glue, so hover, waypoints, obstacle field, and wind fly live in the browser with no server round trip.
-- **Test suites**: 186 pytest, 34 Google Test, and 80 vitest, all passing.
+- **In-browser WASM run**: the same Rust autopilot (dynamics, Dryden wind, cascaded PD, 15-state MEKF, NLGL guidance, mission, phase machine, sensors, motors) compiled to WebAssembly with wasm-bindgen, so hover, waypoints, obstacle field, and wind fly live in the browser with no server round trip and no second implementation of the flight-critical math.
+- **Test suites**: 186 pytest, 181 Rust core, 11 wasm-binding, 2 PyO3 marshalling, and 122 vitest, all passing.
 
 ## Architecture
 
@@ -78,68 +79,70 @@ Data flow of one 200 Hz SIL step (sensors and estimator at their own rates, cont
 
 ```mermaid
 flowchart LR
-    W["Dryden wind<br/>(C++)"] --> T["Truth dynamics<br/>RK4, 200 Hz (C++)"]
-    T --> S["Sensors<br/>IMU 200 Hz, GPS 10 Hz (Python)"]
-    S --> E["EKF<br/>15-state MEKF (C++)"]
-    E --> SM["Flight phase machine<br/>+ FDIR (Python)"]
-    SM --> G["NLGL guidance<br/>(Python)"]
-    G --> C["Cascaded PD<br/>100 Hz (C++)"]
-    C --> M["Motor lag +<br/>X mixer (Python)"]
+    W["Dryden wind<br/>(Rust)"] --> T["Truth dynamics<br/>RK4, 200 Hz (Rust)"]
+    T --> S["Sensors<br/>IMU 200 Hz, GPS 10 Hz (Rust)"]
+    S --> E["EKF<br/>15-state MEKF (Rust)"]
+    E --> SM["Flight phase machine<br/>+ FDIR (Rust)"]
+    SM --> G["NLGL guidance<br/>(Rust)"]
+    G --> C["Cascaded PD<br/>100 Hz (Rust)"]
+    C --> M["Motor lag +<br/>X mixer (Rust)"]
     M --> T
     E -. "MAVLink telemetry" .- O["UDP SIL runner / operator"]
     O -. "COMMAND_LONG" .- SM
 ```
 
-Module ownership (single source of truth per layer):
+The Rust core implements the whole loop; the Python harness keeps its own
+higher-level layers for the recorded runs and takes the plant, controller and
+estimator from the Rust `_core`:
 
-| Layer | C++17 kernel (`core/include/talon/`) | Python (`python/talon/`) |
-|-------|--------------------------------------|--------------------------|
-| Dynamics / RK4 | `dynamics.hpp` (`propagate`) | re-export only |
-| Wind | `wind.hpp` (`DrydenWind`) | re-export only |
-| Controller | `controller.hpp` (cascaded PD) | `controller.py` binding |
-| Estimator | `ekf.hpp` (15-state MEKF) | `ekf.py` binding |
-| Motors | constants in `constants.hpp` | `motors.py` (lag + mix) |
-| Sensors | constants | `sensors.py` (truth-side IMU/GPS) |
-| Guidance / mission | - | `guidance.py` (NLGL), `mission.py` |
-| Obstacle avoidance | - | `avoidance.py` (detour planner) |
-| State machine / FDIR | - | `state_machine.py` |
-| SIL + MAVLink | - | `mavlink_sil.py`, `mavlink_codec.py` |
-| Battery | - | `battery.py` |
+| Layer | Rust core (`core/src/`) | Python (`python/talon/`) |
+|-------|-------------------------|--------------------------|
+| Dynamics / RK4 | `dynamics.rs` (`propagate`) | via `_core` (`bindings/`) |
+| Wind | `wind.rs` (`DrydenWind`) | via `_core` (`bindings/`) |
+| Controller | `controller.rs` (cascaded PD) | via `_core` (`bindings/`) |
+| Estimator | `ekf.rs` (15-state MEKF) | via `_core` (`bindings/`) |
+| Motors | `motors.rs` (lag + X mixer) | `motors.py` (harness) |
+| Sensors | `sensors.rs` (truth-side IMU/GPS) | `sensors.py` (harness) |
+| Guidance / mission | `guidance.rs` (NLGL), `mission.rs` | `guidance.py`, `mission.py` (harness) |
+| Obstacle avoidance | - (offline detours planned in Python) | `avoidance.py` (detour planner) |
+| State machine / FDIR | `state_machine.rs` | `state_machine.py` (harness) |
+| SIL loop | `sim.rs` (pure stepper, no transport) | `mavlink_sil.py` + `mavlink_codec.py` (MAVLink edge) |
+| Battery | `battery.rs` | `battery.py` (harness) |
 | Plots / report / video | - | `plotting.py`, `export_json.py`, `animation.py` |
 
 The web app consumes the exported JSON and the validation report for the
-recorded sections. The Run section adds a second, browser-side path: the
-same C++ kernel built to WebAssembly (`wasm/exports.cpp`, an embind
-`Kernel` class) plus a TypeScript port of the Python glue under `src/live/`
-(mission, NLGL guidance, motor mixer and lag, truth-side sensors, the
-flight-phase machine, and a line-for-line mirror of the SIL loop in
-`sim.ts`). The live-run configs are exported from the Python scenario
-definitions by `python/sims/export_live_configs.py`, so the browser can
-never drift from the recorder. The estimator is not reimplemented: the
-15-state MEKF runs in WASM, since a second implementation of the most
-safety-critical math would be a second source of truth.
+recorded sections. The Run section adds a second, browser-side path to the
+same core: `wasm/` exposes a steppable `Session` (wasm-bindgen) and
+`src/live/` owns only the front-end concerns, the engine loader, the sample
+recorder, the pacer and the display geometry. There is no TypeScript
+autopilot: mission, guidance, motors, sensors, the phase machine and the SIL
+loop all run in the native core. The live-run configs are exported from the
+Python scenario definitions by `python/sims/export_live_configs.py`, so the
+browser can never drift from the recorder.
 
 ## Build and test
 
-The native extension `talon._core` is built by CMake (not by the Python build backend). From the repository root:
+The autopilot is a Rust workspace: `core/` is `talon-core`, `wasm/` is the
+wasm-bindgen wrapper and `bindings/` is the PyO3 wrapper. The Python extension
+`talon._core` is built by `bindings/build.sh` (not by the Python build
+backend). From the repository root:
 
 ```bash
-# Build the C++ kernel, GTest binary, and the pybind11 module
-# (drops _core*.so into python/talon/). Run under `uv run` or with the
-# virtualenv active so CMake picks the same interpreter as the tests:
-uv run cmake -B build -DCMAKE_BUILD_TYPE=Release
-uv run cmake --build build -j
-
-./build/talon_tests                  # 34 C++ unit tests (Google Test)
+cargo test --workspace               # 181 core + 11 wasm + 2 PyO3 tests
 
 uv sync                              # Python environment (.venv)
+./bindings/build.sh                  # -> python/talon/_core<EXT_SUFFIX>
 uv run pytest python/tests/ -q       # 186 Python tests
 
 uv run python python/sims/run_all.py # 7 scenarios + plots + videos + reports
 
-# WebAssembly kernel for the in-browser live run (needs Emscripten)
-./wasm/build.sh                      # writes public/wasm/talon.js + .wasm
+# WebAssembly kernel for the in-browser live run
+./wasm/build.sh                      # -> public/wasm-rust/talon_core.js + _bg.wasm
 ```
+
+`.cargo/config.toml` points `PYO3_PYTHON` at `.venv/bin/python`, so `cargo` and
+`uv run pytest` always build and import the extension against the same
+interpreter. `./bindings/build.sh debug` skips the release optimisations.
 
 Individual scenarios also run standalone, for example
 `uv run python python/sims/scenario_waypoints.py`. The validation driver writes `plots/*.png`, `plots/validation_report.md`, and `plots/json/validation.json` (the plots/ directory is gitignored; regenerate
@@ -182,7 +185,7 @@ Headline numbers from `uv run python python/sims/run_all.py` (the full 25-row ta
 | Obstacle field min 3-D surface clearance | > 0 m | 2.072 m |
 | Emergency detection / final altitude | < 1 s / < 0.5 m | 0.000 s / settled |
 | State machine phases covered (SIL union) | 8 of 8 | 8 of 8 |
-| Test suites | 139+ pytest, 34 GTest | 186 pytest, 34 GTest |
+| Test suites | 139+ pytest | 186 pytest, 181 Rust core, 122 vitest |
 
 Two example plots (generated by the validation driver into the gitignored `plots/` directory; regenerate with `uv run python python/sims/run_all.py`):
 
@@ -200,7 +203,7 @@ Note: `plots/` is gitignored, so the two images embedded above do not render on 
 
 ## Frames and conventions
 
-NED world frame, aerospace body frame, Hamilton scalar-first quaternions, thrust along -body-z, gravity [0, 0, +g] in NED. The full single source of truth for frames, signs, units, and the motor mixer is [docs/conventions.md](docs/conventions.md); every C++ header and Python module is checked against it.
+NED world frame, aerospace body frame, Hamilton scalar-first quaternions, thrust along -body-z, gravity [0, 0, +g] in NED. The full single source of truth for frames, signs, units, and the motor mixer is [docs/conventions.md](docs/conventions.md); the Rust core is the reference implementation, and every Python module and web-app type is checked against it.
 
 ## Guidance note
 
@@ -252,7 +255,7 @@ trustworthy.
    design, path following, Dryden wind model.)
 2. Trawny, N. and Roumeliotis, S. I. "Indirect Kalman Filter for 3D
    Attitude Estimation." University of Minnesota, GRASP Laboratory,
-   2005. (MEKF formulation used by `ekf.hpp`.)
+   2005. (MEKF formulation used by `ekf.rs`.)
 3. Solà, J. "Quaternion kinematics for the error-state Kalman filter."
    arXiv:1711.02508, 2017. (Multiplicative error-state conventions.)
 4. Park, S., Deyst, J. and How, J. P. "Performance and Lyapunov
@@ -282,35 +285,36 @@ Talon/
 ├── index.html               # web app entry (Vite)
 ├── package.json             # web deps and scripts (dev/build/test)
 ├── vite.config.ts           # base '/Talon/', '@' alias to src/
+├── Cargo.toml               # Cargo workspace: core, wasm, bindings
 ├── src/                     # web app: React 19 + react-three-fiber
 │   ├── views/               #   Replay, Telemetry, Metrics, Videos, Run
 │   ├── components/scene/    #   R3F layers + FlightScene
+│   ├── components/live/     #   live ground-station scene and instrument rail
 │   ├── components/charts/   #   SVG time-series chart
 │   ├── components/ui/       #   rail, tabs, HUD, legend, timeline
-│   ├── live/                #   TS glue for the WASM run (guidance, mission,
-│   │                        #   motors, sensors, state machine, SIL loop)
+│   ├── live/                #   engine loader, recorder, pacer, readout (pure)
 │   ├── utils/               #   interpolation, clearance, chart, telemetry (pure)
 │   ├── store/               #   scenario cache, clock, toggles, active section
 │   └── data/                #   scenario, recording, and live-run metadata
-├── wasm/                    # Emscripten build of the kernel (embind exports)
+├── core/                    # talon-core: the autopilot (Rust)
+│   └── src/                 #   dynamics, wind, controller, ekf, guidance,
+│                            #   mission, state machine, sensors, motors, sim
+├── wasm/                    # wasm-bindgen wrapper (the browser Session)
+├── bindings/                # PyO3 wrapper (the talon._core extension)
 ├── public/data/             # exported telemetry JSON + live configs (committed)
-├── public/wasm/             # compiled kernel glue + wasm (committed)
+├── public/wasm-rust/        # compiled kernel: talon_core.js + _bg.wasm (committed)
 ├── public/videos/           # recorded MP4s (committed)
 ├── fixtures/                # Python-generated parity fixtures (committed)
 ├── scripts/copy_data.sh     # stage JSON + recordings into public/
-├── core/                    # header-only C++17 kernel + Google Tests
-│   ├── include/talon/       #   dynamics, wind, controller, ekf, types, constants
-│   └── tests/               #   34 Google Tests
-├── bindings/pytalon.cpp     # pybind11 module talon._core
 ├── python/                  # Python package, simulations, and tests
-│   ├── talon/               #   package (_core*.so built here by CMake)
+│   ├── talon/               #   package (_core*.so built here by bindings/build.sh)
 │   ├── sims/                #   7 scenarios, run_all.py, export_live_configs.py
 │   └── tests/               #   186 pytest tests
 ├── docs/                    # conventions, architecture, decisions, research,
 │                            #   reviews, tests, videos, portfolio
-├── CMakeLists.txt           # kernel + GTest + pybind11 build
+├── .cargo/config.toml       # PYO3_PYTHON -> .venv/bin/python
 ├── pyproject.toml           # uv-managed Python deps
-└── .github/workflows/       # ci.yml (native + web), deploy.yml (Pages)
+└── .github/workflows/       # ci.yml (core + wasm + web), deploy.yml (Pages)
 ```
 
 ## License

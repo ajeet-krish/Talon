@@ -24,14 +24,13 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         # tests run: fail loudly instead of skipping the whole suite.
         raise RuntimeError(
             "TALON_REQUIRE_CORE=1 is set but importing talon failed; "
-            "build the extension with `cmake -B build && cmake --build "
-            f"build -j` first. Import error: {_CORE_ERROR}"
+            "build the extension with `./bindings/build.sh` first. "
+            f"Import error: {_CORE_ERROR}"
         )
     skip_core = pytest.mark.skip(
         reason=(
-            "talon._core is not built; run "
-            "`cmake -B build && cmake --build build -j` (from `uv run` or with "
-            f"the virtualenv active) first. Import error: {_CORE_ERROR}"
+            "talon._core is not built; run `./bindings/build.sh` first "
+            f"(after `uv sync`). Import error: {_CORE_ERROR}"
         )
     )
     for item in items:

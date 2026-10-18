@@ -30,9 +30,9 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only on unbuilt checkouts
     raise RuntimeError(
         "Talon native extension 'talon._core' is not built. Build it from the "
-        "repository root with: cmake -B build && cmake --build build -j "
-        "(run under `uv run` or with the virtualenv active so CMake picks the "
-        "same Python interpreter)."
+        "repository root with: ./bindings/build.sh (a PyO3 crate over "
+        "talon-core; needs `uv sync` first so it targets the venv "
+        "interpreter)."
     ) from exc
 
 from .avoidance import (
