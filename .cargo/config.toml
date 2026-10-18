@@ -1,0 +1,9 @@
+# Cargo configuration for the Talon native workspace.
+#
+# PyO3 builds the `talon-py` extension against a specific interpreter; pointing
+# it at the uv-managed venv keeps `cargo build`/`cargo test` in step with
+# `uv run pytest` (the same Python the extension is imported by). Export
+# PYO3_PYTHON in your environment to override, for example in CI.
+
+[env]
+PYO3_PYTHON = { value = ".venv/bin/python", relative = true, force = false }

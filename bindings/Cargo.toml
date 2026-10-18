@@ -1,0 +1,34 @@
+# Python bindings (PyO3) for the Talon GNC core.
+#
+# This crate owns no autopilot logic: it exposes the exact `talon._core` surface
+# the Python analysis harness imports, backed by the same Rust core the browser
+# runs through WebAssembly. Built into `python/talon/_core.<ext>.so` by
+# `bindings/build.sh`.
+#
+# `extension-module` is deliberately not a default feature: `cargo test
+# -p talon-py` links libpython (so native tests can run) while `build.sh` turns
+# the feature on to produce a portable extension module that does not.
+
+[package]
+name = "talon-py"
+description = "PyO3 bindings exposing the Talon GNC core as the talon._core extension module"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "talon_py"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+talon-core = { path = "../core" }
+pyo3 = "0.29"
+
+[build-dependencies]
+# pyo3 delegates the extension-module link arguments to the consuming build
+# script; see bindings/build.rs.
+pyo3-build-config = "0.29"
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]

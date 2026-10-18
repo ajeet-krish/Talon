@@ -7,12 +7,14 @@
 
 [workspace]
 resolver = "2"
-members = ["core", "wasm"]
+members = ["core", "wasm", "bindings"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+# 1.83 is the floor pyo3 0.29 imposes, and the Python extension is a workspace
+# member, so the whole workspace tracks it.
+rust-version = "1.83"
 
 [profile.release]
 opt-level = 3

@@ -498,10 +498,10 @@ class SILRunner:
         """Force the EKF into a diverged state. Modes:
 
         corrupt_bias: one-shot +25 m offset on the nominal NORTH position
-            via mutable_nominal (a hard corruption of the filter's
-            solution; the innovation gate then rejects every subsequent
-            fix, so the corruption persists and ekf_diverged trips on the
-            position-error clause within one control step).
+            written back with set_nominal (a hard corruption of the
+            filter's solution; the innovation gate then rejects every
+            subsequent fix, so the corruption persists and ekf_diverged
+            trips on the position-error clause within one control step).
         suppress_updates: stop feeding GPS to the filter (dead-reckoning
             forever; divergence only if the error eventually exceeds 20 m).
         adversarial_gps: offset every GPS position fed to the filter by
@@ -509,10 +509,11 @@ class SILRunner:
             gated-streak clause trips divergence after 5 rejections.
         """
         if mode == "corrupt_bias":
-            nominal = self._ekf.mutable_nominal()
+            nominal = self._ekf.nominal()
             position = np.asarray(nominal.position, dtype=np.float64).copy()
             position[0] += 25.0
             nominal.position = position
+            self._ekf.set_nominal(nominal)
         elif mode == "suppress_updates":
             self._fault_suppress_updates = True
         elif mode == "adversarial_gps":
@@ -723,8 +724,10 @@ class SILRunner:
 
     def _update_derived(self) -> None:
         """Recompute ekf_converged / ekf_diverged (module docstring)."""
-        covariance = np.asarray(self._ekf.covariance(), dtype=np.float64)
-        pos_trace = float(covariance[0, 0] + covariance[1, 1] + covariance[2, 2])
+        # Pnn + Pee + Pdd, straight from the filter: this runs every IMU step,
+        # so it asks the estimator for the scalar trace rather than pulling the
+        # whole 15x15 covariance across the boundary.
+        pos_trace = self._ekf.position_covariance_trace()
         self._ekf_converged = (
             self._gps_accepted >= CONVERGENCE_MIN_GPS_UPDATES
             and pos_trace < CONVERGENCE_POS_TRACE_M2
@@ -1158,12 +1161,8 @@ class SILRunner:
             self._history_thrust.append(self._last_thrust_actual)
             self._history_moment.append(self._last_moment_actual.copy())
             self._history_wind.append(self._last_wind_ned.copy())
-            covariance = np.asarray(self._ekf.covariance(), dtype=np.float64)
             self._history_pos_var.append(
-                np.array(
-                    [covariance[0, 0], covariance[1, 1], covariance[2, 2]],
-                    dtype=np.float64,
-                )
+                np.asarray(self._ekf.position_variance(), dtype=np.float64)
             )
             nominal = self._ekf.nominal()
             self._history_gyro_bias.append(
