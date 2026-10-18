@@ -346,6 +346,69 @@ have caught this class of bug. The workflow's `enablement: true` lets
 `configure-pages` switch the source to Actions by itself when the token has the
 `pages: write` scope; otherwise the setting must be flipped by hand.
 
+## Rust core rewrite (2026-10-18)
+
+### D22: The autopilot, guidance and estimation core is Rust, in one Cargo workspace
+
+**Context.** The GNC core was C++ header-only (`core/include/talon/*.hpp`)
+exposed to Python through pybind11 and to the browser through Emscripten. Every
+behaviour change meant touching three implementations: the C++ kernel, the
+TypeScript glue under `src/live/`, and the Python glue under `python/talon/`.
+The live run, the primary deliverable, lived in the TypeScript copies, so the
+validated C++ kernel was not the code the browser actually ran.
+
+**Decision.** Rebuild the core as Rust, and make it the only implementation of
+dynamics, wind, control, estimation, guidance, mission logic, the flight-phase
+state machine, sensors, motors, battery and the SIL runner. One Cargo workspace
+at the repository root: `core/` is the `talon-core` library, `bindings/` is the
+PyO3 crate that exposes it to Python as `talon._core`, `wasm/` is the
+wasm-bindgen crate for the browser. The C++ core, CMake, pybind11, Emscripten,
+GTest and the `src/live/` TypeScript glue are deleted once the port is proven
+against the Python modules as a parity oracle. `nalgebra` fixed-size matrices
+replace Eigen, so a dimension mistake is a compile error.
+
+**Rationale.** One implementation means one place for a behaviour to be wrong and
+one place to test it. Rust also gives the same code path on native and wasm32
+without a second language for the browser, and PyO3 keeps the Python analysis and
+plotting harness, which is the part worth keeping. Fixed-size nalgebra matrices
+turn a whole class of latent shape bugs into compile errors. The measured
+motivation for a native loop was not raw speed: flops were never the bottleneck.
+It was boundary chattiness, about 21 scalar reads per control tick through the
+JS to WASM edge in `recordHistory` alone. A native-owned loop with zero-copy
+typed-array views reduces that to about one call per frame and unlocks runs far
+faster than real time.
+
+**Trade-off.** The rewrite is large and, until it lands, the repository carries
+two cores. Recorded telemetry, the validation report and the five videos are
+frozen as produced by the Python stack, so the live runs are statistically
+equivalent to them and not bit-identical. That is acceptable because the visible
+difference is estimator noise, not dynamics.
+
+### D23: libm for transcendentals, and the Rust types are the schema
+
+**Context.** Two smaller decisions inside D22, each with a concrete failure mode
+if taken the other way.
+
+**Decision.** Every transcendental in `core/src/math.rs` routes through the
+`libm` crate rather than `std`, so native and wasm32 execute the identical
+algorithm and produce bit-identical results across targets. The flight document
+types in `core/src/types.rs` are the schema source of truth, serialized by serde
+with unchanged `snake_case` field names, and the TypeScript and Python mirrors
+become generated artifacts (`ts-rs` and the PyO3 structs) rather than
+hand-maintained copies.
+
+**Rationale.** `std`'s float functions are not specified by the Rust standard to
+be the same across platforms, and the whole point of the browser run is that it
+reproduces the native run. Pinning the algorithm retires the D18 "statistical
+only" caveat for cross-target reproducibility. On the schema: 287 lines of
+hand-written type mirrors exist today across `src/types/flight.ts`,
+`src/live/types.ts` and `python/talon/types.py`, and every one of them is a
+place where a field name can silently drift from what the exporter writes.
+
+**Trade-off.** `libm` is a little slower than the platform `libm`, which does not
+matter because the bottleneck was never arithmetic. Generating the mirrors adds a
+build step and means the mirrors must not be edited by hand, which is the point.
+
 ## Open decisions (resolved at Phase 4)
 
 - Acceptance metrics for v2 reactive avoidance: still open (no live

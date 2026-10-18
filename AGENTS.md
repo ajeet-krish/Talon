@@ -55,6 +55,12 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 | Phase 2 | Interactive obstacle scene (R3F + bloom + labels) | Complete |
 | Phase 3 | Unified entry point (videos + scene + metrics) | Complete |
 | Phase 4 | In-browser WASM run | Complete |
+| Phase 5a | Rust `talon-core` library + native tests | In Progress |
+| Phase 5b | WASM + PyO3 bindings, generated type mirrors, retire the C++ stack | Not started |
+| Phase 6 | GCS shell with live telemetry and teaching captions | Not started |
+| Phase 7 | Altitude legibility in the scene | Not started |
+| Phase 8 | Mission authoring (waypoints, wind, faults) | Not started |
+| Phase 9 | Reactive avoidance in Rust, with validation | Not started |
 
 ## Deep Docs
 
