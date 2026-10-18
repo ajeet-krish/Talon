@@ -1,0 +1,20 @@
+# Talon FlightLab native workspace.
+#
+# The repository is polyglot: this manifest owns the GNC core, the Python
+# extension, and the WebAssembly build; package.json owns the web app;
+# pyproject.toml owns the Python analysis harness. The autopilot lives here
+# and nowhere else.
+
+[workspace]
+resolver = "2"
+members = ["core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

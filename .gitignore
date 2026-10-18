@@ -12,3 +12,7 @@ CMakeFiles/
 cmake-build-*/
 node_modules/
 *.tsbuildinfo
+
+# Rust (native workspace). Note: no blanket *.wasm here on purpose, the
+# deployed WebAssembly artifacts are committed assets.
+target/
