@@ -1935,3 +1935,205 @@ fix that hardens `run` and the Rust sibling but not the Python sibling of
 the same API. And a finiteness check that coerces through numpy must
 decide what "numeric leaf" means before coercing, or strings and bools
 ride through in both directions of the gate.
+
+### Phase 5c review (2026-10-19)
+
+Scope: commit 8550d29 (the ts-rs generation machinery: optional pinned
+`ts-rs = "=12.0.1"` behind `ts-export`, the derives on the schema and
+config types, `core/tests/ts_export.rs`, `scripts/gen_types.sh`, the
+vitest drift guard, the CI regenerate-and-diff step) plus the uncommitted
+second half (the core `RunSummary` type and `export::run_summary`, the
+wasm `summary_json` rebuilt on it, and the facades flipped to the
+generated mirrors with `LiveRunSummary` now a passthrough).
+
+Verdict: PASS. Every enumerated check holds; the findings below are Low
+and non-blocking.
+
+Check results:
+
+| # | Check | Verdict | Evidence |
+|---|-------|---------|----------|
+| 1 | Single source of truth | PASS | The generated module holds only ts-rs output plus the serialized `ScenarioConfig::default()` (core/tests/ts_export.rs:71-93); no hand-written field list for the schema or config types survives in TS (the only other `RunSummary`, src/utils/telemetry.ts:158, is the recorded-document telemetry summary, a different concept). Facades preserve every public import path: `@/types/flight` re-exports EventLogEntry, FlightData, FlightMeta, FlightPhase, Obstacle (src/types/flight.ts:20-26) and keeps Vec3, PhaseEvent, ScenarioId, SCHEMA_VERSION; `@/live/types` keeps Waypoint, AvoidanceConfig, LiveConfig, LiveRunSummary, LiveRunResult. `LiveConfig` keeps the required run contract via intersection (src/live/types.ts:49-69), which also newly types `battery_initial_soc` (the validate.ts:235 direct assignment closes the reviews.md battery gap), and `ScenarioDraft = ScenarioConfig` stays sparse for Phase 8 (src/live/types.ts:31) |
+| 2 | Type mapping | PASS | Generated file: `seed`/`sample_count` and every RunSummary counter are `number` (talon_core.ts:17, 21, 39, 43; `ts(type = "number")` at types.rs:250-255, 328-350 plus `with_large_int("number")` at ts_export.rs:43-45), `[f64; 3]` fields are `[number, number, number]` tuples and `phase_timeline` is `Array<[number, FlightPhase]>` (talon_core.ts:9-29), `min_obstacle_clearance_m: number | null` (talon_core.ts:43), `FlightPhase` is the lowercase union (talon_core.ts:7), and every serde-defaulted ScenarioConfig/AvoidanceConfig field is `?` (talon_core.ts:57-93). The wasm GPS counters remain hand-written `bigint` (src/live/engine.ts:43-48, wasm/src/lib.rs:263-278) and engine.contract.test.ts:135-138 pins them against the generated d.ts |
+| 3 | RunSummary correctness | PASS | `export::run_summary` (core/src/export.rs:155-217): `duration_s` uses the same `round_to(..., Some(DEFAULT_ROUND_DECIMALS))` the old wasm inline math used; RMSE and final error pair the histories index by index with missing samples skipped (matches the deleted sim.ts loop when the histories agree in length, which the runner guarantees by pushing both together at sim.rs:1436-1442); phases collapse consecutive duplicates and keep non-consecutive repeats (export.rs:183-188, exactly the deleted `phasesVisited`; `SimResult::phases_visited` correctly not used); clearance maps non-finite to `None` (export.rs:192-195), matching the page's `Number.isFinite` check and `min_surface_clearance` (avoidance.rs:288-297). All 15 old `summary_json` keys are preserved with the same names and `final_phase` lowercase strings (serde `rename_all`, types.rs:164-166); `ekf_position_rmse_m`, `final_position_error_m`, `phases` are additive (wasm/src/lib.rs:65-67). The page parses and passes through (src/live/sim.ts:184-192); RunView renamed `min_clearance_m` to `min_obstacle_clearance_m` (RunView.tsx:500-502) and no consumer of the old key remains |
+| 4 | Generator robustness | PASS | Idempotent: `./scripts/gen_types.sh` and the ignored test both reproduced the committed hash `4e6b98c2...d53395` byte for byte with no new `git status` entries. `#[ignore]` at ts_export.rs:98-100 plus `#![cfg(feature = "ts-export")]` at :21 keeps plain `cargo test --workspace` at 0 tests in the `ts_export` binary and never writes. CI regenerates and fails on a diff (ci.yml:64-70). `ts-rs = { version = "=12.0.1", optional = true }` (core/Cargo.toml:17) behind `ts-export = ["dep:ts-rs"]` (:22); wasm/Cargo.toml:24 and bindings/Cargo.toml:24 take `talon-core` with no features, so the derive never enters the wasm or PyO3 builds |
+| 5 | Tests | PASS with Low gaps | generated.test.ts pins the banner, the lowercase union, the phase tuple, number-not-bigint (meta and RunSummary counters), `min_obstacle_clearance_m: number \| null`, the ScenarioConfig optionality set, and the parsed SCENARIO_DEFAULTS. sim.test.ts proves passthrough by seeding core values that contradict the document arrays (sim.test.ts:312-356). export.rs:482-546 covers the summary math (RMSE sqrt(25/3), final error 4 m, unpaired sample ignored, repeat phase kept, inf to null, empty result) and wasm/src/lib.rs:469-513 pins the additive keys and the phases round-trip. Gaps noted in the findings table: no pin on the `[number, number, number]` tuple form, and several RunSummary field names are unpinned |
+| 6 | Behavior and artifacts | PASS | No flight-behavior code changed (the diff touches only summary assembly, types, and tests). `public/wasm-rust`: only `talon_core_bg.wasm` (244,734 to 233,942 bytes, expected from the `summary_json` reimplementation), no `.js` or `.d.ts` change. `git status public/data public/videos` is empty |
+| 7 | Command suite | PASS | `cargo fmt --all -- --check` exit 0, no output. `cargo clippy --workspace --all-targets -- -D warnings` exit 0, no warnings. `cargo test --workspace` 272 passed / 0 failed (talon-core 245, ts_export 0 (ignored), talon-py 13, talon-wasm 14, doc-tests 0). `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` 399 passed in 8.75s. `npm test` 14 files / 179 tests passed. `npm run build` tsc clean, vite built (chunk-size warning only). `npm run smoke:wasm` all live smoke checks passed |
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | src/utils/telemetry.ts:158 vs src/types/generated/talon_core.ts:31 | Two exported types named `RunSummary` now coexist: the generated core summary (snake_case, passthrough) and the recorded-document telemetry summary (camelCase, computed from arrays in `summarizeRun`). Nothing breaks today (imports disambiguate), but grep, review, and conversation all become ambiguous exactly where the phase's goal was one authoritative summary | Rename the telemetry one (for example `TelemetryRunSummary`) or move the recorded-doc summary onto the generated shape the way the live path now is |
+| Low | src/types/generated.test.ts:67-78 | The pin test covers the `phase_timeline` tuple but never asserts the `[number, number, number]` form of `home_ned`, `center_ned`, or the config triples. If a ts-rs upgrade emitted `Array<number>` there, every current pin test passes and tsc mostly shrugs (a tuple is assignable to `number[]`), so tuple drift can ship silently | Add one assertion per shape, for example `expect(data).toContain('home_ned: [number, number, number]')` and the same for `Obstacle.center_ned` |
+| Low | src/types/generated.test.ts:109-128 | The RunSummary pin asserts the counters and the three new metrics but not `duration_s`, `mission_complete`, `final_phase`, `final_truth_altitude_m`, `ekf_converged`, `ekf_diverged`. A rename there escapes the drift guard (tsc catches the fallout at RunView and sim.test.ts use sites, so nothing ships broken, which is why this stays Low) | Extend the pin to every field name, or assert the field-name set extracted from the declaration |
+| Low (informational) | core/src/export.rs:166-179 vs the deleted src/live/sim.ts loop | Two deliberate semantic shifts from the deleted page math: the RMSE denominator is the paired count (the page divided by `truth_position.length`, equal in practice since the runner pushes truth and estimate together), and the metrics now run on unrounded histories (the page used the 6-decimal rounded document), so a displayed value can differ from the old page number in the last digits | None required; core is authoritative. Worth one line in docs/decisions.md if bit-comparable readouts across versions matter |
+| Low (noise) | eagle-shield.svg (untracked, repo root) | Untracked file unrelated to this phase sitting in the working tree; it will ride along in whatever gets committed next | Confirm ownership and either commit deliberately or remove before the Phase 5c commit |
+
+Recurring patterns for other agents: a "generated artifact plus a
+hand-written facade that preserves the import path" is the workable shape
+here, since ts-rs cannot emit the constants (`SCHEMA_VERSION`) and the
+aliases (`Vec3`, `PhaseEvent`) the app also exports. When a summary moves
+from the page into the core, seed the seam tests with core values that
+contradict the document arrays (sim.test.ts:116-141): a passthrough test
+whose values could also be recomputed proves nothing. And an `#[ignore]`
+writer test plus a CI regenerate-and-diff step is what keeps a committed
+generated file honest; the `#![cfg(feature = "ts-export")]` crate gate is
+what keeps the dependency out of the shipping builds.
+
+### Phase 5c security review (2026-10-19)
+
+Focused security review of the same Phase 5c change set the review above
+covers: commit 8550d29 (the ts-rs generation machinery) plus the uncommitted
+second half (core `RunSummary`, `export::run_summary`, the wasm
+`summary_json` reimplementation, and the facades flipped to the generated
+mirrors). The 2026-10-18 full security review, the Phase 2, 3, and 4
+security reviews, and the Phase 5c code review above are treated as read;
+their findings are referenced, not repeated. Five checks: dependency and
+build surface, the generated file and its generator, the runtime surface
+added by the `RunSummary` JSON, the type-safety boundary at the facades, and
+data hygiene of the generated file.
+
+Verification performed (git and cargo via a subagent reporting raw output;
+OSV queried directly): `git status --short` and `git diff --stat` (16
+modified files plus the pre-existing untracked `eagle-shield.svg`, already
+recorded above), `git show --stat 8550d29` (10 files, 538 insertions, 0
+deletions), `git diff/show -- Cargo.lock` (additions only), `git diff
+--name-only -- public/wasm-rust/` (exactly `talon_core_bg.wasm`), grep for
+`unsafe`, `std::env`, `std::fs`, `std::process`, network, and `env!` across
+the diff and `core/`, and OSV api.osv.dev version queries for every package
+the lockfile gained. Everything else was verified by reading the current
+sources.
+
+Overall verdict: PASS. No Critical, High, or Medium findings. Nothing in
+this change set is exploitable against the app. Two new Low findings, both
+unreachable with validated inputs and cosmetic at worst if reached (details
+below). Every check passes.
+
+Per-check results (PASS/FAIL):
+
+1. PASS: new dependency and build surface. `ts-rs = { version = "=12.0.1",
+   optional = true }` behind `ts-export = ["dep:ts-rs"]` (core/Cargo.toml:17,
+   22), with no `default` feature key, so the derive never compiles unless a
+   build opts in. The shipping builds do not: `wasm/Cargo.toml:24` and
+   `bindings/Cargo.toml:24` take `talon-core` with no features,
+   `wasm/build.sh` runs plain `wasm-pack build wasm`, and `bindings/build.sh`
+   passes only talon-py's own `extension-module`, so ts-rs is absent from the
+   wasm and PyO3 binaries by construction (every derive is `cfg_attr`-gated,
+   so the feature-off codegen is what it was before). The Cargo.lock change
+   is expected and clean: 84 lines of pure additions (ts-rs 12.0.1,
+   ts-rs-macros 12.0.1, thiserror 2.0.21 and its impl, termcolor 1.4.1,
+   winapi-util 0.1.11, windows-link 0.2.1, windows-sys 0.61.2) with zero
+   modifications or removals of existing entries, and the exact-pin
+   `=12.0.1` plus lockfile checksums prevent silent drift. OSV version
+   queries for all seven crates return zero advisories (this extends the
+   2026-10-18 audit to the new surface). The diff adds no `unsafe` (the
+   workspace-wide zero from the Phase 4 review stands), no network code, no
+   secrets, and no file write outside the sanctioned generator (check 2);
+   `core/src/` contains no `std::env`, `std::fs`, `std::process`, time, or
+   rng access at all. ts-rs-macros is a proc macro and therefore runs at
+   compile time with host privileges, the standard trust class for every
+   derive in this workspace (serde, wasm-bindgen, pyo3 alike); pinned,
+   checksummed, and audit-clean.
+
+2. PASS: the generated file and its generator. The only write in the
+   workspace is `create_dir_all` plus `std::fs::write` of one path
+   (core/tests/ts_export.rs:109-115), derived from the compile-time
+   `env!("CARGO_MANIFEST_DIR")` (no runtime `std::env::var` anywhere; the
+   grep over the generator and gen_types.sh finds only that macro). The
+   output body is a pure function of the Rust type declarations plus
+   `ScenarioConfig::default()` serialized with `serde_json::to_string_pretty`
+   (ts_export.rs:71-93); `Default` is built from constant functions
+   (scenario.rs:26-56, 125-131) with no time, environment, or user input
+   reachable, so the file cannot be influenced from outside. Tests never
+   write: `#[ignore = "..."]` (ts_export.rs:98-100) plus the
+   `#![cfg(feature = "ts-export")]` crate gate (:21) mean plain `cargo test
+   --workspace` compiles the target to zero tests, and `--ignored` without
+   the feature has nothing to run; only the exact combination
+   gen_types.sh:37-38 invokes produces output. CI (ci.yml:64-70) regenerates
+   and runs `git diff --exit-code -- src/types/generated`, and cannot pass on
+   drift: `set -euo pipefail` makes a failed generator, a failing assertion
+   (ts_export.rs:120-125), or a missing output file fail the step, a
+   generator panic leaves a truncated file and a diff, and the one blind
+   spot of `git diff` (untracked files) is closed by construction since the
+   generator writes exactly one already-tracked path and nothing else. The
+   step inherits the workflow-level `permissions: contents: read`
+   (ci.yml:15-16, unchanged by this diff), and the web job's vitest drift
+   guard pins the banner, unions, tuple shapes, and field sets of the
+   committed file as an independent second gate.
+
+3. PASS: runtime surface. Git confirms only `public/wasm-rust/talon_core_bg.wasm`
+   changed (244,734 to 233,942 bytes, consistent with the `summary_json`
+   reimplementation); `talon_core.js` and both `.d.ts` files are untouched in
+   the commit and the working tree, so the wasm JS and declaration exports
+   are unchanged by definition. The `RunSummary` JSON cannot smuggle
+   non-finite values: JSON has no NaN or infinity representation, the
+   summary is produced entirely by Rust from a run whose inputs were
+   validated twice (`ScenarioConfig::validate` and `SimRunner::new` at
+   wasm/src/lib.rs:88-96, with the Phase 4 finiteness and cap work behind
+   them), and `export::run_summary` (core/src/export.rs:155-217) does pure
+   arithmetic over the finished histories; the one field where a missing
+   value is by design is explicitly mapped non-finite to `None`
+   (export.rs:192-195) and mirrored as `number | null`. Unbounded data is
+   likewise off the table: the payload is a fixed 18-key object plus a
+   `phases` array bounded by the phase transitions of a run the validator
+   caps at 900 s. The page parses it as JSON (src/live/sim.ts:188) and
+   renders it as text (RunView.tsx:473-507); no allocation, buffer sizing,
+   control flow, or fetch is keyed to summary values, the recorder is sized
+   from the validated `LiveConfig` (RunView.tsx:96-99), and the display
+   formatter is non-finite tolerant (`fmt`, RunView.tsx:36-38). Two Low
+   residuals below cover the dead `"{}"` fallback and the theoretical serde
+   null; neither is reachable.
+
+4. PASS: type-safety boundary. Grep over `src/` finds no `any`, no
+   `@ts-ignore`, no `@ts-expect-error`, and no `as unknown` outside two
+   pre-existing Three.js controls casts and test files; the facades
+   (src/types/flight.ts, src/live/types.ts) are pure type re-exports plus
+   `SCHEMA_VERSION` and one constant. The only raw casts in the live path
+   remain the wasm outputs at sim.ts:156 and 187-188, the trusted-producer
+   posture the Phase 4 review already sanctioned. The network gate is
+   intact and still first: `validateLiveConfigs` and `validateFlightData`
+   (src/data/validate.ts) run before any typed value exists, reject
+   non-finite numbers, wrong shapes, unknown phases, and over-cap lists with
+   path-named errors, and the diff's only substantive change there is the
+   new `battery_initial_soc` unit-range check (:231-235). `LiveConfig =
+   ScenarioConfig & { ... }` widens nothing: TypeScript makes an
+   intersected property required when either member requires it, so every
+   field the validator checks stays required (a sparse `ScenarioConfig` is
+   still not assignable to `LiveConfig`), `AvoidanceConfig` keeps its
+   required `enabled` over the sparse block, and `battery_initial_soc` is a
+   newly typed and newly runtime-checked optional that closes the recorded
+   2026-10-18 gap rather than relaxing anything. The generated `FlightData`,
+   `Waypoint`, and `Obstacle` field sets and tuple forms match the previous
+   hand-written shapes exactly.
+
+5. PASS: data hygiene of the generated file. Read in full: no secrets, no
+   absolute paths (the only path-like string is the banner's relative
+   `./scripts/gen_types.sh` instruction), no hostnames, no user names, no
+   machine state, no user-controlled data. `SCENARIO_DEFAULTS`
+   (talon_core.ts:95-131) is the serialized constant `ScenarioConfig::default()`
+   (scenario.rs:125-131 with constant per-field defaults), and `seed:
+   20261012` is a Rust source constant. The file is byte-deterministic, as
+   the idempotence run in the review above already demonstrated.
+
+| Severity | File:Line | Issue | Exploitable? | Fix |
+|----------|-----------|-------|--------------|-----|
+| Low | wasm/src/lib.rs:67 with src/live/sim.ts:188 and RunView.tsx:489 | The `unwrap_or_else(\|_\| "{}")` fallback behind `summary_json` turns an (impossible) serialization error into `JSON.parse("{}") as LiveRunSummary`, and the page would then throw at render on `summary.phases.map` (undefined), the white-screen class. The branch is dead code today: `serde_json::to_string` of `RunSummary` cannot fail (no map keys, no non-serializable values; a non-finite f64 becomes `null`, not an error), so this is unreachable, and even if reached it is the victim's own tab. | Theoretical, unreachable | Return a populated empty `RunSummary` instead of `"{}"`, or guard `phases` with `?? []` at the seam |
+| Low (informational) | core/src/export.rs:155-217, 197-216 vs src/types/generated/talon_core.ts:35-53 | If a future change let a non-finite f64 reach `run_summary`, serde_json would emit `null` where the generated mirror declares `number` for `duration_s`, `final_truth_altitude_m`, `ekf_position_rmse_m`, or `final_position_error_m`. Not reachable with the validated, capped inputs of today (sums of squares of sim-bounded positions; `min_obstacle_clearance_m` already models its nullable wire form explicitly), and every consumer is display-only with a non-finite tolerant `fmt`, so the worst case is a printed `null`. | Theoretical | None required; if the invariant ever weakens, model those fields as `number \| null` like the clearance, or keep the display guard |
+
+Nothing genuinely exploitable was found. The two Lows are the same shape as
+the 2026-10-18 "inherent versus real" split: dead or unreachable branches
+whose failure mode, if a future refactor reached them, is the user's own tab
+showing wrong output. The surfaces that were genuinely attacker-reachable
+before (user JSON at Phase 8 or import) are untouched by this phase, and the
+Phase 4 validators remain the gate in front of them. The uncommitted
+`src/utils/telemetry.ts` rename (`TelemetryRunSummary`, :158) closes the
+first Low of the Phase 5c review above in passing; not re-listed.
+
+Recurring patterns for other agents: (1) when a Rust type gains a JSON wire
+form, remember serde_json renders non-finite `f64` as `null`, and the
+generated mirror will still say `number`; decide nullability at the type
+explicitly, as `min_obstacle_clearance_m` does, rather than relying on an
+upstream invariant. (2) A `unwrap_or_else(|_| "{}")` (or `"[]"`) fallback
+combined with a parse-then-cast on the other side converts an impossible
+error into a render-time throw; prefer a typed default or a guard at the
+consuming site.

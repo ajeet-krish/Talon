@@ -1241,3 +1241,149 @@ shipped JSON validate at their serde defaults (battery soc 1.0, detour buffer
 - [x] No em dashes, double hyphens, or dash equivalents in this section; this
   subsection is appended after all prior content, and no source file was
   modified by the gate.
+
+### Phase 5c test gate (2026-10-19)
+
+Test gate for the generated TypeScript mirrors (D23) and the moved `RunSummary`
+math, run against the working tree on `main` at `8550d29` plus the uncommitted
+Phase 5c continuation (`RunSummary` in `core/src/types.rs`, `export::run_summary`
+in `core/src/export.rs`, the typed `summary_json()` in `wasm/src/lib.rs`, and the
+facades in `src/types/`). Nothing in the repository was modified by this gate;
+every mutation below happened in an out-of-tree scratch copy.
+
+#### Gate commands and exact counts
+
+| Gate | Command | Result |
+|------|---------|--------|
+| Rust workspace | `cargo test --workspace` | 272 passed, 0 failed (245 `talon-core`, 13 `talon-py`, 14 `talon-wasm`, `ts_export` generator excluded by `#[ignore]`) |
+| Python harness | `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` | 399 passed in 8.40s |
+| Web unit tests | `npm test` | 180 passed across 14 files |
+| Typecheck + build | `npm run build` | exit 0, `tsc --noEmit` clean, vite 648 modules, `dist/` written |
+| Live wasm smoke | `npm run smoke:wasm` | exit 0, 76 checks on hover, waypoint, obstacle, gps_outage, wind, and the paced loop |
+| Lint | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0, 0 warnings, 0 errors |
+| Format | `cargo fmt --all -- --check` | exit 0 |
+
+Phase 5c specific suites inside those totals: `src/types/generated.test.ts` (8
+tests), `src/live/engine.contract.test.ts` (5 tests, wasm `CoreSession` bigint
+getters), `src/live/sim.test.ts` (16 tests, summary passthrough), plus 3 new
+`core/src/export.rs` tests and 1 new `wasm/src/lib.rs` test for `RunSummary`.
+
+#### Determinism of the generator
+
+`src/types/generated/talon_core.ts`, sha256:
+
+| Event | Hash |
+|-------|------|
+| Before the gate | `4e6b98c2f63481938c539415a798e3bfb0edae06655902ec4208858622d53395` |
+| After `./scripts/gen_types.sh` (run 1) | `4e6b98c2f63481938c539415a798e3bfb0edae06655902ec4208858622d53395` |
+| After `./scripts/gen_types.sh` (run 2) | `4e6b98c2f63481938c539415a798e3bfb0edae06655902ec4208858622d53395` |
+| Regenerated in a scratch copy at a different path | `4e6b98c2f63481938c539415a798e3bfb0edae06655902ec4208858622d53395` |
+
+Two consecutive runs are byte identical to each other and to the file that was
+already in the tree, and a third run from a different directory reproduces the
+same bytes, so the output does not depend on run order or path.
+
+`cargo test --workspace` does not write the mirror: the hash above is unchanged
+after a full workspace test run, and `git status --porcelain` before and after
+the run is identical (the generator only runs under `--features ts-export
+--ignored`, which the plain workspace test never enables).
+
+#### Drift gate evidence (out of tree, repository untouched)
+
+The working tree was copied to a scratch directory, `git init`ed, and committed
+as the baseline, so `git diff --exit-code` there behaves exactly as it does in
+CI.
+
+1. Baseline: `./scripts/gen_types.sh && git diff --exit-code --
+   src/types/generated` exits 0, so the committed mirror matches the Rust
+   source of truth.
+2. A one-character hand edit (`position` to `positoin` on the `Waypoint`
+   declaration) was committed in the scratch copy, and the CI command was run
+   again: it exits 1 and prints the diff in which the regenerated file restores
+   `position`. The gate catches drift.
+3. A real source change propagates: adding `pub drift_probe_m: f64` to
+   `RunSummary` in the scratch `core/src/types.rs` (with its initializer in the
+   scratch `core/src/export.rs`) and re-running `./scripts/gen_types.sh` puts
+   `drift_probe_m: number` into the generated declaration, and the same CI
+   command then fails with the new field visible. No tracked source was touched.
+
+#### Generated forms versus the hand mirrors
+
+A field by field comparison of the 8 exported types (80 fields) against the Rust
+structs in `core/src/types.rs`, `core/src/avoidance.rs`, and
+`core/src/scenario.rs` passes with no mismatch: `Arr3` and `[f64; 3]` render as
+fixed `[number, number, number]` tuples, `Vec<T>` as `Array<T>`, `Option<f64>` as
+`number | null`, `BTreeMap<String, String>` as `{ [key in string]: string }`, and
+every `usize`/`u64` counter carries `ts(type = "number")` so nothing is typed
+`bigint`. `FlightPhase` is the 8 value lowercase union. Every
+`ScenarioConfig` field except `id` is optional (the sparse wire shape), every
+`AvoidanceConfig` field is optional, and `SCENARIO_DEFAULTS` matches the Rust
+defaults (60 s, 10 m, 0.3 / 0.5 / 0.05 noise, 2.0 s hold, seed 20261012,
+2.0 / 3.0 / 0.5 avoidance, `auto_arm: false`).
+
+- `LiveConfig` (`src/live/types.ts`) is `ScenarioConfig` intersected with the
+  required run contract: `id`, `label`, `blurb`, `duration_s`,
+  `takeoff_altitude`, `start_position_ned`, `waypoints`, `obstacles`,
+  `wind_sigma`, `wind_steady_ned`, `seed`, the three GPS noise knobs,
+  `cruise_hold_s`, and `auto_arm` are required, `avoidance` optional.
+- `ScenarioDraft` is the sparse `ScenarioConfig` alias, unchanged.
+- `LiveRunSummary` is the generated `RunSummary`, and the page reads it as-is.
+- The wasm `CoreSession` bigint getters (`gps_accepted`, `gps_gated`,
+  `gps_skipped`, all `u64`) are untouched by this change, and all 5 contract
+  tests in `src/live/engine.contract.test.ts` pass, including
+  "declares the GPS counters as bigint, not number".
+
+#### RunSummary parity (core values versus the old page math)
+
+The old TypeScript math that `src/live/sim.ts` used to run (RMSE and final
+error from the document arrays, `minClearance` over the truth samples and
+obstacles, `phasesVisited` over the timeline) was reimplemented in a scratch
+harness and compared against `talon_core::export::run_summary` fed from the same
+committed recordings (`SimResult` reconstructed from the document, clearance
+from the very `min_surface_clearance` the runner calls).
+
+| Recording | Field | Old page math | Core `run_summary` | Abs delta |
+|-----------|-------|---------------|--------------------|-----------|
+| emergency.json (5000 samples) | rmse / final error | 19.963206210806437 / 0.128334699119141 | 19.963206210806437 / 0.128334699119141 | 0 / 0 |
+| emergency.json | duration / clearance / phases | 49.99 / null / idle, arm, takeoff, cruise, emergency, land, idle | identical | 0 |
+| gps_outage.json (7000 samples) | rmse / final error | 0.14527606404953344 / 0.12462328857801822 | identical | 0 / 0 |
+| gps_outage.json | duration / clearance / phases | 69.99 / null / idle, arm, takeoff, cruise, waypoint, rtl, land, idle | identical | 0 |
+| obstacle_field.json (7000 samples) | rmse / final error | 0.08793193158889272 / 0.11190412223863787 | identical | 0 / 0 |
+| obstacle_field.json | clearance | 2.072259653415254 | 2.0722596534152533 | 8.882e-16 |
+| obstacle_field.json | duration / phases | 69.99 / idle, arm, takeoff, cruise, waypoint, rtl, land, idle | identical | 0 |
+| wind.json (6000 samples) | rmse / final error | 0.08556197971317749 / 0.05624334489519674 | identical | 0 / 0 |
+| wind.json | duration / clearance / phases / final altitude | 59.99 / null / idle, arm, takeoff, cruise / 9.992624 | identical | 0 |
+
+Worst numeric delta across all four recordings: 8.882e-16, on the clearance
+square root in `obstacle_field.json`, from summation order only. Every field is
+within 1e-9, the phase lists and final phases match exactly, and
+`src/live/sim.test.ts` additionally proves the page returns the core values
+untouched, including "keeps a distinctive core value even when the document
+implies another".
+
+#### Recorded artifacts and wasm outputs
+
+`git status --porcelain` after the gate is byte identical to the snapshot taken
+before it. Against HEAD, only `public/wasm-rust/talon_core_bg.wasm` moved
+(244734 to 233942 bytes, rebuilt from the current `wasm/src/lib.rs`); the
+companion `talon_core.js`, `talon_core.d.ts`, and `talon_core_bg.wasm.d.ts` are
+byte identical to HEAD, and `public/data/` (the four recordings, the live
+configs, `validation.json`) is untouched.
+
+#### Verification checklist
+
+- [x] All seven gates pass with exit 0 and the exact counts recorded above.
+- [x] Generation is deterministic: three hashes identical in tree, and a fourth
+  identical regeneration from a different directory.
+- [x] `cargo test --workspace` writes nothing: hash and `git status` unchanged.
+- [x] The CI drift gate fails on a one-character committed hand edit and passes
+  on the clean tree; a real Rust field addition reaches the mirror.
+- [x] Every generated field matches the Rust struct it mirrors; `LiveConfig`
+  keeps its required normalized fields and `ScenarioDraft` stays sparse; the
+  wasm bigint getters and their contract tests are unchanged.
+- [x] `RunSummary` parity with the old page math within 8.882e-16 on all four
+  committed recordings.
+- [x] No recorded artifact or wasm JS/d.ts file changed; only the `.wasm`
+  binary moved, and the working tree is exactly as the gate found it.
+- [x] No em dashes, double hyphens, or dash equivalents in this section; nothing
+  outside `docs/tests.md` was modified by this gate.

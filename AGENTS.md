@@ -59,7 +59,7 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 | Phase 4 | In-browser WASM run | Complete |
 | Phase 5a | Rust `talon-core` library + native tests | Complete |
 | Phase 5b | WASM + PyO3 bindings, retire the C++ and TypeScript autopilots | Complete |
-| Phase 5c | Generated TypeScript type mirrors (ts-rs) | Not started |
+| Phase 5c | Generated TypeScript type mirrors (ts-rs) | Complete |
 | Phase 6 | GCS shell with live telemetry and teaching captions | Complete |
 | Phase 7 | Altitude legibility in the scene | Complete |
 | Phase 8 | Mission authoring (waypoints, wind, faults) | Not started |
