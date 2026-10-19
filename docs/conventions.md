@@ -1,9 +1,10 @@
 # Talon Frame and Model Conventions
 
 This document is the single source of truth for frame, sign, and unit
-conventions. Every C++ header, Python module, and (in later phases) controller,
-estimator, and guidance law must match what is written here. The classic
-quadrotor bug factory is a frame mismatch, so when in doubt, re-read this file.
+conventions. Every Rust module in `core/src`, Python module in `python/talon`,
+and web-app type must match what is written here; the Rust core is the
+reference implementation. The classic quadrotor bug factory is a frame
+mismatch, so when in doubt, re-read this file.
 
 ## Coordinate frames
 
@@ -83,8 +84,10 @@ w[k+1] = exp(-Va*dt/L) * w[k] + sigma * sqrt(1 - exp(-2*Va*dt/L)) * N(0, 1)
 ```
 
 Phase 1 simplification: the turbulence axes are aligned with NED (u along North,
-v along East, w along Down). The generator is `std::mt19937` with a fixed seed,
-so sequences are reproducible on a given platform.
+v along East, w along Down). The generator is splitmix64 with Box-Muller
+normals (`core/src/rng.rs`), seeded per run; every transcendental routes
+through `libm` (D23), so sequences are reproducible across platforms and
+targets.
 
 ## Motor model
 

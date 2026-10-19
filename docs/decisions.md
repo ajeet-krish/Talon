@@ -1,6 +1,6 @@
 # Talon Decisions
 
-Last updated: 2026-10-18
+Last updated: 2026-10-19
 
 ## FlightLab visual tool (2026-10-16)
 
@@ -813,3 +813,54 @@ autopilot both run that code.
   `FlightData` path and having the live run emit the same `FlightData`
   document on completion, rather than a parallel frame stream. The scene and
   chart layers are unchanged.
+
+## Parity hardening: one wrap contract, green tooling gates, and a Python versus Rust harness (2026-10-19)
+
+### D36: Parity is compared in process, with the divergences pinned
+
+**Context.** D28 left six Python layers (guidance, mission, state machine,
+sensors, motors, battery) as the harness's own implementations with nothing
+pinning them to the Rust core, and the only parity artifact was
+`fixtures/live_fixtures.json`, generated from the Python modules themselves
+and read by nothing since the TypeScript autopilot tests left in Phase 5b.
+`wrap_to_pi` also folded negative angles wrongly, so the two sides could
+disagree in exactly the corner the fixture set never covered.
+
+**Decision.** Fix `wrap_to_pi` for negative angles and pin it with math tests.
+Bind guidance, mission, motor mixing, the state machine, sensors and battery
+through PyO3 (like avoidance in D35) and compare the Python modules against
+`talon._core` in process with `python/tests/test_parity_*.py`. Sensor
+comparisons run at zero noise because the RNG streams differ by design (D18).
+API-edge behaviours that genuinely differ are registered in
+`parity_util.DIVERGENCES` (15 entries, NaN and negative dt policy, snapshot
+versus live config) and asserted rather than reconciled; Python remains the
+oracle for the frozen recorded artifacts. The dead fixture outputs
+(`fixtures/live_fixtures.json`, `fixtures/sil_reference.json`) and their
+generator code are retired. CI gains `cargo fmt --all -- --check` and
+`cargo clippy --workspace --all-targets -- -D warnings` under
+`permissions: contents: read`, and the wasm BigInt contract in `src/live` is
+fixed.
+
+**Rationale.** A fixture file freezes a moment: it goes stale the first time
+either side moves, and here it was computed from the very modules it was meant
+to check, so it could only ever report that Python agrees with Python. An
+in-process comparison cannot go stale that way: each run recomputes both sides
+over shared inputs. The six layers are pinned rather than rewritten because
+the frozen artifacts were produced by that Python harness and stay its
+products (D22, D28); where the two sides differ at an API edge, one behaviour
+is defensible and changing either would alter a frozen artifact or an API
+contract mid-stream.
+
+**Supersedes** the fixture paragraph of D18 and the "parity is enforced by
+fixtures, not by shared code" claim of D17: parity is now enforced by the
+in-process harness, and no fixture file is generated or read. D18's noise
+design itself stands unchanged.
+
+**Trade-offs.** The six layers still exist twice, so a behaviour change is two
+edits until they collapse to re-exports; the harness is the interim guarantee
+that a forgotten edit fails loudly. Deferred to a later pass: the collapse
+itself, the `waypoints_reached` drift (Python counts `active_index + 1`, Rust
+adds one only when the mission completes), one negative and NaN dt policy
+across the layers, and the optional-helper inconsistency in `avoidance.rs`.
+The 15 registered divergences are kept deliberately; if an unexamined
+behaviour difference ever joins that list, the pin stops being evidence.

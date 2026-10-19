@@ -190,8 +190,8 @@ GUARD_TRANSITIONS_MIN = 9
 # report prefers the runtime counts and shows "n/a" when unavailable.
 # The pytest row passes when the runtime count is >= the expected size,
 # so growing the suite does not fail the report.
-PYTEST_EXPECTED = 139
-RUST_CORE_EXPECTED = 181  # talon-core native tests (crate lives in core/)
+PYTEST_EXPECTED = 375
+RUST_CORE_EXPECTED = 225  # talon-core native tests (crate lives in core/)
 
 
 @dataclass(slots=True)

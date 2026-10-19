@@ -1,8 +1,8 @@
 # Talon Architecture
 
-Last updated: 2026-10-18
+Last updated: 2026-10-19
 
-## Current-state snapshot (FlightLab Phase 9b, complete)
+## Current-state snapshot (FlightLab Phase 9b + hardening, complete)
 
 Talon is a single-vehicle UAV GNC stack whose autopilot is one Rust library,
 `talon-core`, plus a Python analysis harness and a TypeScript flight tool.
@@ -21,8 +21,9 @@ thin wrappers: `wasm/` (wasm-bindgen) drives the browser run, and `bindings/`
 (PyO3) publishes `talon._core` for the Python harness. The C++17 kernel, CMake,
 Google Test, pybind11 and the Emscripten build are gone, and the `src/live/`
 TypeScript autopilot modules went with them (D28). The Python harness keeps its
-own higher-level layers (guidance, mission, motors, sensors, state machine) for
-the recorded runs, while its plant, controller, estimator and wind come from the
+own higher-level layers (guidance, mission, motors, sensors, state machine,
+battery) for the recorded runs, pinned against the Rust behaviour by the parity
+suite (D36), while its plant, controller, estimator and wind come from the
 Rust `_core`. The recorded telemetry, the validation report, and the five videos
 remain frozen as produced by the Python stack and are not regenerated.
 
@@ -39,6 +40,15 @@ finished the move (D35): the Python planner delegates to the same geometry
 through `_core`, and a fifth live config flies the plain circuit straight
 through the zones with the law on, so the browser demonstrates the autopilot
 avoiding each one itself.
+
+A hardening pass then closed the parity story. `wrap_to_pi` was fixed for
+negative angles and pinned by math tests, the workspace was cleared through
+`cargo fmt` and `cargo clippy` with both turned into CI gates, the wasm BigInt
+contract in `src/live` was fixed, and the PyO3 boundary grew the six remaining
+harness layers (guidance, mission, motor mixing, state machine, sensors,
+battery). An in-process pytest suite (`python/tests/test_parity_*`) now
+compares the Python reference against `talon._core` directly (D36), and the
+dead parity fixtures are gone.
 
 ### Repository layout
 
@@ -64,7 +74,6 @@ emitted asset URL carries that prefix (D21).
                            export
     wasm/                  wasm-bindgen crate: the Session the browser drives
     bindings/              PyO3 crate: the talon._core extension module
-    fixtures/              Python-generated parity fixtures (committed)
     python/                Python package, simulations, and tests
       talon/               package (bindings/build.sh drops _core*.so here)
       sims/                scenarios, run_all.py, export_live_configs.py
@@ -79,7 +88,7 @@ editable install additionally maps the `talon` package to `python/talon`.
 ### Data flow (one 200 Hz SIL step)
 
     dynamics (truth, Rust RK4) -> motors -> wind -> sensors -> EKF -> state
-    machine -> phase setpoints -> NLGL guidance -> cascaded PD -> motors
+    machine -> phase setpoints -> NLGL guidance -> cascaded PID -> motors
 
 ### Obstacle avoidance pipeline
 
@@ -111,7 +120,7 @@ Reactive, in the loop, when the world is not known until the run (D33):
         |  threatened? -> latch a bypass point; else the waypoint
         |  clear of it? -> release, back onto the waypoint
         v
-    guidance target this tick -> NLGL compute_leg -> cascaded PD
+    guidance target this tick -> NLGL compute_leg -> cascaded PID
         |
         v
     SimResult.min_obstacle_clearance_m + avoidance_activations
@@ -133,17 +142,29 @@ Rust `_core`.
 |-------|-------------------------|--------------------------|
 | Dynamics / RK4 | `dynamics.rs` (`propagate`) | via `_core` (`bindings/`) |
 | Wind | `wind.rs` (`DrydenWind`) | via `_core` (`bindings/`) |
-| Controller | `controller.rs` (cascaded PD) | via `_core` (`bindings/`) |
+| Controller | `controller.rs` (cascaded PID) | via `_core` (`bindings/`) |
 | Estimator | `ekf.rs` (15-state MEKF) | via `_core` (`bindings/`) |
-| Motors | `motors.rs` (lag + X mixer) | `motors.py` (harness) |
-| Sensors | `sensors.rs` (truth-side IMU/GPS) | `sensors.py` (harness) |
-| Guidance / mission | `guidance.rs` (NLGL), `mission.rs` | `guidance.py`, `mission.py` (harness) |
+| Motors | `motors.rs` (lag + X mixer) | `motors.py` (parity-pinned harness) |
+| Sensors | `sensors.rs` (truth-side IMU/GPS) | `sensors.py` (parity-pinned harness) |
+| Guidance / mission | `guidance.rs` (NLGL), `mission.rs` | `guidance.py`, `mission.py` (parity-pinned harness) |
 | Obstacle avoidance | `avoidance.rs` (reactive law + geometry) | `avoidance.py` (thin re-export via `_core`) |
-| State machine / FDIR | `state_machine.rs` | `state_machine.py` (harness) |
+| State machine / FDIR | `state_machine.rs` | `state_machine.py` (parity-pinned harness) |
 | SIL loop | `sim.rs` (pure stepper, no transport) | `mavlink_sil.py` + `mavlink_codec.py` (MAVLink edge) |
-| Battery | `battery.rs` | `battery.py` (harness) |
-| Determinism | `rng.rs` (`libm`, seeded) | `numpy` RNG (recorded runs only) |
+| Battery | `battery.rs` | `battery.py` (parity-pinned harness) |
+| Determinism | `rng.rs` (seeded splitmix64 + Box-Muller, `libm`) | `numpy` RNG (recorded runs only) |
 | Plots / report / video | - | `plotting.py`, `export_json.py`, `animation.py` |
+
+The Python column carries two kinds of module. Dynamics, wind, controller,
+estimator and avoidance are pure delegations: thin re-exports of the Rust
+`_core`, like `controller.py`, `ekf.py` and `avoidance.py`. The six layers
+marked parity-pinned (guidance, mission, state machine, sensors, motors,
+battery) keep an independent Python implementation, because the frozen
+recorded artifacts were produced by that harness and it stays the oracle for
+them. `python/tests/test_parity_*.py` compares each of the six against its
+`_core` boundary in process, and every API-edge behaviour that genuinely
+differs is named in `python/tests/parity_util.py` (`DIVERGENCES`) rather than
+reconciled (D36). Sensor comparisons run at zero noise, because the two RNG
+streams differ by design (D18).
 
 ### Schema 1.1 JSON contract
 
@@ -229,7 +250,7 @@ library compiled to wasm32; the page only steps it:
            state machine + FDIR
            guidance: NLGL + waypoint mission
            avoidance: reactive keep-out-zone law (off unless configured)
-           controller: cascaded PD, 100 Hz ZOH
+           controller: cascaded PID, 100 Hz ZOH
            motors: X mixer + first-order lag
            plant: RK4 + Dryden wind, ground clamp
            history at 100 Hz
@@ -254,14 +275,15 @@ hand, and the run view asserts `sample_stride()` from the loaded build against
 the local layout, so a stale wasm build fails with a message instead of showing
 mislabelled numbers.
 
-Config flow and fixtures, all generated by
+Live config flow, generated by
 `python/sims/export_live_configs.py` from the Python scenario definitions:
 
-    scenario_obstacle_field (waypoints + obstacles + detour planner)
+    scenario definitions (waypoints + obstacles + detour planner)
       -> public/data/live/configs.json    (hover, waypoints, obstacle_field,
                                            avoidance, wind)
-      -> fixtures/live_fixtures.json      (guidance / mission / motors / kernel)
-      -> fixtures/sil_reference.json      (optional, full Python SIL trajectories)
+
+The five configs are the complete output of the exporter; parity is no longer
+carried by generated files at all (D36).
 
 The live run emits the same `FlightData` document a recorded scenario does,
 so the scene, chart, and metrics layers are unchanged and a completed run
@@ -339,6 +361,11 @@ browser runs in CI: sample accounting, capacity headroom, schema 1.1 on a
 stepped document, per-scenario acceptance (a hold keeps altitude, a mission
 lands), and that a paced 1x run tracks the wall clock without drift.
 
+CI (`.github/workflows/ci.yml`) now gates the Rust workspace before any test
+runs: `cargo fmt --all -- --check` and
+`cargo clippy --workspace --all-targets -- -D warnings`, under
+`permissions: contents: read`.
+
 ## Phase roadmap
 
 | Phase | Description | Status |
@@ -355,3 +382,4 @@ lands), and that a paced 1x run tracks the wall clock without drift.
 | 8 | Mission authoring (waypoints, wind, faults) | Not started |
 | 9a | Reactive avoidance in Rust: geometry, the law, loop wiring, tests | Complete |
 | 9b | One implementation (Python delegates to `_core`) + a browser demo config | Complete |
+| Hardening | Wrap contract, fmt and clippy CI gates, Python versus `_core` parity harness | Complete |

@@ -2,7 +2,7 @@
 
 Talon FlightLab is a drone autopilot simulator you can fly and inspect in the browser. It pairs a validated guidance, navigation, and control (GNC) core with a web tool that presents the results: a replayable 3D flight, live telemetry channels, the automated validation report, the recorded flight videos, and a live run that executes the autopilot itself in the browser.
 
-The core is a complete autopilot for a 1.5 kg Crazyflie-class quadrotor: a 15-state multiplicative error-state Kalman filter, NLGL line-of-sight guidance, reactive obstacle avoidance, a cascaded PD controller, an 8-state flight-phase state machine with FDIR, and a UDP MAVLink software-in-the-loop (SIL) runner, all closed loop against a Rust rigid-body truth plant. The autopilot is one Rust library, `talon-core`: the browser runs it through WebAssembly (`wasm/`, wasm-bindgen) and the Python analysis harness runs it through a PyO3 extension (`bindings/`, exposing `talon._core`). The recorded-run glue (the mission manager, guidance, sensors, motors, battery, and the MAVLink SIL edge) and the analysis tooling are Python, and they call into the same core.
+The core is a complete autopilot for a 1.5 kg Crazyflie-class quadrotor: a 15-state multiplicative error-state Kalman filter, NLGL line-of-sight guidance, reactive obstacle avoidance, a cascaded PID controller, an 8-state flight-phase state machine with FDIR, and a UDP MAVLink software-in-the-loop (SIL) runner, all closed loop against a Rust rigid-body truth plant. The autopilot is one Rust library, `talon-core`: the browser runs it through WebAssembly (`wasm/`, wasm-bindgen) and the Python analysis harness runs it through a PyO3 extension (`bindings/`, exposing `talon._core`). The recorded-run glue (the mission manager, guidance, sensors, motors, battery, and the MAVLink SIL edge) and the analysis tooling are Python, and they call into the same core.
 
 ## Run the app
 
@@ -38,14 +38,14 @@ One entry point, five sections (the replay and telemetry sections share the play
 ## Highlights
 
 - **15-state MEKF**: position, velocity, attitude (multiplicative error), gyro bias, accel bias; chi2-gated 10 Hz GPS updates, covariance-based convergence and divergence detection.
-- **Cascaded PD autopilot** at 100 Hz with zero-order hold: altitude / velocity outer loop, attitude / rate inner loop, saturating mixer-aware commands, 200 Hz RK4 truth with first-order motor lag.
+- **Cascaded PID autopilot** at 100 Hz with zero-order hold: position PID outer loop with back-calculation anti-windup, attitude / rate PD inner loop, saturating mixer-aware commands, 200 Hz RK4 truth with first-order motor lag.
 - **NLGL guidance** (Park, Deyst and How 2004, ArduPilot clipped form): look-ahead line-of-sight steering with ground-velocity Nu2, behind-A recovery, and per-leg cross-track diagnostics.
 - **Flight-phase state machine**: IDLE, ARM, TAKEOFF, CRUISE, WAYPOINT, RTL, LAND, EMERGENCY with guarded transitions, an event audit log, and automatic critical-fault response to EKF divergence.
 - **UDP MAVLink SIL**: real MAVLink v2 frames (pymavlink codec) for telemetry (HEARTBEAT, ATTITUDE, LOCAL_POSITION_NED, GPS_RAW_INT, BATTERY_STATUS) and COMMAND_LONG events on loopback ports 14550/14551, plus fault injection (GPS outage, EKF corruption, battery drain).
 - **Native reactive avoidance**: spherical keep-out zones are a core layer (`core/src/avoidance.rs`). A zone that covers the active leg inside the lookahead gets a bypass point substituted for the waypoint, the latch is retired once the clearance recovers, and the run reports the minimum 3-D surface clearance it achieved plus the number of bypasses taken. The offline leg-detour planner that inserts detour waypoints before a run keeps working and now delegates to the same geometry, and the schema 1.1 telemetry export still carries the zones so the web scene can render them.
 - **7 closed-loop scenarios** with printed acceptance metrics, plus a validation driver that runs everything, generates seven publication plots and five flight videos, exports schema 1.1 telemetry JSON, and writes an automated validation report plus a machine-readable copy.
-- **In-browser WASM run**: the same Rust autopilot (dynamics, Dryden wind, cascaded PD, 15-state MEKF, NLGL guidance, reactive avoidance, mission, phase machine, sensors, motors) compiled to WebAssembly with wasm-bindgen, so hover, waypoints, obstacle field, reactive avoidance, and wind fly live in the browser with no server round trip and no second implementation of the flight-critical math.
-- **Test suites**: 186 pytest, 210 Rust core, 12 wasm-binding, 3 PyO3 marshalling, and 132 vitest, all passing.
+- **In-browser WASM run**: the same Rust autopilot (dynamics, Dryden wind, cascaded PID, 15-state MEKF, NLGL guidance, reactive avoidance, mission, phase machine, sensors, motors) compiled to WebAssembly with wasm-bindgen, so hover, waypoints, obstacle field, reactive avoidance, and wind fly live in the browser with no server round trip and no second implementation of the flight-critical math.
+- **Test suites**: 375 pytest, 225 Rust core, 12 wasm-binding, 12 PyO3 marshalling, and 137 vitest, all passing.
 
 ## Architecture
 
@@ -58,7 +58,7 @@ flowchart LR
     S --> E["EKF<br/>15-state MEKF (Rust)"]
     E --> SM["Flight phase machine<br/>+ FDIR (Rust)"]
     SM --> G["NLGL guidance<br/>(Rust)"]
-    G --> C["Cascaded PD<br/>100 Hz (Rust)"]
+    G --> C["Cascaded PID<br/>100 Hz (Rust)"]
     C --> M["Motor lag +<br/>X mixer (Rust)"]
     M --> T
     E -. "MAVLink telemetry" .- O["UDP SIL runner / operator"]
@@ -73,7 +73,7 @@ estimator and avoidance geometry from the Rust `_core`:
 |-------|-------------------------|--------------------------|
 | Dynamics / RK4 | `dynamics.rs` (`propagate`) | via `_core` (`bindings/`) |
 | Wind | `wind.rs` (`DrydenWind`) | via `_core` (`bindings/`) |
-| Controller | `controller.rs` (cascaded PD) | via `_core` (`bindings/`) |
+| Controller | `controller.rs` (cascaded PID) | via `_core` (`bindings/`) |
 | Estimator | `ekf.rs` (15-state MEKF) | via `_core` (`bindings/`) |
 | Motors | `motors.rs` (lag + X mixer) | `motors.py` (harness) |
 | Sensors | `sensors.rs` (truth-side IMU/GPS) | `sensors.py` (harness) |
@@ -102,11 +102,11 @@ wasm-bindgen wrapper and `bindings/` is the PyO3 wrapper. The Python extension
 backend). From the repository root:
 
 ```bash
-cargo test --workspace               # 210 core + 12 wasm + 3 PyO3 tests
+cargo test --workspace               # 225 core + 12 wasm + 12 PyO3 tests
 
 uv sync                              # Python environment (.venv)
 ./bindings/build.sh                  # -> python/talon/_core<EXT_SUFFIX>
-uv run pytest python/tests/ -q       # 186 Python tests
+uv run pytest python/tests/ -q       # 375 Python tests
 
 uv run python python/sims/run_all.py # 7 scenarios + plots + videos + reports
 
@@ -133,7 +133,7 @@ scripts/copy_data.sh   # copies plots/json/*.json and docs/videos/*.mp4 into pub
 
 | Scenario | Purpose | Key metric |
 |----------|---------|------------|
-| `scenario_hover` | Cascaded PD closed-loop hover with motor lag, calm air | steady-state drift < 0.05 m (achieved < 0.001 m) |
+| `scenario_hover` | Cascaded PID closed-loop hover with motor lag, calm air | steady-state drift < 0.05 m (achieved < 0.001 m) |
 | `scenario_waypoints` | NLGL 40x30 m rectangle at 10 m under Dryden wind, full EKF-in-the-loop stack | mean cross-track 0.65 m, EKF RMSE 0.10 m |
 | `scenario_rtl` | Low-battery fault injection, return-to-launch, gentle touchdown | 0.40 m/s touchdown, 0.07 m from home |
 | `scenario_wind` | 60 s hover hold in 4-6 m/s airflow versus a calm baseline, SIL state machine | windy RMS 0.09 m inside the 0.25 m bound |
@@ -159,7 +159,7 @@ Headline numbers from `uv run python python/sims/run_all.py` (the full 25-row ta
 | Obstacle field min 3-D surface clearance | > 0 m | 2.072 m |
 | Emergency detection / final altitude | < 1 s / < 0.5 m | 0.000 s / settled |
 | State machine phases covered (SIL union) | 8 of 8 | 8 of 8 |
-| Test suites | 139+ pytest | 186 pytest, 210 Rust core, 132 vitest |
+| Test suites | 139+ pytest | 375 pytest, 225 Rust core, 137 vitest |
 
 Two example plots (generated by the validation driver into the gitignored `plots/` directory; regenerate with `uv run python python/sims/run_all.py`):
 
@@ -201,7 +201,7 @@ itself is a pure function with per-call diagnostics (`e_ct`, `nu1`,
 |--------|-------|----------|
 | Scope | Single vehicle, full onboard GNC | Multi-agent swarm, coordination research |
 | Navigation | 15-state MEKF (GPS + IMU, bias estimation) | Truth-state (formation study isolates control) |
-| Control | Cascaded PD with motor lag and mixer saturation | LQR consensus controllers |
+| Control | Cascaded PID with motor lag and mixer saturation | LQR consensus controllers |
 | Guidance | NLGL line-of-sight path following | DCM-based formation keeping |
 | Fault handling | FDIR state machine, emergency landing | Not in scope |
 | Presentation | FlightLab web simulator (replay, telemetry, metrics) | Static 3D viewer |
@@ -250,7 +250,7 @@ trustworthy.
    trajectory-tracking performance expectations on small quadrotors.)
 10. Lee, T., Leoky, M. and McClamroch, N. H. "Geometric tracking
     control of a quadrotor UAV on SE(3)." *IEEE CDC*, 2010.
-    (Geometric-control contrast to the cascaded PD used here.)
+    (Geometric-control contrast to the cascaded PID used here.)
 
 ## Layout
 
@@ -279,12 +279,11 @@ Talon/
 ├── public/data/             # exported telemetry JSON + live configs (committed)
 ├── public/wasm-rust/        # compiled kernel: talon_core.js + _bg.wasm (committed)
 ├── public/videos/           # recorded MP4s (committed)
-├── fixtures/                # Python-generated parity fixtures (committed)
 ├── scripts/copy_data.sh     # stage JSON + recordings into public/
 ├── python/                  # Python package, simulations, and tests
 │   ├── talon/               #   package (_core*.so built here by bindings/build.sh)
 │   ├── sims/                #   7 scenarios, run_all.py, export_live_configs.py
-│   └── tests/               #   186 pytest tests
+│   └── tests/               #   375 pytest tests
 ├── docs/                    # conventions, architecture, decisions, research,
 │                            #   reviews, tests, videos, portfolio
 ├── .cargo/config.toml       # PYO3_PYTHON -> .venv/bin/python

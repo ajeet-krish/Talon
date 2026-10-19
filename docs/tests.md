@@ -793,3 +793,204 @@ core/src/guidance.rs:203 and python/talon/guidance.py:244 branch identically.
 Verification checklist: all suites pass (Rust 240, TypeScript 137, smoke
 green), clippy and fmt clean, happy path and error paths covered, guards
 pinned against NaN regressions, parity with Python confirmed bit-exact.
+
+### Phase 3 test gate (2026-10-19)
+
+Scope: the Phase 3 Python vs `talon._core` parity harness: the six new
+`python/tests/test_parity_*.py` files plus `python/tests/parity_util.py`
+(184 tests), on top of the implementer's binding changes in
+`bindings/src/`. This gate added no source changes; its only write to
+the repository is this section. All probes ran out of tree from the
+approved temp directory.
+
+Gate commands and exact results (from the repository root):
+
+| Command | Result |
+|---------|--------|
+| `cargo test --workspace` | PASS: 249 passed, 0 failed (talon-core 225, talon-py 12, talon-wasm 12, doc-tests 0) |
+| `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` | PASS: 370 passed, 0 failed, 0 skipped, 8.29 s |
+| `npm test` | PASS: 11 files, 137 tests passed, 256 ms |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS: exit 0, 0 warnings (verified twice: once against the repo target dir, once fully cold with `CARGO_TARGET_DIR` in the temp dir; exit codes captured without pipes) |
+| `cargo fmt --all -- --check` | PASS: exit 0, no diffs |
+
+Parity baseline per file (all green): battery 27, guidance 39, mission
+12, motors 26, sensors 16, state machine 64; 184 of the 370 pytest
+tests. The other 186 are the pre-existing suites, unchanged. No parity
+test carries `skip`, `xfail`, or `importorskip`.
+
+#### Mutation evidence (out of tree, repository untouched)
+
+Each probe is a standalone pytest plugin loaded with `pytest -p
+<plugin>` against the real parity files, so every failure below is a
+real assertion in the committed test cases:
+
+| Probe | Perturbation | Result | Catching assertion |
+|-------|--------------|--------|--------------------|
+| A `mut_guidance_default` | Python default drift: every `talon.guidance.NLGLConfig()` returns `zeta = 1.5` instead of 0.75; Rust untouched | 6 failed, 33 passed | `test_config_defaults_match_bit_for_bit[zeta]` and `test_guidance_exposes_the_same_config_defaults` at `assert_exact` (`parity_util.py:230`, `0.75 (0x1.8000000000000p-1) != 1.5 (0x1.8000000000000p+0)`); `test_compute_leg_matches_on_every_diagnostic[chi_d_wraps_below_minus_pi]` at `assert_near` nu1 (`parity_util.py:256`, `-0.6340151994018907 != -0.30070348238928196`); `[nu_clip_saturates]` at `assert_near` l1 (`7.16197243913529 != 14.32394487827058`); `[nu2_compensates_crab]` at `assert_near` l1 (`7.303807444592912 != 14.607614889185824`); `test_compute_mission_matches_compute_leg_on_the_active_leg` at `assert_vec_near` v_des |
+| B `mut_motors_branch` | Python branch drift: `MotorModel.step` clamps a negative dt to zero (the Rust behaviour) instead of raising | 1 failed, 25 passed | `test_negative_dt_is_a_registered_divergence` at `pytest.raises(ValueError, match="dt must be non-negative")` (`test_parity_motors.py:237`, DID NOT RAISE) |
+| C `mut_battery_branch` | Python branch drift: `BatteryModel.update` clamps a negative dt instead of raising | 1 failed, 26 passed | `test_negative_dt_is_a_registered_divergence` at `pytest.raises` (`test_parity_battery.py:265`, DID NOT RAISE) |
+| D `mut_rust_old_fmod_wrap` | Rust side: `chi_d` re-wrapped with the pre-7314f19 `fmod(theta + PI, TAU) - PI` form, rebuilt as `chi_q + nu` with `chi_q = atan2(b-a)` exactly as `core/src/guidance.rs:198,212` does; degenerate and recovery branches forwarded unchanged | 2 failed, 37 passed | `test_chi_d_wraps_below_minus_pi_to_three_quarter_pi` at `assert_exact` (`parity_util.py:230`, `rust chi_d: -3.9269908169872414 (-0x1.f6a7a2955385ep+1) != 2.356194490192345 (0x1.2d97c7f3321d2p+1)`, i.e. the unfurled -5pi/4); `test_compute_leg_matches_on_every_diagnostic[chi_d_wraps_below_minus_pi]` at `assert_near` chi_d (`parity_util.py:256`, `-3.9269908169872414 != 2.356194490192345`) |
+
+The harness is not trivially green: three modules (guidance, motors,
+battery) fail under Python-side perturbations through both bit-exact
+default pins and tolerance-based law pins, and the chi_d wrap corner
+fails the moment the old Rust wrap form is reintroduced, through both
+the hand-computed `assert_exact` pin and the cross-implementation
+`assert_near`. Under probe A the dedicated chi_d corner test still
+passed, which is itself informative: the nu clip binds in that case and
+masks a zeta drift, so the diagnostics assertions are what catch it.
+
+#### Determinism and speed
+
+`TALON_REQUIRE_CORE=1 uv run pytest python/tests/test_parity_*.py -q`
+run twice back to back: **184 passed in 0.06 s** and **184 passed in
+0.05 s**, identical counts. A grep over the six parity files plus
+`parity_util.py` finds no `socket`, `sleep`, `time`, `perf_counter`,
+`monotonic`, `datetime`, `uuid`, `os.urandom`, `np.random`, or bare
+`random` use; the only imports are `math`, `numpy`, `pytest`, `types`,
+`typing`, and `talon.*`. The only randomness in scope is the sensor bias
+random walk, and every `SensorSuite` in the parity file is built with an
+explicit `seed=` on both sides (the two streams differ by design,
+decision D18, and are pinned by per-side statistical bounds rather than
+compared to each other).
+
+#### Divergences registry
+
+`parity_util.DIVERGENCES` holds 15 keys; an AST scan of the parity test
+files finds exactly 15 distinct `expect_divergence("...")` call sites:
+no registered key is unreferenced, no referenced key is unregistered,
+and the helper raises on any unknown key anyway. Because every
+divergence test pins BOTH the Python behaviour and the Rust behaviour,
+a divergence that disappeared would fail its own test while the suite
+is green. Three were additionally spot-checked with a standalone probe:
+`motors.step_negative_dt` (python `ValueError(dt must be non-negative,
+got -1.0)` vs rust clamped, forces unchanged), `battery.update_nan_dt`
+(python soc floors to 0.0 vs rust held at 1.0), and
+`sensors.generate_imu_non_positive_dt` (python `ValueError(dt must be
+positive, got -0.1)` vs rust zero sample with the clock held at 0.0).
+All three observed as registered.
+
+#### Residual coverage gaps
+
+- The parity suite compares Python against Rust through the binding
+  surface; a bug introduced identically on BOTH sides cancels out.
+  Hand-computed `assert_exact` pins cover some corners, but there is no
+  committed golden-data sweep of whole trajectories across the boundary
+  (the wrap sweep evidence from Phase 1 lives out of tree).
+- Mutation probes covered three of six modules (guidance, motors,
+  battery) plus the Rust wrap; the mission, sensors, and state-machine
+  files were not mutated out of tree in this gate and rely on their own
+  dual-sided divergence assertions.
+- Probe D rewrote `chi_d` only inside `compute_leg`; the separate
+  `compute_mission` entry point in the binding was not rewrapped by the
+  probe (its parity case passes through the same diagnostics but was not
+  itself mutated).
+- The chi_d wrap parity cases cover one corner (-5pi/4). The positive
+  wrap side and the exact +/-pi boundaries are pinned by the Rust
+  `math.rs` tests rather than by parity cases.
+- No line-coverage number (pytest-cov) is reported from this gate;
+  coverage of the parity files is by construction, one comparison per
+  case.
+
+### Phase 3c test gate (2026-10-19)
+
+Scope: retirement of the dead fixture pipeline. `fixtures/live_fixtures.json`
+and `fixtures/sil_reference.json` deleted, the fixture generator removed from
+`python/sims/export_live_configs.py`, `PYTEST_EXPECTED` raised to 375, docs
+refreshed. Gate run by the Tester subagent; the only repository write from
+this gate is this section. Every exit code below was captured directly from
+the command, not from a pipe.
+
+Gate commands and exact results (from the repository root):
+
+| Command | Result |
+|---------|--------|
+| `cargo test --workspace` | PASS: exit 0, 249 passed, 0 failed (talon-core 225, talon-py 12, talon-wasm 12, doc-tests 0) |
+| `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` | PASS: exit 0, 375 passed, 0 failed, 0 skipped, 8.78 s |
+| `npm test` | PASS: exit 0, 11 test files, 137 tests passed |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS: exit 0, 0 warnings |
+| `cargo fmt --all -- --check` | PASS: exit 0, no diffs |
+| `npm run build` | PASS: exit 0, 647 modules transformed, built in 2.12 s (chunk-size warning only) |
+| `npm run smoke:wasm` | PASS: exit 0, all live smoke checks passed (fast scenarios plus the paced loop, 3600 frames) |
+
+#### Fixture retirement evidence
+
+- `test ! -e fixtures/live_fixtures.json && test ! -e fixtures/sil_reference.json`
+  evaluates true: both paths are absent, and the `fixtures/` directory itself
+  no longer exists on disk. Both paths still appear in the index
+  (`git ls-files fixtures`) with working-tree status ` D`, which is the
+  uncommitted deletion rather than a live file.
+- A grep for `live_fixtures|sil_reference` across the repository with
+  `node_modules`, `target`, `dist`, and `.git` excluded returns zero hits
+  outside `docs/`. Nothing under `python/`, `src/`, `core/`, `bindings/`,
+  `wasm/`, `scripts/`, `public/`, or `.github/`, and no test file, mentions
+  either path, so the deletion orphans no consumer.
+- The 20 remaining hits are all historical documentation, dated records
+  rather than live claims:
+  - `docs/tests.md` (9 lines): the Phase 9a and Phase 4 gate records
+    (2026-10-18, 2026-10-17), the full-test-audit block (2026-10-18) that
+    declared the pipeline dead and recommended retiring it, and backlog
+    item 3, whose "regenerate from the Rust side" advice the deletion
+    supersedes.
+  - `docs/reviews.md` (7 lines): dated review records, including the
+    fixture finding that motivated the retirement.
+  - `docs/decisions.md` (4 lines): the D18-era description of the old
+    pipeline, plus D36, which records the decision to retire the fixtures
+    and their generator.
+
+#### Exporter equivalence
+
+- `uv run python python/sims/export_live_configs.py` exits 0 with
+  `wrote public/data/live/configs.json (5 configs)`.
+- `git diff public/data/live/configs.json` afterwards shows exactly one
+  changed line, the stamp `generated_utc` moving from
+  `2026-10-19T01:24:33Z` to `2026-10-19T06:45:47Z`: 1 file changed,
+  1 insertion, 1 deletion.
+- Filtering `generated_utc` out of that diff leaves zero added or removed
+  lines, so the shipped config is byte-identical to HEAD apart from the
+  timestamp.
+- `git checkout -- public/data/live/configs.json` restored the committed
+  stamp; `git status --porcelain -- public/data/live/configs.json` is then
+  empty.
+- The exporter diff removes 253 lines (the `FIXTURE_OUT` and `SIL_REF_OUT`
+  constants, `build_fixtures`, `build_sil_reference`, `_downsample`, and the
+  `--with-sil` path) and adds 8 (the rewritten module docstring and the
+  trimmed `parse_args` call). `build_configs()` and `main()` are untouched,
+  which the byte-equivalent output confirms.
+
+#### PYTEST_EXPECTED check
+
+- `python/sims/run_all.py:193` reads `PYTEST_EXPECTED = 375`.
+- `uv run pytest python/tests/ -q --collect-only | tail -1` reports
+  `375 tests collected in 0.21s`. The constant equals the collected count
+  exactly.
+- Composition: 189 parity tests (state machine 66, guidance 39, battery 28,
+  motors 26, sensors 17, mission 13) plus the 186 pre-existing tests. The
+  parity files grew by 5 since the Phase 3 gate recorded 184.
+
+#### Residual notes
+
+- `python/sims/run_all.py:194` still carries `RUST_CORE_EXPECTED = 181`
+  against 225 actual Rust tests. The report row passes because the check is
+  `count >= expected`; this is pre-existing and outside this phase's scope.
+- The 20 historical fixture mentions in `docs/` remain by design, since this
+  gate appends rather than rewrites prior content. `docs/tests.md:645`
+  still recommends regenerating the fixtures from the Rust side, advice that
+  D36 superseded by deleting them.
+- `cargo clippy` and `cargo test` ran against existing build fingerprints
+  (0.11 s "Finished"), which is sound because no Rust source changed in this
+  phase; both returned exit 0 with zero failures, and the fmt check re-ran
+  clean.
+- Working tree at gate time: 11 modified files (beyond `docs/tests.md`:
+  AGENTS.md, README.md, `bindings/src/{convert,lib}.rs`, four other docs,
+  `python/sims/{export_live_configs,run_all}.py`), 2 deleted (the fixtures),
+  and 14 untracked entries (six new `bindings/src/*.rs` modules,
+  `python/tests/parity_util.py`, six `test_parity_*.py` files, and the
+  pre-existing `eagle-shield.svg`). Nothing unexpected; no source file was
+  modified by this gate.
+
+Verification checklist: all seven gates pass with exit 0 and exact counts
+recorded, fixture retirement is clean with only historical doc hits, the
+exporter reproduces the shipped config byte for byte apart from
+`generated_utc`, `PYTEST_EXPECTED` matches the collected count, and this
+gate's only write is this section.
