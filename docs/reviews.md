@@ -2146,3 +2146,169 @@ summary JSON to `[]`, so the impossible `"{}"` serialization fallback
 can no longer throw during render. Two tests pin the missing and null
 cases. The non-finite-nullability note remains theoretical and is
 recorded as a future invariant, not a bug.
+
+### Phase 8a review (2026-10-19)
+
+Scope: scheduled authored faults in the Rust core, uncommitted. The new
+core/src/faults.rs (the `FaultSpec` model, `MAX_FAULTS`, validation), the
+scheduling and application in core/src/sim.rs (`SimConfig.faults`, the
+fault checks in `SimConfig::validate`, `SimRunner::apply_fault`, the
+one-shot schedule in `SimRunner::new`, `fire_scheduled`, the motor-fault
+rising edge in `handle_events`), the run-window validation and JSON round
+trip in core/src/scenario.rs, the module export in core/src/lib.rs, the
+fault type exports in core/tests/ts_export.rs, the `validate_scenario_json`
+binding in wasm/src/lib.rs, the regenerated
+src/types/generated/talon_core.ts, and the rebuilt public/wasm-rust
+artifacts. Prior entries and D20, D36, D37 treated as read: D20's "fault
+paths stay recorded-only" is honored (no live config injects faults, the
+live set is unchanged), D36's parity harness is untouched (399 pytest
+green under `TALON_REQUIRE_CORE=1`), and D37's generation contract is
+respected (the mirror regenerates byte-for-byte). AGENTS.md (2 lines, the
+phase status table) rides along and is expected; the untracked
+eagle-shield.svg remains unrelated (see findings).
+
+Verdict: PASS. Every enumerated check holds; no blocking issue. All
+findings are Low and non-blocking.
+
+Check results:
+
+| # | Check | Verdict | Evidence |
+|---|-------|---------|----------|
+| 1 | Fault model and serde to TS agreement | PASS | `FaultSpec` is internally tagged on `kind` with `rename_all = "snake_case"` (core/src/faults.rs:59-100) and the generated mirror is the exact discriminated union: tags `gps_outage`, `ekf_divergence`, `battery_soc`, `motor_fault`, `emergency`, `rtl`, fields `at_s` on all six plus `duration_s`, `mode`, `soc` (src/types/generated/talon_core.ts:76-116), with `faults?: Array<FaultSpec>` on `ScenarioConfig` (:141) and `"faults": []` in `SCENARIO_DEFAULTS` (:179). `FaultKind` (:76) and `DivergenceMode` (:78) agree with the Rust enums (faults.rs:35-51, sim.rs:400-413). The `DivergenceMode` spellings match the Python and core conventions exactly: `corrupt_bias`, `suppress_updates`, `adversarial_gps` versus `inject_ekf_divergence` in python/talon/mavlink_sil.py:503-526. JSON round trip for all six kinds is tested (core/src/scenario.rs:405-421, core/src/faults.rs:440-496), and `./scripts/gen_types.sh` reproduces the committed mirror byte-identically (sha256 3207b1e9...ace5a before and after) |
+| 2 | Validation | PASS | Finiteness first, then bounds, then the cap, nothing clamped. `check_range` is finiteness-first (core/src/sim.rs:263-281); `at_s` is `[0, duration_s)` per scenario (core/src/faults.rs:141-155, enforced at core/src/scenario.rs:207-208) and `[0, MAX_DURATION_S]` for a bare `SimConfig` (faults.rs:167-168, sim.rs:245-251, MAX_DURATION_S = 900 at constants.rs:52); a non-finite run window is rejected before comparisons (faults.rs:135-140); GPS outage duration is finite then strictly positive (faults.rs:170-182); battery SOC is finite and in `[0, 1]` (faults.rs:184); the 16-fault cap is enforced in both paths (sim.rs:238-244 and scenario.rs:200-206, `MAX_FAULTS` at faults.rs:29). NaN and infinities are covered by tests at faults.rs:242-263, 275-290, 322-337; boundaries at :204-225, 311-321, 338-355; the cap at :359-381 and through the wasm validator at wasm/src/lib.rs:755-761. Every error names the field and value via `SimError::NonFiniteParameter` / `OutOfRangeParameter` / `TooManyItems` (sim.rs:299-324, 347-358) |
+| 3 | Scheduling | PASS | Each spec becomes a one-shot `ScheduledAction` pushed in list order (core/src/sim.rs:751-766); `fire_scheduled` drains in Vec order and removes what it fires, so equal `at_s` apply in scenario order with no double fire possible (FnOnce at :499, drain at :1527-1541). `step` fires at the top, before `sensor_step` and `handle_events` (:1041-1054), and `preroll` runs on the negative clock without draining the schedule (:1019-1035), so nothing fires during pre-roll (and `at_s < 0` is rejected anyway). The timing test proves no early fire, a fire on the first step at `at_s`, and no second fire over 1000 further steps (sim.rs:2934-2972); the order test runs both list orders (sim.rs:2975-3015); an empty `faults` list leaves `scheduled` empty and every regression test (260 in talon-core) plus `npm run smoke:wasm` stays green. One boundary caveat, see finding 1: a fault inside the last `DT` of the run validates but has no step to fire on |
+| 4 | Application semantics | PASS | GPS outage maps to `inject_gps_outage` with the outage window respected by `sensor_step` (:1102), tested end to end (sim.rs:2821-2835); `EkfDivergence` maps to `inject_ekf_divergence` per mode (:908-920) and the corrupt-bias run reaches EMERGENCY with `ekf_diverged` set (:2838-2855); `BatterySoc` maps to `inject_battery_soc` / `force_soc` and the 0.10 drop triggers RTL mid-mission (:2858-2881); `MotorFault` raises the sticky flag (:941-948) and the rising edge in `handle_events` requests one `critical_fault` (:1244-1253), reaching EMERGENCY through the same ANY-transition the divergence takes (state_machine.rs:242-262), with the edge flag keeping the log to one entry and preventing any re-fire after landing (no new edge once `motor_fault_prev` latches true); `Emergency` calls `force_phase(..., "authored fault")`, which logs `force:authored fault` (:949-954, state_machine.rs:286-293) and the test pins the log entry, its phase, and its time (:2898-2917); `Rtl` goes through the guard-respecting `request("rtl", ...)` (:955-960), accepted from TAKEOFF, CRUISE, WAYPOINT and rejected elsewhere (state_machine.rs:186-188, 265-275) |
+| 5 | wasm validator and surface | PASS | `validate_scenario_json` parses, fully validates (including fault windows and the cap), and maps both error classes to readable `JsValue` strings via `js_err` and the core `Display` (wasm/src/lib.rs:28-30, 324-338); no panic surface on bad input (serde errors and `SimError` both handled, no unwraps in the path), and the error wording is pinned through the shared text helper because `JsValue` cannot be built off wasm32 (:725-762). The exported surface adds exactly `validate_scenario_json(config_json: string): void` (public/wasm-rust/talon_core.d.ts:182, talon_core.js:411) plus its wasm export entry; the d.ts and js diffs are additions only and the `Session` class surface is unchanged. `Session::new` validates before building and schedules the faults through `SimRunner::new` (:88-104), so authored faults ride the browser path with the same rules |
+| 6 | Tests | PASS with Low gaps | One end-to-end run per kind with a real outcome: gps_outage (:2821), ekf_divergence (:2838), battery_soc (:2858), motor_fault (:2884), emergency (:2898), rtl (:2920); the timing test (:2934) proves no early fire, no missed fire at `at_s`, and no duplicate; the order test (:2975) is self-contained and deterministic, not order-dependent. Validation covers NaN, both infinities, boundaries (0.0 and `duration_s - 1e-9` accepted, `duration_s` and beyond rejected), a NaN window, and the 16/17 cap (faults.rs:201-437, sim.rs:238-251, wasm/src/lib.rs:726-762). Counts: talon-core 260 (up 15: faults.rs 6, sim.rs 8, scenario.rs 1), talon-wasm 16 (up 2). No vacuous or cross-test-order-dependent test found; the weak bound in finding 4 and the unpinned motor-fault log property in finding 2 are the only gaps. Phase 8a adds no frontend tests; the generated-mirror and engine-contract suites pass unchanged |
+| 7 | Command suite | PASS | Exact results below. All eight commands exit 0 |
+
+Command results (2026-10-19, repository root):
+
+1. `git status --porcelain` / `git diff --stat`: 11 modified files
+   (AGENTS.md 2 lines, core/src/lib.rs +1, core/src/scenario.rs +89,
+   core/src/sim.rs +329/-13, core/tests/ts_export.rs +8,
+   public/wasm-rust/{talon_core.d.ts +11, talon_core.js +18,
+   talon_core_bg.wasm rebuilt 233,942 to 276,927 bytes,
+   talon_core_bg.wasm.d.ts +1}, src/types/generated/talon_core.ts
+   +51/-2, wasm/src/lib.rs +82) plus untracked core/src/faults.rs and
+   eagle-shield.svg; 581 insertions, 13 deletions tracked.
+2. `cargo fmt --all -- --check`: exit 0, no output.
+3. `cargo clippy --workspace --all-targets -- -D warnings`: exit 0, no
+   warnings.
+4. `cargo test --workspace`: exit 0, 289 passed / 0 failed (talon-core
+   260, ts_export 0 (ignored generator), talon-py 13, talon-wasm 16,
+   doc-tests 0).
+5. `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q`: exit 0,
+   399 passed in 9.33s.
+6. `npm test`: exit 0, 14 files / 182 tests passed.
+7. `npm run build`: exit 0, `tsc -p tsconfig.build.json --noEmit` clean,
+   vite built (chunk-size warning only, 1,253.23 kB).
+8. `npm run smoke:wasm`: exit 0, all live checks passed (hover,
+   waypoints, obstacle_field, avoidance, wind, paced loop).
+
+Plus `./scripts/gen_types.sh`: exit 0, regenerated
+src/types/generated/talon_core.ts byte-identical to the working tree
+(sha256 3207b1e9bc2631f8b1b8b64940322a25e6dad65b59c8eb915bc6b68a220ace5a
+before and after), so the committed mirror cannot drift from the Rust
+structs.
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | core/src/faults.rs:148 with core/src/sim.rs:989 and constants.rs:30 | The validated fire window `[0, duration_s)` is slightly wider than the step grid: `run` takes `steps = (duration_s / DT).round()` at DT = 0.005 s, so the last step starts near `duration_s - DT`, and a fault with `duration_s - DT < at_s < duration_s` (up to a 5 ms wide tail, for example at_s = 59.998 in a 60 s run) validates but silently never fires. Exactly-on-grid `at_s` is fine and tested | Either tighten the scenario window to `at_s < duration_s - DT`, or document the quantization in `FaultSpec::validate` and add a boundary test at `duration_s - DT` and `duration_s - DT / 2` |
+| Low | core/src/sim.rs:2884-2895 | The motor-fault end-to-end test asserts only that EMERGENCY was visited. The properties the design claims (one `critical_fault` log entry, no spam, no re-fire after landing) are correct in code (the rising edge at :1244-1253 with the sticky `motor_fault_prev`) but pinned by no test | Extend the test to count `critical_fault` entries in the event log, run past landing, and assert the count stays 1 |
+| Low | core/src/sim.rs:534-537, 941-948 | `motor_fault` is sticky and never reset, so the edge is one response per flag lifetime, not per authored episode: a second `MotorFault` spec (or one authored after landing) is silently inert. Defensible for a failed motor that never recovers, but a scenario author would not learn this from the type | Document the one-response-per-flag-lifetime semantics on the `MotorFault` variant, or, if per-episode behavior is wanted, clear the flag on landing or inject a one-shot edge |
+| Low | core/src/sim.rs:2830-2834 | `assert!(result.gps_skipped > 0)` is a weak bound: a bug that dropped a single fix would pass even though a 2 s outage at 10 Hz should drop about 20 | Assert the expected count band (for example `>= 15`), or compare against the exact outage window |
+| Low (cosmetic) | core/src/sim.rs:148-154 with :350-355 | `OutOfRangeParameter` displays "fault at_s must be in [0, 60], got 60", but the accepted window excludes 60, so the message contradicts the rejection exactly at the boundary an editor user would try first | Phrase the window as "at least 0 and less than duration_s" for the fire window, or add an exclusive-max display form |
+| Low (informational) | core/src/faults.rs:170-182 | The GPS outage duration is required finite and positive (as the spec and the existing `inject_gps_outage` policy prescribe) but unbounded above, so `duration_s: 1e308` validates and blacks out GPS for the rest of the run. The same posture as every other magnitude-free knob today | None required; if a bound is wanted, cap at `MAX_DURATION_S` like `at_s` |
+| Low (noise) | eagle-shield.svg (untracked, repo root) | Still untracked and unrelated to this phase (flagged in the Phase 5c review as well); it will ride along in the next commit | Confirm ownership and either commit deliberately or remove before the Phase 8a commit |
+
+Recurring patterns for other agents: (1) when a fault or event is
+scheduled against a quantized clock, the validated time window and the
+step grid must agree at the top end, or a validated action silently
+never runs; name the grid in the validator's doc comment even when the
+window is correct. (2) A rising-edge response to a sticky flag gives
+exactly-once semantics per flag lifetime; if the scenario language
+offers multiple injections of the same fault, say in the type docs
+whether later ones are no-ops. (3) An internally tagged serde enum with
+`rename_all = "snake_case"` plus a ts-rs derive gives a discriminated
+union for free; pin the wire strings against the Python harness's string
+API (as `DivergenceMode` is pinned against mavlink_sil.py here) so the
+three vocabularies cannot drift.
+
+### Phase 8a security review (2026-10-19)
+
+Scope: the same Phase 8a surface the code review above covered (uncommitted),
+examined against the 2026-10-18 full security review's threat model, where
+authored scenario JSON is untrusted input and the worst achievable outcome is
+the victim's own tab hanging or showing wrong numbers. The 2026-10-18 full
+security review, the Phase 2 through 5c security reviews, and the Phase 8a
+code review above are treated as read. This pass verifies the current working
+tree, which is slightly newer than the tree the code review measured: the
+step-aware fire window (faults.rs:143-175, `NoFaultWindow` at sim.rs:316-319)
+and the GPS outage duration cap (faults.rs:214-223) landed after that review,
+the wasm binary was rebuilt again (277,377 bytes against the recorded
+276,927), and talon-core is now at 262 tests. Every command below was run
+against this tree.
+
+Overall verdict: PASS. No Critical, High, or Medium findings. Three Low
+findings, all non-blocking and none exploitable.
+
+Check results:
+
+| # | Check | Verdict | Evidence |
+|---|-------|---------|----------|
+| 1 | Untrusted input | PASS | Every path that can reach scheduling or application re-validates in full. `Session::new` parses then validates before building anything (wasm/src/lib.rs:88-91); `ScenarioConfig::validate` checks the duration (NaN, non-positive, non-finite, and the 900 s cap, scenario.rs:177-196), the 16-fault cap (:200-206), and each fault through `FaultSpec::validate` (:207-208); `SimRunner::new` re-runs `SimConfig::validate` (sim.rs:636) before the scheduling loop exists (sim.rs:766-774), and that validator repeats the cap (sim.rs:238-244) and every per-fault field check (:245-251). Finiteness is checked first everywhere (`check_range`, sim.rs:263-281): `at_s` is finite and in `[0, MAX_DURATION_S - DT)` with an exclusive top (faults.rs:187-200), the GPS outage duration is finite, then strictly positive, then capped at `MAX_DURATION_S` (faults.rs:201-224), `soc` is finite and in `[0, 1]` (faults.rs:226), and a non-finite run window is rejected before any comparison can wave a value through (faults.rs:143-149). The fire window is step-aware: `0 <= at_s < duration_s - DT` with `NoFaultWindow` for a run of one plant step or less (faults.rs:150-173), and the bare `SimConfig` bound applies the same exclusive top against the longest accepted run (faults.rs:187-200, sim.rs:245-251). The enum shape closes the smuggling routes: serde is internally tagged with typed fields, so an unknown `kind`, a mistyped `at_s`, or a string where a number belongs is a parse error, and extra JSON keys on a variant are ignored and never read. NaN, both infinities, negatives, and boundaries are pinned by tests (faults.rs:243-480) and through the wasm validator (wasm/src/lib.rs:700-762). Bypass hunt result: none. `ScenarioConfig::from_json` is parse-only by design but every consumer validates (wasm/src/lib.rs:89-90, 324-326); `SimRunner::new` self-validates; the PyO3 surface exposes no fault model at all (grep over `bindings/src/` finds no `FaultSpec`, `SimConfig`, or scenario parse); `schedule` and `request_event` are programmatic-only (`Box<dyn FnOnce>` cannot cross the wasm ABI and neither appears in the d.ts). A bare `SimConfig` accepts a far-future `at_s` by contract (no duration to bound against, sim.rs:246-250), but such a fault can only silently never fire in a shorter run: fail-silent, not a bypass |
+| 2 | Denial of service | PASS | `MAX_FAULTS = 16` (faults.rs:29) enforced in both validation paths before anything is scheduled (scenario.rs:200-206, sim.rs:238-244). Each spec becomes exactly one `FnOnce` action (sim.rs:766-774) that `fire_scheduled` removes when it fires (mem::take drain, sim.rs:1535-1549), so at most one application per fault exists and a re-fire is structurally impossible. The per-step schedule scan is O(n) with n <= 16 and returns immediately when empty (:1536-1538). Fault application mutates scalars and time windows only: no allocation is sized by fault data anywhere in `apply_fault` or the injection methods (sim.rs:888-970). The run length is fixed by `duration_s`, itself finiteness-checked and capped at `MAX_DURATION_S` in both `ScenarioConfig::validate` and `SimRunner::run` (scenario.rs:180-196, sim.rs:978-995), so a fault cannot extend a run, drive a loop, or saturate the step count (<= 180,000 steps). Panic hunt: no `unwrap`, `expect`, or `unreachable!` is reachable from fault data. The RTL mission `expect` at sim.rs:1369-1370 is unreachable-failing (a validated home position with speed 5.0 and radius 1.0 always validates), the `rtl_mission` `expect` at :1460-1462 is invariant-safe (built on every Rtl phase entry at :1359-1373, never cleared), and the `unreachable!` at :1521 is behind the Idle/Arm early return (:1376-1383), which no authored phase change can skip. The pre-existing `try_inverse().expect` at ekf.rs:307 is not made more reachable: the divergence modes shift the innovation or stop updates, never the innovation covariance |
+| 3 | Application safety | PASS | Every kind rides existing validated machinery. `motor_fault` raises a sticky flag (sim.rs:949-955); the rising edge in `handle_events` requests one `critical_fault` (:1252-1261), which enters EMERGENCY through the same guarded ANY transition a diverged estimate takes (state_machine.rs:242-262) with `telemetry.motor_fault` satisfying the guard (sim.rs:1231). The edge latch makes re-fire impossible and a second MotorFault inert, which the variant docs now state (faults.rs:84-89). `emergency` calls `force_phase`, the state machine's own documented bypass: idempotent (state_machine.rs:287-288), logged as `force:authored fault` so post-analysis can never mistake it for a guarded transition (:284-293), and from any phase it lands in a state every `control_tick` and `handle_events` arm handles without panic (sim.rs:1325-1339, 1376-1521). `rtl` goes through the guard-respecting `request("rtl", ...)`: accepted only from TAKEOFF, CRUISE, and WAYPOINT (state_machine.rs:186-188) and silently inert elsewhere (semantics documented at faults.rs:99). The GPS outage maps to `inject_gps_outage`, whose own finiteness and positivity checks stand even on a direct call (sim.rs:888-902), and the blackout window is consumed by a plain comparison (:1110). Battery SOC is validated to `[0, 1]` and `force_soc` clamps again as defense in depth (battery.rs:157-159); a forced low pack reaches RTL through the guarded `low_battery` event (:1301-1305), not around it. EKF divergence modes are fixed constants (sim.rs:916-928); `suppress_updates` and the adversarial offset are sticky by documented design with bounded effect. No authored fault forces an invalid phase transition, re-fires, or bypasses a guard the design does not explicitly intend to bypass |
+| 4 | wasm surface | PASS | `validate_scenario_json` (wasm/src/lib.rs:328-337) is parse plus full validation through a shared text helper (:318-326) with no `unwrap` or `expect` in the path: serde parse errors and `SimError` both map through `js_err` (:28-30) to readable strings that name the offending field ("fault at_s", "fault soc", "faults" with the cap cited), pinned by tests (:725-762). serde_json's recursion limit rejects pathological nesting as an error string, not a stack overflow. The export diff adds exactly one surface, `validate_scenario_json(config_json: string): void` (public/wasm-rust/talon_core.d.ts:182, its raw shim in :221 and talon_core_bg.wasm.d.ts, and the JS wrapper); the `Session` class surface is byte-unchanged in the diff, and the generated mirror adds only types (FaultKind, DivergenceMode, FaultSpec unions, `faults?` on ScenarioConfig, `"faults": []` in SCENARIO_DEFAULTS) |
+| 5 | No new dependency, network, secret, file write, or unsafe | PASS | `git status` shows no `Cargo.toml` or `Cargo.lock` change, so no new dependency exists to audit. Grep over `**/*.rs` for `unsafe`, `std::fs`, `std::net`, `TcpStream`, `UdpSocket`, `reqwest`, `Command::new`, `std::env::var`, and secret patterns finds nothing in the diff surface; the only `std::fs` in the workspace is the pre-existing ts_export generator test (core/tests/ts_export.rs:120-123). The `public/wasm-rust` changes are the expected rebuild: talon_core.js +18, talon_core.d.ts +11, talon_core_bg.wasm.d.ts +1 all additions-only, and talon_core_bg.wasm rebuilt (233,942 to 277,377 bytes; 277,377 rather than the code review's 276,927 because the binary was rebuilt after the window fix). `npm run smoke:wasm` passes against the committed bundle (exit 0, all seven scenario groups green), so the artifact matches the core it was built from. The standing 2026-10-18 supply-chain gap (CI does not hash-check the .wasm) is unchanged and not this phase's to close |
+| 6 | Command gates | PASS | `cargo fmt --all -- --check`: exit 0, no output. `cargo clippy --workspace --all-targets -- -D warnings`: exit 0, no warnings. Supplementary: `cargo test --workspace` exit 0 with 291 passed / 0 failed (talon-core 262, talon-py 13, talon-wasm 16) on this tree, and `npm run smoke:wasm` exit 0 |
+
+Findings:
+
+| Severity | File:Line | Issue | Exploitable or theoretical | Fix |
+|----------|-----------|-------|----------------------------|-----|
+| Low | core/src/faults.rs:155,163 with core/src/sim.rs:997 | Residual step-grid tail: the window top is exactly `duration_s - DT`, but the step count is `(duration_s / DT).round()`, so when the rounding rounds down the last step starts below `duration_s - DT` and a validated `at_s` in a tail up to `DT / 2` wide (2.5 ms) silently never fires. The post-review step-aware window narrowed the code review's 5 ms finding but did not eliminate the rounding case | Theoretical and fail-silent: an authored fault can be a quiet no-op; no memory, CPU, or panic consequence | Bound the window by the grid itself (accept `at_s <= (round(duration_s / DT) - 1) * DT` or floor the window top) and add a boundary test at a duration whose quotient rounds down |
+| Low (cosmetic) | core/src/faults.rs:65,72,79,91,96,101; core/src/scenario.rs:197-199; src/types/generated/talon_core.ts (FaultSpec docs) | Stale contract text: the six variant doc comments, the scenario validator comment, and the generated mirror still describe the window as `0 <= at_s < duration_s`, while `FaultSpec::validate` enforces the step-aware `at_s < duration_s - DT` and rejects runs of one step or less. An editor built on the mirror would state the wrong rule | Not exploitable; documentation drift only | Update the doc comments and regenerate the mirror with `./scripts/gen_types.sh` |
+| Low (noise) | eagle-shield.svg (untracked, repo root) | Unrelated untracked file riding along to the next commit (third review to flag it) | Not exploitable | Confirm ownership and commit deliberately or remove |
+
+The code review's Low findings about the motor-fault log property, the weak
+`gps_skipped` bound, the sticky-flag semantics, the error-message wording at
+sim.rs:359, and the unbounded GPS outage duration are carried there: the
+sticky semantics are now documented (faults.rs:84-89) and the outage duration
+is now capped at `MAX_DURATION_S` (faults.rs:214-223), closing two of them;
+the remainder are quality items outside this review's scope.
+
+Verification checklist:
+
+- [x] No Critical findings
+- [x] No High findings
+- [x] No Medium findings
+- [x] Low findings documented (three, all non-blocking)
+- [x] Phase security integrates with prior phases: the 2026-10-18 finiteness
+      remediation is honored and extended (the fault model validates
+      finiteness-first and caps magnitudes where older knobs still do not),
+      D20's recorded-only posture holds (no live config injects faults, the
+      Python bindings expose no fault surface), and the Phase 5c generation
+      contract keeps the ts mirror derivable from the Rust types
+
+Notes for other agents: two patterns worth keeping. (1) When a validated
+schedule sits on a quantized clock, the window must be expressed in terms of
+the step grid, not the continuous duration: `duration_s - DT` is only an
+approximation of "one step before the end" once `(duration_s / DT).round()`
+enters the picture. (2) The defensive layering here is the model for future
+authored input: parse (typed, tagged, unknown-safe), validate at the document
+level (scenario.rs), validate again at construction (SimRunner::new), and let
+the lowest injection method keep its own rejection for direct callers; every
+layer names the offending field and clamps nothing.
+
+### Phase 8a review follow-up (2026-10-19)
+
+The step-grid boundary finding is closed exactly: the accepted fault window
+is now `0 <= at_s <= last_step_time`, where `last_step_time` is derived from
+the same rounded step count the runner uses, so no validated fault can be
+silently skipped in the final step. The stale window comments are corrected
+and flow through the generated mirror. The two divergence modes that were
+only probe-tested now have committed end-to-end tests: `suppress_updates`
+dead-reckons without EMERGENCY, and `adversarial_gps` reaches EMERGENCY.
+Final counts: 293 Rust, 399 pytest, 182 vitest.

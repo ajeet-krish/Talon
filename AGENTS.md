@@ -62,7 +62,7 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 | Phase 5c | Generated TypeScript type mirrors (ts-rs) | Complete |
 | Phase 6 | GCS shell with live telemetry and teaching captions | Complete |
 | Phase 7 | Altitude legibility in the scene | Complete |
-| Phase 8 | Mission authoring (waypoints, wind, faults) | Not started |
+| Phase 8 | Mission authoring (waypoints, wind, faults, keep-out zones) | In progress |
 | Phase 9a | Reactive avoidance in Rust: geometry, the law, loop wiring, tests | Complete |
 | Phase 9b | One implementation (Python delegates to `_core`) + a browser demo config | Complete |
 | Hardening | Wrap contract, lint and CI gates, Python versus Rust parity harness | Complete |

@@ -1,6 +1,6 @@
 # Talon Test Results
 
-Last updated: 2026-10-18
+Last updated: 2026-10-19
 
 ## One avoidance implementation (Phase 9b, 2026-10-18)
 
@@ -1395,3 +1395,174 @@ passthrough: `phases` missing and `phases: null` from `summary_json()`
 both normalize to `[]` instead of throwing in `RunView`. Final counts:
 272 Rust tests (245 talon-core, 14 talon-wasm, 13 talon-py), 399 pytest,
 and 182 vitest. clippy and rustfmt remain clean.
+
+### Phase 8a test gate (2026-10-19)
+
+Scope: scheduled authored faults (`core/src/faults.rs`, the one-shot
+schedule and `apply_fault` in `core/src/sim.rs`, the run-window
+validation in `core/src/scenario.rs`, the `validate_scenario_json`
+binding in `wasm/src/lib.rs`, the regenerated mirror and rebuilt wasm).
+Run entirely out of tree: the probes live in a scratch directory
+outside the repository, the committed suites supply the in-tree
+coverage, and the gate wrote nothing into the working tree.
+
+#### Command counts (2026-10-19, repository root, all exit 0)
+
+| Command | Result |
+|---------|--------|
+| `cargo fmt --all -- --check` | exit 0, no output |
+| `cargo clippy --workspace --all-targets -- -D warnings` | exit 0, no warnings |
+| `cargo test --workspace` | 291 passed, 0 failed (talon-core 262, ts_export 0 (ignored generator), talon-py 13, talon-wasm 16, doc-tests 0) |
+| `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` | 399 passed in 8.66s |
+| `npm test` | 14 files, 182 tests passed (Phase 8a adds no frontend tests) |
+| `npm run build` | exit 0, `tsc -p tsconfig.build.json --noEmit` clean, vite built (chunk-size warning only) |
+| `npm run smoke:wasm` | exit 0, all live checks passed (hover, waypoints, obstacle_field, avoidance, wind, plus the paced loop) |
+| `./scripts/gen_types.sh` | mirror regenerates byte-identically, sha256 `3207b1e9...ace5a` before and after |
+
+The 262 talon-core count is 2 up from the Phase 8a review's 260: the
+step-aware window fix replaced the old boundary test with
+`a_run_of_one_step_or_less_has_no_fault_window` and
+`a_fault_at_the_last_accepted_boundary_fires_exactly_once`.
+
+#### Fault matrix
+
+One authored scenario per kind through the out-of-tree probe (auto_arm,
+validation green, DT = 0.005):
+
+| Kind | Config | Observed outcome |
+|------|--------|------------------|
+| `gps_outage` | `at_s` 1.0, `duration_s` 2.0, 6 s run, one waypoint | Cruise throughout, EMERGENCY never; gps accepted 59, skipped 21 (2 s at 10 Hz, inside the committed 15 to 25 band); ekf converged |
+| `ekf_divergence` `corrupt_bias` | `at_s` 6.0, 20 s run, one waypoint | `critical_fault` at 6.005, Cruise to EMERGENCY, `emergency_landing` to Land at 15.36; `ekf_diverged` true; 139 fixes gated after the corruption |
+| `ekf_divergence` `suppress_updates` | `at_s` 6.0, same run | Updates stop (139 fixes skipped) but no divergence flag trips: the mission completes (`mission_complete` at 14.66) and RTLs; EMERGENCY never reached |
+| `ekf_divergence` `adversarial_gps` | `at_s` 6.0, same run | `critical_fault` at 6.50, Cruise to EMERGENCY, `emergency_landing` to Land at 15.95; `ekf_diverged` true; 139 fixes gated |
+| `battery_soc` | `at_s` 12.0, `soc` 0.1, 30 s run, 200 m waypoint | `low_battery` at 12.000, Waypoint to Rtl, `home_reached` to Land at 17.34 |
+| `motor_fault` | `at_s` 4.0, 25 s run | Exactly one `critical_fault` in the whole log, at 4.005, Takeoff to EMERGENCY, `emergency_landing` to Land at 11.72, `landed` to Idle at 15.90; no re-fire after landing |
+| `emergency` | `at_s` 4.0, 15 s run | `force:authored fault` at 4.005, Takeoff to EMERGENCY, `emergency_landing` to Land |
+| `rtl` | `at_s` 6.0, 15 s run | `rtl` request at 6.005 accepted from CRUISE, `home_reached` to Land on the same step |
+
+Committed coverage agrees: one end-to-end run per kind plus timing,
+boundary and order live in `core/src/sim.rs:2829-3096` and
+`core/src/faults.rs:243-644`, all green under the 262. The probe adds
+the two divergence modes no committed test flies end to end
+(`suppress_updates`, `adversarial_gps`).
+
+#### Determinism and timing
+
+- rtl at `at_s` 10.0 in a 15 s run: after the pre-roll (clock 0.0) 0
+  `rtl` events, so nothing fires during pre-roll; 2000 steps below
+  `at_s`, still 0 events; the first step whose clock reaches `at_s`
+  (clock 10.005) fires exactly once; 1000 further steps leave the count
+  at 1. The committed test pins the same contract (`sim.rs:2979`).
+- Same config and seed twice in one process: identical FNV-64 digests
+  (`42813a733aea5c23`) over the full event log, phase timeline, gps
+  counters and final truth and estimate states, bit for bit.
+- Cross process: the hover config digests `74dedfabc42929f1` in two
+  separate invocations, and the whole eight-case matrix reruns
+  byte-identically.
+- Equal `at_s` applies in list order both ways: `[rtl, emergency]` at
+  5.0 logs `rtl` then `force:authored fault`; `[emergency, rtl]` logs
+  `force:authored fault` then `rtl`, both at 5.005. The committed order
+  test pins the same (`sim.rs:3055`).
+
+#### Boundary and validation (probe output, duration 60 unless noted)
+
+| Case | Result |
+|------|--------|
+| `at_s` = `duration - 2*DT` (59.99) | accepted and fires: one `rtl` event at 59.99000000001224 |
+| `at_s` = `duration - DT` (59.995) | rejected: `fault at_s must be in [0, 59.995], got 59.995` |
+| `at_s` = `duration - 0.001` (59.999) | rejected with the same field-named window message |
+| `duration_s` 0.001, DT/2, DT with a fault | rejected: `duration_s X leaves no fault window: a fault must be scheduled at least one plant step (0.005 s) before the end of the run` |
+| `duration_s` 2*DT with `at_s` 0 | accepted, the window reopens |
+| 16 faults | accepted |
+| 17 faults | rejected: `faults has 17 items, at most 16 allowed` |
+| `at_s` NaN and +inf (Rust values) | rejected: `fault at_s must be finite, got NaN` (and `inf`) |
+| `at_s` 1e999, `soc` 1e999, gps `duration_s` 1e999 (JSON) | rejected at parse, serde_json reports `number out of range` at the literal, so inf never reaches the range checks |
+| `at_s` -1 | rejected: `fault at_s must be in [0, 59.995], got -1` |
+| `at_s` 60 (equal to `duration_s`) | rejected with the same window message |
+| `soc` 2.0 and -0.01 | rejected: `fault soc must be in [0, 1], got ...` |
+| gps `duration_s` 0 and -1 | rejected: `gps outage duration must be positive, got ...` |
+| gps `duration_s` 901 (over MAX_DURATION_S) | rejected: `fault duration_s must be in [0, 900], got 901` |
+| `kind` `foo` | rejected at parse, the message names all six variants |
+| `rtl` without `at_s` | rejected at parse: ``missing field `at_s` `` |
+| `mode` `bogus` | rejected at parse, the message names the three modes |
+| literal `NaN` in JSON | rejected at parse: `expected value` |
+
+#### No regression with an empty faults array
+
+- The five shipped configs (hover, waypoints, obstacle_field,
+  avoidance, wind), each run with `"faults": []` through the current
+  core and through a pristine HEAD (`e2d4eef`) core extracted with
+  `git archive`, produce identical canonical digests (phase timeline,
+  full event log, gps and mission counters, final truth and estimate
+  states, every float compared exactly): hover `74dedfabc42929f1`,
+  waypoints `03196d7805b9b856`, obstacle_field `ff7b578cf57eed11`,
+  avoidance `c8bd5ee65b5b5bce`, wind `cd5ed8d9820fad43`, the same hash
+  in both cores for all five.
+- The recorded scenarios rebuilt from their recording parameters
+  (gps_outage: 4 s blackout at t = 20 on the two-waypoint circuit;
+  emergency: corrupt_bias at t = 20) fly bit identically under the
+  authored-fault path, under the old manual `schedule` plus
+  `inject_*` API on the current core, and under the HEAD core:
+  rec-gps `22b053f59199a492` and rec-em `4347dfff4442ab57` in all
+  three. The reconstructed gps_outage phase sequence also matches the
+  committed recording (idle, arm, takeoff, cruise, waypoint, rtl,
+  land, idle). As a sanity check, dropping the outage on the HEAD core
+  changes the digest (`1769534cfaf2fe4f`), so the digest really does
+  see the fault.
+- `public/data` and `public/videos`: all 11 files hashed before and
+  after the gate, byte identical; `git status` shows the same 14
+  entries as when the gate began, and the gate itself wrote nothing
+  into the repository (probes, digests and hashes live in a scratch
+  directory).
+
+#### Generated mirror and wasm
+
+- `./scripts/gen_types.sh` regenerates `src/types/generated/talon_core.ts`
+  byte identically: sha256 `3207b1e9bc2631f8b1b8b64940322a25e6dad65b59c8eb915bc6b68a220ace5a`
+  before and after.
+- The mirror carries `FaultKind` (six snake_case tags),
+  `DivergenceMode` (`corrupt_bias`, `suppress_updates`,
+  `adversarial_gps`), the `FaultSpec` discriminated union with `at_s`
+  on all six variants plus `duration_s`, `mode` and `soc`,
+  `faults?: Array<FaultSpec>` on `ScenarioConfig`, and `"faults": []`
+  in `SCENARIO_DEFAULTS`.
+- `public/wasm-rust` diffs against HEAD are additions only: 30
+  insertions, 0 deletions, plus the rebuilt binary (233,942 to 277,377
+  bytes). Exactly one export was added,
+  `validate_scenario_json(config_json: string): void`, with one wasm
+  entry; the `Session` class surface is untouched. Loaded in node, the
+  exports are `Session, core_version, default, initSync, run_scenario,
+  sample_stride, validate_scenario_json`; an authored-fault scenario
+  validates, `at_s` 60 in a 60 s run rejects with
+  `fault at_s must be in [0, 59.995], got 60`, and 17 faults reject
+  with `faults has 17 items, at most 16 allowed`.
+
+#### Residual gaps
+
+1. Stale doc comment: `core/src/scenario.rs:197-199` still says the
+   fire window is `0 <= at_s < duration_s` while the code enforces the
+   step-aware `0 <= at_s < duration_s - DT` through
+   `FaultSpec::validate`. Behavior is right, the comment predates the
+   boundary fix.
+2. Only `corrupt_bias` is pinned end to end by committed Rust tests;
+   the `suppress_updates` and `adversarial_gps` outcomes recorded in
+   the matrix come from the out-of-tree probe and would not be caught
+   by CI. Notably `suppress_updates` never reaches EMERGENCY, which may
+   be by design but is unpinned either way.
+3. The validator accepts `at_s` values between step-grid points
+   without saying so; the fault then fires at the first step whose
+   clock reaches it (10.0 fires at clock 10.005 given accumulated
+   clock drift), which matches the "at or after t" contract.
+4. The gps skip count for the committed 2 s outage case is banded
+   (15 to 25), not exact (the probe observed 21 of 80 fixes).
+5. The rebuilt wasm binary is 277,377 bytes, slightly above the
+   276,927 the Phase 8a review recorded, consistent with a rebuild
+   after the boundary-window fix; the export surface was verified
+   directly, see above.
+
+### Phase 8a follow-up (2026-10-19)
+
+The fault window was tightened to the exact last-step clock, and two
+divergence-mode tests were added. Final counts: 293 Rust tests (264
+talon-core, 16 talon-wasm, 13 talon-py), 399 pytest, 182 vitest.
+clippy and rustfmt remain clean, and the wasm smoke checks pass.
