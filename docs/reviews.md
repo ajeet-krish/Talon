@@ -1551,3 +1551,387 @@ error), but the original exception is masked, and propagating
 non-AttributeError there would complete the pattern. And the `force_soc`
 doc comment (battery.rs:233, "clamped to `[0, 1]`") could name the NaN
 edge that `battery.soc_nan_clamp` now pins.
+
+### Phase 4 review (2026-10-19)
+
+Scope: the uncommitted input-hardening increment. Rust: new validation
+caps in `core/src/constants.rs`, the reworked `SimConfig::validate` and
+`SimRunner::{run, inject_gps_outage}` guards plus the new `SimError`
+variants in `core/src/sim.rs`, the duration guards in
+`core/src/scenario.rs`, the capped `AvoidanceConfig::validate` and new
+`AvoidanceError` variants in `core/src/avoidance.rs`, the non-finite
+margin message in `bindings/src/avoidance.rs`, and one wasm regression
+test. Python: the validator finiteness pass in `python/talon/export_json.py`,
+the non-finite duration guard and the `get("command")` KeyError fix in
+`python/talon/mavlink_sil.py`, with new tests in
+`python/tests/test_{export_json,mavlink_sil}.py`. TypeScript: the new pure
+validators `src/data/validate.ts` and `src/data/validate.test.ts`, the
+loader and store rewiring (`src/data/live.ts`, `src/store/useFlightStore.ts`),
+and the recorder clamp (`src/live/readout.ts`, `src/live/readout.test.ts`).
+This closes the input-validation findings of the full security review above
+(reviews.md:711-714, 718-720) and the two "future hardening pass" notes
+(reviews.md:1035, 1064).
+
+Verdict: FAIL on one blocking gap: the Python validator's finiteness pass
+does not cover every numeric leaf (four leaves missing, first row of the
+table below). Everything else passes: the Rust core rejects and never
+clamps, the `total_steps` saturation path is closed for both inf and large
+finite durations, the TS validators are pure and accept all five shipped
+configs and all four recordings, the mavlink fix prevents the KeyError
+without masking anything, and all six verification commands are green.
+
+- PASS (with one FAIL criterion): Rust field coverage. Every enumerated
+  scalar is finiteness-checked and range-checked with the offending field
+  named: duration (scenario.rs:147-168 and sim.rs:861-880), takeoff
+  (sim.rs:127-146, NaN and non-positive keep their original
+  `NonPositiveTakeoffAltitude` semantics), start position (sim.rs:155-157,
+  capped at `MAX_COORDINATE_M`), wind sigma and steady (sim.rs:158-168,
+  [0, 100] and [-100, 100] m/s), battery soc (sim.rs:169, [0, 1]), the
+  three GPS noises (sim.rs:170-183), cruise hold (sim.rs:184, [0, 60] s),
+  waypoint count/position (sim.rs:190-199), obstacle count/center
+  (sim.rs:209-219), avoidance margin/buffer/lookahead (avoidance.rs:138-173,
+  capped at 1000 m, 1000 m, 60 s), and seed (u64 typed at
+  scenario.rs:96-97, so serde rejects fractional, negative, and oversized
+  JSON numbers at parse). FAIL criterion: waypoint speed, waypoint radius,
+  and obstacle radius are checked against `f64::INFINITY` (sim.rs:200, 207,
+  221) and waypoint heading is finite-only (sim.rs:201-206), so a finite
+  1e300 is accepted where constants.rs:45 promises "Every scenario-facing
+  scalar therefore has a documented ceiling here".
+- PASS: the `total_steps` saturation path is closed for inf and for large
+  finite durations. `wasm/src/lib.rs:111` validates before
+  `total_steps = ((config.duration_s / DT).round() as usize).max(1)`
+  (:117), and `SimRunner::run` guards its own `steps` computation
+  (sim.rs:861-880): `1e999` fails at serde parse ("number out of range",
+  pinned at wasm/src/lib.rs:645-649), `inf` fails as `NonFiniteParameter`,
+  `1e308` fails as `OutOfRangeParameter`, and NaN fails everywhere it can
+  enter. The regression tests at sim.rs:2319-2347 and wasm/src/lib.rs:627-650
+  pin each class.
+- PASS: no clamping. Nothing in the Rust core, the Python validator, or
+  the TS validators silently corrects a value; every path rejects with the
+  field named (the one clamp in the phase is `bufferCapacity`
+  (readout.ts:120-127), sanctioned sizing defense for the allocator, and
+  unreachable for bad input because `validateLiveConfigs` rejects first).
+  All existing valid scenarios and tests pass: the five shipped configs and
+  four recordings are validated as fixtures (validate.test.ts:135-149,
+  377-390), and the suite totals are unchanged in shape (267 Rust, 173 TS,
+  387 Python, all green).
+- PASS: error quality and API compatibility. The new variants
+  (`SimError::{NonFiniteParameter, OutOfRangeParameter, TooManyItems}` at
+  sim.rs:265-289, `AvoidanceError::{NonFiniteParameter,
+  OutOfRangeParameter}` at avoidance.rs:63-86) are field-named and carry
+  value plus bounds. Display messages are pinned verbatim in tests, for
+  example "duration_s must be finite, got inf", "duration_s must be in
+  [0, 900], got 900.1", "lookahead_s must be in [0, 60], got 61", and
+  "clearance_margin must be finite, got inf". Every pre-existing variant
+  and message arm is untouched (the diff only adds arms), and the suites
+  that match on the old strings ("must be non-negative", "must be
+  positive", `NonPositiveDuration`, `NonPositiveTakeoffAltitude`,
+  `NonPositiveGpsOutage`) all still pass. Ordering is deliberate where
+  semantics could drift: NaN keeps failing as non-positive in
+  `ScenarioConfig::validate` (scenario.rs:150-152).
+- FAIL: Python validator finiteness coverage. `_check_finite` now runs
+  over `_SERIES_1D + _SERIES_3D + _ECT_1D`, `home_ned`, `waypoints_ned`,
+  each obstacle, and `meta.{duration_s,dt}` (export_json.py:325-327,
+  353-359, 378-386), which is most of the document, and the
+  missing-obstacles behavior is exactly one key wide (export_json.py:305-307,
+  363; the writer always emits the key at :261-264; both pinned by
+  test_export_json.py:288-314). But four numeric leaves are not covered:
+  `phase_timeline[i][0]` and `event_log[i].time` pass an isinstance-only
+  check (export_json.py:390-415), so a NaN or Inf time sails through, and
+  `meta.sample_count` and `meta.seed` are never checked at all. The TS
+  validator checks all four (validate.ts:265-271, 279, 288), so the two
+  trust gates disagree on the same schema. The mavlink `get("command")`
+  fix is correct and masks nothing (mavlink_sil.py:1074-1078: missing or
+  garbage command ids are counted in `_command_parse_errors`, reported in
+  the summary at :1231, while genuine codec failures keep their own
+  counter at :1066-1068), and the non-finite duration rejection is correct
+  and ordered so the "must be positive" message is unchanged for 0 and
+  negatives (mavlink_sil.py:534-537, test_mavlink_sil.py:401-419).
+- PASS: TypeScript. The validators are pure (no fetch, store, or DOM;
+  imports are type-only plus the sibling validator), they reject every
+  documented bad case with the schema path in the message, they accept all
+  five shipped configs and all four recordings read from disk exactly as
+  the store fetches them (validate.test.ts:135-149, 377-390), and they do
+  not mutate their input (pinned at validate.test.ts:397-402). No
+  dependency was added (package.json untouched). The buffer clamp behaves:
+  `MAX_BUFFER_SAMPLES` (180_064) covers the largest valid config exactly
+  (900 s at 200 Hz plus 64), non-finite or non-positive durations return 0
+  instead of `Infinity` (the old `Math.ceil(inf / dt) + 64` reached
+  `new LiveBuffer(Infinity)` and a `RangeError` in `useMemo`, the white
+  screen of reviews.md:713), capacity 0 is safe because `LiveBuffer` floors
+  at one sample (stream.ts:238), and RunView is unchanged for valid configs
+  (RunView.tsx:97, capacities identical to the old formula).
+- PASS: the new tests genuinely fail against the previous code. Three
+  representative families, reasoned: (1) duration inf,
+  `an_unbounded_run_duration_cannot_saturate_the_step_count` (sim.rs:2319):
+  before, `run(f64::INFINITY)` passed the `<= 0.0` guard and computed
+  `(inf / DT).round() as usize`, a saturating cast to `usize::MAX`, so the
+  call ran effectively forever instead of returning the asserted
+  `Err(NonFiniteParameter)` (a variant that did not exist to match); the
+  wasm `1e308` case (wasm/src/lib.rs:627-643) matched nothing because the
+  old `validate` accepted it. (2) Avoidance NaN,
+  `config_validation_rejects_non_finite_tuning_as_non_finite_not_negative`
+  (avoidance.rs:181): NaN fails every `< 0.0` comparison, so the old
+  `validate` returned `Ok` and the first `matches!(Err(...))` fails; the
+  binding twin `a_non_finite_margin_is_rejected_as_non_finite`
+  (bindings/src/avoidance.rs:31-40) fails the same way (`margin_error(NaN)`
+  returned `None`). (3) TS NaN series,
+  `rejects a non-finite number anywhere in a history`
+  (validate.test.ts:430-440): the module did not exist and the previous
+  loader cast `res.json()` straight to `FlightData`, so an Infinity in
+  `time_s` loaded without complaint where the test demands
+  `time_s[2] must be finite`; and `readout.test.ts:55-61` asserts `0`
+  where the old formula returned `Infinity`. Python agrees:
+  `test_validate_flight_json_rejects_nan_in_a_1d_series` fails before
+  because `validate_flight_json` never called `_check_finite`, and
+  `test_run_rejects_a_non_finite_duration` fails before with an
+  `OverflowError` from `round(inf / DT)` instead of the expected
+  `ValueError`.
+- PASS: verification, all from the repository root. `cargo fmt --all --
+  --check` exit 0, no output. `cargo clippy --workspace --all-targets --
+  -D warnings` exit 0, 0 warnings. `cargo test --workspace` exit 0, 267
+  passed, 0 failed (talon_core 241, talon_py 13, talon_wasm 13, doc-tests
+  0). `npm test` exit 0, 173 passed, 0 failed (13 files). `npm run build`
+  exit 0 (tsc typecheck then vite; non-fatal advisory that the 1,254 kB
+  chunk exceeds the 1,200 kB threshold). `TALON_REQUIRE_CORE=1 uv run
+  pytest python/tests/ -q` exit 0, 387 passed in 8.23 s.
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Medium (blocking) | python/talon/export_json.py:325-327, 390-426 | Finiteness does not cover every numeric leaf: `phase_timeline[i][0]` and `event_log[i].time` pass an isinstance-only check, so a NaN or Inf time (Python `json.loads` parses NaN and Infinity literals) validates cleanly and lands in the timeline charts, and `meta.sample_count` / `meta.seed` are never checked. The TS validator rejects all four (validate.ts:265-271, 279, 288), so the Python gate is strictly weaker than its sibling on the same schema, and `meta.sample_count` is not cross-checked against `len(time_s)` either. | Run `_check_finite` on `entry[0]` in the phase timeline, on `entry["time"]` in the event log, and on `meta.sample_count` / `meta.seed`; cross-check `sample_count`; add the four cases to test_export_json.py |
+| Medium | core/src/sim.rs:200, 201-207, 221; core/src/constants.rs:41-46 | Waypoint speed, waypoint radius, and obstacle radius are range-checked against `f64::INFINITY` and waypoint heading is finite-only, so a finite 1e300 passes validation while the new constants module comment promises "Every scenario-facing scalar therefore has a documented ceiling here". Sign and finiteness are covered, magnitude is not. No crash or saturation follows (safe Rust, controllers saturate), so contract drift rather than a hazard. | Add `MAX_WAYPOINT_SPEED_MPS` and `MAX_RADIUS_M` (or one `MAX_WAYPOINT_*` block) and either bound heading or state explicitly that angles wrap and are unbounded; correct the constants.rs comment |
+| Low | python/talon/export_json.py:311-318 vs the docstring at :300-303 | The validator docstring claims "schema 1.0 documents validate too", but `meta.schema_version` must equal "1.1" (line 315), so a genuine 1.0 document is rejected on the version before the obstacles leniency is ever reached. The new test keeps version 1.1 and only deletes the key. D4 (decisions.md:66-68) promises old documents remain valid. | Accept both "1.0" and "1.1" versions, or narrow the docstring to key-level compatibility and say so in D4 |
+
+Non-blocking notes on otherwise PASS checks:
+
+- TS bounds mirror the Rust caps only for duration (900) and takeoff
+  (1000). `wind_sigma`, `wind_steady_ned` (Rust caps 100 m/s), the GPS
+  noises (100, 100, 50), `cruise_hold_s` (60), avoidance (1000, 1000, 60),
+  coordinates (1e6), and `seed` (integer u64) accept any finite value in
+  validate.ts:200-209, so a hostile config fails at wasm session creation
+  rather than at the loader: still fail-closed, but with a serde message
+  instead of the validator's path-named one. Worth aligning when the caps
+  next move.
+- `bindings/src/avoidance.rs:70-78` applies finite-and-nonnegative but no
+  `MAX_AVOIDANCE_MARGIN_M` cap to the per-call geometry margin. The config
+  path is capped (avoidance.rs:138-173); this seam is geometry-only, so
+  Low.
+- Error mapping differs slightly by entry point for one input: `-inf`
+  duration is `NonPositiveDuration` through `ScenarioConfig::validate`
+  (ordered for compatibility, scenario.rs:150) but `NonFiniteParameter`
+  through `SimRunner::run` and Python `run`. Both reject, no test or
+  wrapper depends on the old mapping for `-inf`.
+- The writer mirrors the validator gap: `phase_timeline` and `event_log`
+  times go through `float(t)` (export_json.py:243-251) without
+  `_to_json_value` or `_check_finite`, so a non-finite time there would be
+  written as a bare NaN token that `JSON.parse` rejects. Sim-produced times
+  are step-index-derived and finite today; same root fix as the blocking
+  row.
+- Still open from the security review and out of this phase's enumerated
+  scope: `advance(steps)` / `samples_from(from)` keep `usize` coercion
+  (wasm/src/lib.rs:152, 266, reviews.md:716).
+
+Recurring patterns for other agents: a finiteness guard must run before
+any comparison guard (NaN fails every comparison, `+inf` passes a bare
+`> 0` or `< 0` test), in every language, and a cross-language validator
+pair must be compared leaf for leaf: the leaves missed on one side of this
+phase (timeline times, meta scalars) were exactly the leaves the sibling
+validator did check, and neither test suite caught the asymmetry.
+
+### Phase 4 review follow-up (2026-10-19)
+
+Scope: the fix increment in `python/talon/export_json.py`,
+`core/src/{sim,constants}.rs`, and `python/tests/test_export_json.py`,
+closing the Phase 4 review's findings above. Verified by reading `git
+diff` for the four files and running the two suites.
+
+Verdict: PASS. The blocking gap is closed. All three findings are
+addressed and the tests pin each one.
+
+- CLOSED (blocking): the four numeric leaves and the cross-check.
+  `phase_timeline[i][0]` (export_json.py:443) and `event_log[i].time`
+  (:459) now run through `_check_finite` after their type checks;
+  `meta.sample_count` is required, int-typed (bools rejected),
+  non-negative, and cross-checked against `len(time_s)` (:362-375);
+  `meta.seed` is int-checked against the u64 range (:345-352); `meta.dt`
+  is finite and positive (:335-344). New tests cover each:
+  `rejects_a_nan_timeline_time`, `rejects_an_infinite_event_time`,
+  `rejects_a_sample_count_mismatch`, `rejects_a_non_int_sample_count`
+  (including bool and negative), `checks_the_seed_against_u64`
+  (2^64 and -1 and 1.5 and bool rejected, 2^64 - 1 accepted), and
+  `rejects_a_non_positive_dt`.
+- CLOSED (Medium): the Rust caps. Waypoint speed is checked against
+  `MAX_WAYPOINT_SPEED_MPS = 200.0` (sim.rs:200-205), waypoint radius and
+  obstacle radius against `MAX_RADIUS_M = 1.0e6` (sim.rs:214, 228), and
+  heading stays finite-only with the reason on the code (sim.rs:206-207).
+  The constants module comment is now accurate (constants.rs:39-43: caps
+  where a physical limit exists, finite-but-unbounded for wrapped angles).
+  The new `waypoint_speed_and_radii_are_capped_but_heading_is_finite_only`
+  test pins all three rejections and the large-finite-heading acceptance.
+  No existing valid value is rejected: every shipped config, recording,
+  and fixture uses speeds of 5 m/s and radii of 2 to 4 m, orders of
+  magnitude inside both caps, and the suites confirm it.
+- CLOSED (Low): schema acceptance. `ACCEPTED_SCHEMA_VERSIONS = ("1.0",
+  "1.1")` (export_json.py:45, checked at :324) with the missing-obstacles
+  leniency, so the D4 backward-compatibility claim is now true:
+  `accepts_schema_1_0` exercises version 1.0 with the key deleted, and
+  `rejects_an_unknown_schema_version` keeps the fence at one key wide.
+  The writer still emits 1.1 (`SCHEMA_VERSION = "1.1"` at :40, written to
+  `meta` at :204, pinned by the unchanged `test_meta_schema_version`).
+- PASS: no other behavior changed. Since the Phase 4 review the diff grew
+  in exactly the four named files (sim.rs +72, constants.rs +15,
+  export_json.py +46, test_export_json.py +100 lines against HEAD); every
+  other file's diff stat is byte-for-byte the reviewed state, and the
+  changes inside the four are strictly more strict (or the designed 1.0
+  acceptance): nothing previously accepted is now rejected except values
+  the findings named, and no message arm moved.
+- PASS: verification. `cargo test --workspace` exit 0, 268 passed, 0
+  failed (talon_core 242, talon_py 13, talon_wasm 13), matching the
+  expected 268 (one new core test). `TALON_REQUIRE_CORE=1 uv run pytest
+  python/tests/ -q` exit 0, 395 passed in 8.63 s, matching the expected
+  395 (+8 new validator tests).
+
+Residual (non-blocking, unchanged from the Phase 4 notes): the TS
+validator still does not mirror the Rust caps (wind, GPS noise, cruise
+hold, avoidance, coordinates, waypoint speed/radius, seed integrality),
+so a hostile configs file fails at wasm session creation rather than at
+the loader; `meta.duration_s` remains optional in the Python validator
+while `meta.sample_count` is now required, a small asymmetry with the TS
+validator which requires both; and the writer still sends
+`phase_timeline` / `event_log` times through `float(t)` without
+`_check_finite`, which the validator now covers on the read side.
+
+### Phase 4 security review (2026-10-19)
+
+Security review of the same uncommitted input-hardening change set as the
+Phase 4 review and follow-up above (14 modified files plus the three new
+in-scope files `src/data/validate.ts`, `src/data/validate.test.ts`,
+`src/live/readout.test.ts`; the fourth untracked file `eagle-shield.svg` is
+the pre-existing stray). Five checks: bypass coverage at every parser and
+allocator seam, rejection over clamping and error-message hygiene, the
+status of every previously recorded validation finding, new attack surface
+introduced by the phase, and the clippy/fmt gates. The 2026-10-18 full
+security review, the Phase 2 and Phase 3 security reviews, and the Phase 4
+review pair above are treated as read; their findings are referenced, not
+repeated.
+
+Verification performed (this environment has no direct shell, so a
+subagent ran git and cargo and reported raw output, exit codes included):
+`git status --short`, `git diff --stat` (1823 insertions, 33 deletions),
+`cargo clippy --workspace --all-targets -- -D warnings` exit 0 with no
+warnings, `cargo fmt --all -- --check` exit 0 with no output, `grep -rn
+unsafe core/src wasm/src bindings/src` zero matches, `git diff
+--name-only` matching the status list exactly, and a dependency-manifest
+diff (Cargo.toml, Cargo.lock, package.json, package-lock.json,
+pyproject.toml, uv.lock) that is empty. Everything else was verified by
+reading the diff and the current sources.
+
+Overall verdict: PASS. No Critical, High, or Medium findings. Every
+enumerated check passes. Four new Low findings, all of one shape: a
+sibling seam the landed fix did not reach (the Python twin of a hardened
+Rust guard, the weaker of two cross-language validators, one un-typed
+scalar, one remaining raw cast). None is reachable with anything worse
+than a local caller's own bad input. Every Medium validation finding this
+phase set out to close is closed.
+
+Per-check results (PASS/FAIL):
+
+1. PASS (with three Low residuals): coverage and bypass. Seam by seam:
+
+| Seam | Verdict | Evidence |
+|------|---------|----------|
+| ScenarioConfig to SimConfig to SimRunner::run | PASS | `Session::new` validates before `total_steps` is computed (wasm/src/lib.rs:110-117), `run_scenario` delegates to `Session::new` (wasm/src/lib.rs:333), `SimRunner::new` runs `config.validate()` (core/src/sim.rs:587-588) so a direct Rust construction cannot skip the gate, and `SimRunner::run` re-validates its own duration (sim.rs:868-880). `SimConfig` (sim.rs:78-101) is exactly the field set `validate()` checks (sim.rs:131-232), so no field rides along unvalidated. `inf`, `NaN`, `1e308`, and over-cap values each fail with their own named error (tests at sim.rs:2136-2707). |
+| GPS outage injection | PASS (Rust) / FAIL (Python twin, Low) | `SimRunner::inject_gps_outage` rejects non-finite before non-positive (sim.rs:820-829, tested at sim.rs:2688-2707). The Python twin `SILRunner.inject_gps_outage` (python/talon/mavlink_sil.py:475-488) still reads only `duration_s <= 0.0`, which admits NaN (every comparison is false) and `+inf` (a permanent blackout): first finding below. |
+| wasm Session construction | PASS | `1e999` fails at serde parse with "number out of range" (pinned at wasm/src/lib.rs:645-649), `1e308` fails `OutOfRangeParameter` (lib.rs:627-643), `inf` fails `NonFiniteParameter`, `NaN` fails `NonPositiveDuration` at every entry that can see it. `advance`/`samples_from` `usize` coercion is unchanged and remains the recorded Low (below). |
+| PyO3 constructors | PASS | `bindings/src/lib.rs:21-97` registers no sim or session type, so no Python path constructs a `SimRunner` or `ScenarioConfig`; the exposed avoidance geometry routes every margin through `check_margin` (bindings/src/avoidance.rs:80-87), which now rejects non-finite before negative (`margin_error`, :70-78, pinned at :209-217). |
+| Python `validate_flight_json` | PASS (finiteness) with two Low typing gaps | Finiteness now covers every numeric leaf the TS sibling checks: `_SERIES_1D + _SERIES_3D + _ECT_1D`, `home_ned`, `waypoints_ned`, each obstacle field, `phase_timeline[i][0]`, `event_log[i].time`, `meta.{duration_s,dt}` (export_json.py:335-344, 393-399, 443, 459) plus `meta.sample_count` int/non-negative/cross-checked (:362-375) and `meta.seed` u64 (:345-352). `1e999` arrives as `inf` via `json.loads` and is rejected. Gaps: `_check_finite` coerces through `np.asarray(..., dtype=np.float64)` (export_json.py:130-145), so a numeric string ("1.0") or a bool in a series leaf passes where the TS validator rejects it (`typeof value !== 'number'`, validate.ts:79); and a non-list `waypoints_ned` other than `[]` (for example `0`) reaches `len(waypoints)` at :390 and raises `TypeError` instead of `ValueError` (fail-closed, wrong error class). Second and third findings below. |
+| TS config and replay loaders | PASS for the two untrusted loaders | `loadLiveConfigs` validates instead of casting (src/data/live.ts:23-25) and the recording loader validates (src/store/useFlightStore.ts:116-117), both through the pure `src/data/validate.ts` (no fetch, store, DOM, or dynamic code; imports are type-only). Waypoint and obstacle lists are capped at `MAX_LIST_LENGTH = 512` (validate.ts:29, 70-76), mirroring `MAX_WAYPOINTS`/`MAX_OBSTACLES`. The third loader, `validation.json` at useFlightStore.ts:168, is still a raw cast (fourth finding below; display-only). The wasm-output casts in `src/live/sim.ts:169-195` remain trusted by design: the producer is the validated run. |
+| `bufferCapacity` | PASS | readout.ts:120-125 returns 0 for any non-finite or non-positive duration or control period and clamps to `MAX_BUFFER_SAMPLES = 180_064` (readout.ts:106), which is exactly 900 s at 200 Hz plus headroom and strictly above the 90,064 the shipped 100 Hz control loop needs (src/live/constants.ts:24), so no valid run truncates and no input can force an unbounded allocation. The one consumer is RunView.tsx:97; `LiveBuffer` floors at one sample (stream.ts:238) and its only allocation is `capacity * SAMPLE_STRIDE` (stream.ts:239), now hard-bounded at about 52 MB worst case. Pinned at readout.test.ts:39-95. |
+
+Inherent, accepted, not counted as bypasses: JSON parsing materializes a
+huge list before any 512-item cap rejects it (serde and `json.loads`
+alike); the caps bound downstream amplification, not the parse, and the
+fetch already held the text. Python `SILRunner.run` still accepts any
+finite magnitude (a 1e300 duration hangs the caller's own thread), which
+is the recorded caller-is-victim posture of the local harness; the Rust
+cap at `MAX_DURATION_S` deliberately does not bind Python scenarios.
+
+2. PASS: rejection over clamping. Nothing in the Rust core, the Python
+validator, or the TS validators silently corrects a value: every path
+rejects with the field named and the value printed (for example "duration_s
+must be finite, got inf", "duration_s must be in [0, 900], got 900.1",
+"time_s[2] must be finite", "configs[2].duration_s must be finite"). The
+only clamps are (a) `bufferCapacity`, sanctioned sizing defense for the
+allocator and unreachable for bad input because both loaders reject first,
+and (b) the pre-existing registered `battery.soc_nan_clamp` family
+(`force_soc` floors NaN to 0.0 in Python), which is pinned as a divergence
+and unchanged by this phase. Error messages name fields, values, and
+bounds only: no paths, no stack frames, no internal state leaks through
+`SimError`, `AvoidanceError`, the Python `ValueError`s, or the TS
+`Error`s, and the wasm `js_err` surface carries the same Display text. The
+Python validator echoes back caller-supplied document content in `got
+{value!r}` messages, which is the caller's own data, not internals.
+
+3. Status of every previously recorded validation finding:
+
+| Finding (origin) | Status | Evidence |
+|------------------|--------|----------|
+| Medium: non-finite scalars and the `1e999` duration saturating `total_steps` to `usize::MAX` (full review 2026-10-18, sim.rs/scenario.rs/wasm) | CLOSED | Finiteness plus documented caps on every scalar (sim.rs:131-232, scenario.rs:147-168, constants.rs:38-87); step counts guarded at both computations (sim.rs:868-880, wasm/src/lib.rs:111-117); regression tests sim.rs:2319-2347 and wasm/src/lib.rs:627-650 |
+| Medium: `AvoidanceConfig::validate` admits NaN/inf (full review, avoidance.rs:112-123) | CLOSED | Finiteness first, then sign, then caps 1000 m / 1000 m / 60 s (core/src/avoidance.rs:138-195); NaN labeled non-finite, not negative (tests :817-869, bindings/src/avoidance.rs:209-217) |
+| Medium: unbounded `bufferCapacity` allocation and RangeError white screen (full review, readout.ts / RunView) | CLOSED | Clamp plus non-finite guard (readout.ts:106-125), `LiveBuffer` floor, tests readout.test.ts:39-95 |
+| Medium: TS loaders cast fetched JSON unchecked (full review, live.ts:16, useFlightStore.ts:111-114) | CLOSED for the two named loaders | `validateLiveConfigs` and `validateFlightData` wired in (live.ts:23-25, useFlightStore.ts:116-117); a new Low covers the third loader the original finding did not name |
+| Medium: ci.yml missing `permissions:` (full review; Phase 2) | CLOSED in Phase 2 | `.github/workflows/ci.yml:15-16`, untouched by this diff (`git diff --name-only` confirms) |
+| Low: `advance(steps)` / `samples_from(from)` `usize` coercion (full review, wasm/src/lib.rs:152-160, 266-268) | OPEN | Unchanged (wasm/src/lib.rs:152, 266); out of this phase's enumerated scope, recorded as residual in the Phase 4 review notes |
+| Low: `try_inverse().expect` panic reachable from config (full review, ekf.rs:307-309 and siblings) | OPEN | Untouched |
+| Low: loopback COMMAND_LONG `KeyError` kills the sim thread (full review, mavlink_sil.py:1069) | CLOSED | `fields.get("command")` inside a `try` that counts `_command_parse_errors` (mavlink_sil.py:1071-1078), reported in the summary (:1231); pinned at test_mavlink_sil.py:394-423 (ephemeral loopback port, no fixed-port collision) |
+| Low (same row): document the socket as unauthenticated | OPEN | The module docstring still says only "bound on the loopback interface" (mavlink_sil.py:53) |
+| Low: `run(float('inf'))` never-terminating loop in both languages (full review, mavlink_sil.py:527-535 and sim.rs) | CLOSED for `run` | Python rejects non-finite first with the message order preserved (mavlink_sil.py:534-537, test_mavlink_sil.py:426-439); Rust rejects in `SimRunner::run` (sim.rs:868-880). The Python `inject_gps_outage` sibling is a new Low below |
+| Low: `validate_flight_json` finiteness blindness and the `obstacles` required-vs-D4 contract (full review, export_json.py:279-381; codebase review Medium at :618) | CLOSED | Full finiteness pass plus meta consistency (export_json.py:335-459); `obstacles` optional exactly one key wide with both directions pinned (test_export_json.py:289-306); schema "1.0"/"1.1" acceptance closes the D4 row from the Phase 4 review |
+| Low: index.html Google Fonts / no CSP | OPEN | Untouched, out of scope |
+| Low: wasm drift check excludes the `.wasm` binary hash | OPEN | Untouched, out of scope |
+| Low: CI actions pinned by mutable tags | OPEN | Untouched, out of scope |
+| Phase 2 review Low: `duration_s <= 0.0` guards at sim.rs:650,689 admit NaN | CLOSED | Those guards are superseded by `SimRunner::run`, which rejects NaN as `NonFiniteParameter` before any comparison |
+| Phase 2 security Low: rewritten guards accept `+inf` ("grow `is_finite()` when the hardening pass lands") | CLOSED | Every scenario-facing scalar is finiteness-checked (sim.rs:131-232, scenario.rs:147-168) |
+| Python deep dive Medium: NaN validation hole class (`x <= 0.0` admits NaN) in python/talon/{state_machine,motors,battery,sensors,types}.py and mavlink_sil.py:196-204 | OPEN | Untouched by this phase (out of scope); registered as parity divergences and pinned |
+| Phase 3 security residuals: unbounded waypoint materialization and event-log growth in the PyO3 bindings | OPEN, accepted | Caller-is-victim in a local library, unchanged |
+| Phase 3 follow-up residual: `optional_f64` swallow-all and the `obstacle_from` id read (bindings/src/avoidance.rs:57-62, 35-39) | OPEN | The file is in this phase's scope and `margin_error` was hardened, but the swallow-all helpers remain; still Low |
+| Phase 4 review residuals (non-blocking): TS bounds not mirroring the Rust caps beyond duration/takeoff; `meta.duration_s` optional in Python vs required in TS; writer sends `phase_timeline`/`event_log` times through `float(t)` unchecked; per-call geometry margin uncapped | OPEN | Re-verified: validate.ts:169-209 accepts any finite wind, GPS noise, cruise hold, avoidance, and coordinate values (a hostile config then fails at wasm session creation, still fail-closed but with a serde-path error rather than the validator's path-named one); export_json.py:243-251 unchanged; bindings/src/avoidance.rs:70-87 has no `MAX_AVOIDANCE_MARGIN_M` cap |
+
+4. PASS: new surface. No dependency change (the manifest diff is empty;
+package.json, Cargo.toml files, and uv.lock untouched), no `unsafe`
+(anywhere in the workspace), no new network call (validate.ts is pure; the
+mavlink change only hardens the pre-existing loopback drain), no new file
+write (the exporter writes exactly as before; the tests write only to
+pytest `tmp_path`), no secret, no absolute developer path, and no dynamic
+code in the new TS or test files (validate.test.ts reads committed
+fixtures with the closed `SCENARIO_IDS` union, so no path is
+user-controlled). The caps do not create a denial of service of their own:
+a run above 900 s is rejected once with "duration_s must be in [0, 900],
+got 900.1" at construction, not truncated or spun, which the check
+sanctions; `MAX_BUFFER_SAMPLES` covers every valid config exactly
+(readout.test.ts:49-52); the 512-item caps match what the shipped configs
+use (two to four items) so no fixture regresses; and rejection happens
+before any allocation is sized from the rejected value. The one
+theoretical cost, a multi-gigabyte JSON parsed before its lists are
+capped, is inherent to JSON parsing and unchanged by this phase.
+
+5. PASS: the gates stay green. `cargo clippy --workspace --all-targets --
+-D warnings` exit 0 with no warnings and `cargo fmt --all -- --check` exit
+0 with no output (run against the uncommitted tree; the workspace was
+already built, so the clippy pass was a fingerprint check over the current
+sources).
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | python/talon/mavlink_sil.py:475-488 | `SILRunner.inject_gps_outage` still guards only `duration_s <= 0.0`, so NaN (every comparison false) is accepted and silently corrupts the outage window arithmetic (`self._time + nan` into `max`), and `+inf` blacks out GPS for the rest of the run. The Rust twin this phase hardened (core/src/sim.rs:820-829) rejects both; the Python sibling is the one seam in the named scope the fix did not reach. Local teaching harness, caller is the victim, no memory or trust-boundary impact. | Reject non-finite first, mirroring the Rust twin and the `run()` guard three lines' worth of code below; add NaN and inf cases to test_mavlink_sil.py |
+| Low | python/talon/export_json.py:130-145 with :376-399 | `_check_finite` coerces through `np.asarray(..., dtype=np.float64)`, which parses numeric strings ("1.0") and bools into finite floats, and the series leaves are never isinstance-checked, so `"time_s": ["1.0", "2.0"]` passes the Python gate while the TS sibling rejects it (validate.ts:79). The two trust gates disagree on the same schema; downstream strict parsers (serde) would reject the strings, so this is gate asymmetry, not a live exploit. | Type-check series leaves (reject str and bool) before `_check_finite`, matching the isinstance discipline the meta and log leaves already have |
+| Low | python/talon/export_json.py:388-390 | A non-list `waypoints_ned` other than `[]` (for example `0`) reaches `len(waypoints)` and raises `TypeError` instead of `ValueError`. Fail-closed but the wrong error class for callers that catch `ValueError` only. | Guard `isinstance(waypoints, list)` before the length probe |
+| Low | src/store/useFlightStore.ts:168 | The third loader still casts `validation.json` to `ValidationReport` unchecked, the one raw cast left in the store after the other two were hardened. Display-only (MetricsView renders `report.rows` as table rows; no allocation or geometry is keyed to it), so cosmetic wrong numbers at worst. | Add a small `validateValidationReport` to src/data/validate.ts, or document the file as trusted deployment output |
+
+Recurring patterns for other agents: when a guard is hardened in one
+language, diff its twin in every other language in the same commit. The
+outage-injection row is exactly the shape of the earlier dt-NaN misses: a
+fix that hardens `run` and the Rust sibling but not the Python sibling of
+the same API. And a finiteness check that coerces through numpy must
+decide what "numeric leaf" means before coercing, or strings and bools
+ride through in both directions of the gate.

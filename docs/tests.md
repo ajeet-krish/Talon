@@ -994,3 +994,250 @@ recorded, fixture retirement is clean with only historical doc hits, the
 exporter reproduces the shipped config byte for byte apart from
 `generated_utc`, `PYTEST_EXPECTED` matches the collected count, and this
 gate's only write is this section.
+
+### Phase 4 test gate (2026-10-19)
+
+Scope: input hardening (finiteness and magnitude caps at every seam). Gate run
+by the Tester subagent. The only repository write from this gate is this
+section; `git status --porcelain` at the end shows the same 18 entries (14
+modified, 4 untracked) as at the start, and no probe wrote inside the tree
+(pytest ran with `-p no:cacheprovider` and `PYTHONDONTWRITEBYTECODE=1` where it
+touched the repository, and both cache paths are gitignored anyway).
+
+Every probe ran out of tree in the approved session temp directory
+(`opencode/p4/`): two Rust probe crates that share one byte-identical case file
+and differ only in which `talon-core` they link (the working tree, and
+`git archive HEAD core` for the pre-hardening copy, built behind a workspace
+shim because the manifest uses `version.workspace = true`); a Python probe that
+loads the real `git show HEAD:python/talon/{export_json,mavlink_sil}.py` and
+drives the working-tree and HEAD modules with the same inputs; a pytest plugin
+(`-p old_head_validators`) that swaps the two hardened callables back to the
+HEAD ones so the COMMITTED tests run against pre-hardening behaviour; and two
+esbuild bundles of the working-tree and the `git archive HEAD src` TypeScript,
+run under plain node.
+
+#### Gate commands and exact results (consolidated run, 2026-10-19 05:48)
+
+| Command | Result |
+|---------|--------|
+| `cargo test --workspace` | PASS: exit 0, 268 passed, 0 failed, 0 ignored (talon-core 242, talon-py 13, talon-wasm 13, doc-tests 0 x3) |
+| `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` | PASS: exit 0, 395 passed, 0 failed, 0 skipped, 8.30 s |
+| `npm test` | PASS: exit 0, 13 test files, 173 tests passed (258 ms in suite) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS: exit 0, 0 warnings (warm and, earlier in the gate, cold with `CARGO_TARGET_DIR` in the temp dir; exit codes captured without pipes) |
+| `cargo fmt --all -- --check` | PASS: exit 0, 0 bytes of output |
+| `npm run build` | PASS: exit 0, 648 modules transformed, built in 1.77 s (chunk-size warning only) |
+| `npm run smoke:wasm` | PASS: exit 0, 76 `ok` checks, 0 FAIL, 5 of 5 configs (hover, waypoints, obstacle_field, avoidance, wind) plus the paced 3600-frame loop |
+
+Movement against the Phase 3c record: Rust 249 to 268 (+17 core, +1 PyO3, +1
+wasm, all Phase 4 tests: 13 in `core/src/sim.rs`, 2 in `core/src/scenario.rs`,
+2 in `core/src/avoidance.rs`, 1 in `bindings/src/avoidance.rs`, 1 in
+`wasm/src/lib.rs`), pytest 375 to 395 (+20 in `python/tests/test_export_json.py`
+and `python/tests/test_mavlink_sil.py`), vitest 137 to 173 (+36 across the two
+new files, 29 in `src/data/validate.test.ts` and 7 in `src/live/readout.test.ts`).
+
+#### Adversarial matrix: hardened behaviour, exact messages
+
+All Rust rows come from the probe linked against the working tree; the
+committed test column is the in-tree test that covers the same cell. The HEAD
+column (next subsection) is the same case file linked against
+`git archive HEAD core`.
+
+| Input | Seam | Hardened behaviour (exact message or behaviour) | Committed test |
+|-------|------|--------------------------------------------------|----------------|
+| `duration_s = inf` | `ScenarioConfig::validate` | `REJECTED: duration_s must be finite, got inf` | `validation_rejects_a_non_finite_or_over_cap_duration_with_a_named_error` |
+| `duration_s = NaN` | `ScenarioConfig::validate` | `REJECTED: duration_s must be positive, got NaN` | same test (NaN arm; unchanged since Phase 2b) |
+| `duration_s = 1e308` | `ScenarioConfig::validate`, `SimRunner::run` | `REJECTED: duration_s must be in [0, 900], got 1000000...000` (the full 309-digit value) | same test + `wasm a_json_run_duration_cannot_saturate_the_step_count` |
+| `duration_s = 900.1` | `ScenarioConfig::validate`, `SimRunner::run` | `REJECTED: duration_s must be in [0, 900], got 900.1` | same test |
+| `duration_s = 900` (cap) | same | `ACCEPTED` | same test (cap arm) |
+| JSON literal `1e999` | `ScenarioConfig::from_json` (serde, before any config exists) | `REJECTED at parse: number out of range at line 1 column 28` | `wasm a_json_run_duration_cannot_saturate_the_step_count` |
+| JSON literal `1e308` | `from_json` then `validate` | `PARSED to 1e308, validate => REJECTED: duration_s must be in [0, 900]...` | same wasm test |
+| `takeoff_altitude = inf` | `SimRunner::new` | `REJECTED: takeoff_altitude must be finite, got inf` | `an_infinite_takeoff_altitude_is_rejected_as_non_finite` |
+| `takeoff_altitude = NaN` | `SimRunner::new` | `REJECTED: takeoff_altitude must be positive, got NaN` | pre-existing NaN test (Phase 2b) |
+| `takeoff_altitude = 1001` | `SimRunner::new` | `REJECTED: takeoff_altitude must be in [0, 1000], got 1001` (1000 accepted) | `a_takeoff_altitude_above_the_cap_is_rejected_as_out_of_range` |
+| `start_position_ned = [NaN,0,0]` / `[0,inf,0]` | `SimRunner::new` | `REJECTED: start_position_ned must be finite, got NaN` / `got inf` | `a_non_finite_start_position_is_rejected` |
+| `wind_sigma = [inf,0,0]` | `SimRunner::new` | `REJECTED: wind_sigma must be finite, got inf` (over cap also rejected: `must be in [0, 100]`) | `a_non_finite_or_over_cap_wind_component_is_rejected` |
+| `wind_steady_ned = [0,NaN,0]` / `[inf,0,0]` | `SimRunner::new` | `REJECTED: wind_steady_ned must be finite, got NaN` / `got inf` | same test |
+| `gps_position_noise = inf`, `gps_position_noise_vertical = NaN`, `gps_velocity_noise = inf` | `SimRunner::new` | `REJECTED: gps_position_noise must be finite, got inf` etc., velocity cap `must be in [0, 50]` | `a_non_finite_or_over_cap_gps_noise_is_rejected` |
+| `battery_initial_soc = NaN` | `SimRunner::new` | `REJECTED: battery_initial_soc must be finite, got NaN` | `battery_initial_soc_must_be_finite_and_in_range` |
+| `battery_initial_soc = 1.5` | `SimRunner::new` | `REJECTED: battery_initial_soc must be in [0, 1], got 1.5` (0.0 and 1.0 accepted) | same test |
+| `cruise_hold_s = inf` | `SimRunner::new` | `REJECTED: cruise_hold_s must be finite, got inf` (cap `must be in [0, 60]`) | none: probe row only (see residual gaps) |
+| waypoints count 513 | `SimRunner::new` | `REJECTED: waypoints has 513 items, at most 512 allowed` (512 accepted) | `a_mission_over_the_waypoint_cap_is_rejected` |
+| waypoint position `[NaN,0,-10]` | `SimRunner::new` | `REJECTED: waypoint position must be finite, got NaN` | `a_non_finite_or_negative_waypoint_field_is_rejected` |
+| waypoint speed 201 | `SimRunner::new` | `REJECTED: waypoint speed must be in [0, 200], got 201` (200 accepted) | `waypoint_speed_and_radii_are_capped_but_heading_is_finite_only` |
+| waypoint radius `1e6 + 1` | `SimRunner::new` | `REJECTED: waypoint radius must be in [0, 1000000], got 1000001` (1e6 accepted) | same test |
+| waypoint heading NaN (extra) | `SimRunner::new` | `REJECTED: waypoint heading must be finite, got NaN` (finite heading, however large, accepted: angles wrap) | same test |
+| obstacle radius NaN / center inf / radius -1 | `SimRunner::new` | `REJECTED: obstacle radius_m must be finite, got NaN`, `obstacle center_ned must be finite, got inf`, `obstacle radius_m must be in [0, 1000000], got -1` | `a_non_finite_or_negative_obstacle_is_rejected` |
+| obstacle count 513 | `SimRunner::new` | `REJECTED: obstacles has 513 items, at most 512 allowed` (512 accepted) | same test |
+| avoidance margin NaN / inf / 1001 / -1 | `AvoidanceConfig::validate` (and through `SimRunner::new`, and through PyO3 `margin_error`) | `REJECTED: clearance_margin_m must be finite, got NaN` / `got inf`, `must be in [0, 1000], got 1001`, and `must be non-negative, got -1` (negative arm unchanged) | `config_validation_rejects_non_finite_tuning_as_non_finite_not_negative`, `config_validation_rejects_tuning_above_the_caps`, `sim non_finite_avoidance_tuning_is_rejected_at_construction`, `bindings a_non_finite_margin_is_rejected_as_non_finite` |
+| avoidance buffer NaN / inf / 1001, lookahead NaN / inf / 61 | `AvoidanceConfig::validate` | `REJECTED: detour_buffer_m must be finite, got NaN`, `lookahead_s must be in [0, 60], got 61`, etc. (60 accepted) | same two avoidance tests |
+| `SimRunner::run(inf)` | run loop | `REJECTED: duration_s must be finite, got inf` (before preroll or any step) | `an_unbounded_run_duration_cannot_saturate_the_step_count` |
+| `SimRunner::run(NaN)` | run loop | `REJECTED: duration_s must be finite, got NaN` | same test |
+| `SimRunner::run(1e308)` | run loop | `REJECTED: duration_s must be in [0, 900], got 1e308...` | same test |
+| `SimRunner::run(900.1)` | run loop | `REJECTED: duration_s must be in [0, 900], got 900.1` | same test family |
+| `SimRunner::run(0.0)` (control) | run loop | `REJECTED: duration_s must be positive, got 0` (unchanged) | pre-existing test |
+| `inject_gps_outage(inf)` | runtime knob | `REJECTED: gps_outage_duration must be finite, got inf` | `a_non_finite_gps_outage_is_rejected` |
+
+TypeScript (bundled working-tree code, run under node):
+
+| Input | Seam | Hardened behaviour (exact message) | Committed test |
+|-------|------|------------------------------------|----------------|
+| config `duration_s = NaN` / `Infinity` | `validateLiveConfigs` | `THREW: configs[0].duration_s must be finite` | `validate.test.ts rejects a non-finite duration` |
+| config `duration_s = 900.1` / `0` / `-1` / `901` | `validateLiveConfigs` | `THREW: configs[0].duration_s must be in (0, 900]` (900 accepted) | `rejects a duration outside (0, 900]` |
+| config waypoints 513 | `validateLiveConfigs` | `THREW: configs[0].waypoints must have at most 512 entries (got 513)` (512 accepted); obstacles identical | `caps waypoints and obstacles at 512 entries` |
+| config `wind_sigma = [1, NaN, 0.5]` (non-finite series) | `validateLiveConfigs` | `THREW: configs[0].wind_sigma[1] must be finite` | `rejects non-finite wind triples` |
+| config `takeoff_altitude = 1001` / NaN | `validateLiveConfigs` | `THREW: configs[0].takeoff_altitude must be in (0, 1000]` / `must be finite` | `rejects a takeoff altitude outside (0, 1000]` |
+| config `battery_initial_soc = 1.5` / NaN | `validateLiveConfigs` | `THREW: configs[0].battery_initial_soc must be in [0, 1]` / `must be finite` | `validates battery_initial_soc in [0, 1] when present` |
+| config `avoidance.lookahead_s = inf` | `validateLiveConfigs` | `THREW: configs[0].avoidance.lookahead_s must be finite` | `validates an avoidance block when present` |
+| replay `time_s[2] = Infinity` (NaN in a series) | `validateFlightData` | `THREW: time_s[2] must be finite`; `truth_position[1][2] must be finite` | `rejects a non-finite number anywhere in a history` |
+| replay inconsistent lengths | `validateFlightData` | `THREW: truth_position must have 3 samples to match time_s (got 2)`; `e_ct_times must have 2 samples to match e_ct (got 1)`; `meta.sample_count must equal the time_s length (got 5, expected 3)` | `requires the per-sample histories to match time_s`, `requires the cross-track histories to share one length`, `requires meta.sample_count to match the time history` |
+| `bufferCapacity(Infinity, 0.01)` | recorder sizing | `0`, and `new LiveBuffer(0)` constructs (`sampleCapacity=1`, first append reports `isFull=true`) | `readout.test.ts returns 0 for a non-finite or non-positive duration`, `constructs a LiveBuffer at capacity 0` |
+| `bufferCapacity(NaN)` / `0` / `-30` | recorder sizing | `0` | same test |
+| `bufferCapacity(JSON.parse('1e999') = Infinity, 0.005)` | recorder sizing | `0` | same test |
+| `bufferCapacity(3600, 0.005)` huge finite | recorder sizing | `180064` (clamped at `MAX_BUFFER_SAMPLES`), same for `900@0.001` and the exact cap `900@0.005 = 180064` | `caps the allocation at 900 s of 200 Hz plus headroom` |
+
+Python (working tree):
+
+| Input | Seam | Hardened behaviour (exact message) | Committed test |
+|-------|------|------------------------------------|----------------|
+| `json.loads` of `1e999` / `NaN` | stdlib json (the entry to every Python validator) | parses to `inf` / `nan`, then the validators below reject them | (input side, no test) |
+| recording with `time_s[5] = NaN` | `validate_flight_json` | `ValueError: time_s contains non-finite or non-numeric values (NaN/Inf/None); JSON cannot represent them` | `test_validate_flight_json_rejects_nan_in_a_1d_series` |
+| recording with `truth_position[7][1] = inf` | `validate_flight_json` | `ValueError: truth_position contains non-finite or non-numeric values (NaN/Inf/None); JSON cannot represent them` | `test_validate_flight_json_rejects_inf_in_a_3d_series` |
+| `meta.duration_s = NaN` | `validate_flight_json` | `ValueError: meta.duration_s contains non-finite or non-numeric values (NaN/Inf/None); JSON cannot represent them` | `test_validate_flight_json_rejects_non_finite_meta` |
+| `obstacles[0].radius_m = NaN` | `validate_flight_json` | `ValueError: obstacles[0].radius_m contains non-finite or non-numeric values (NaN/Inf/None); JSON cannot represent them` (finite check runs before the positivity check) | `test_validate_flight_json_rejects_a_non_finite_obstacle` |
+| `SILRunner.run(inf)` | Python run loop | `ValueError: duration_s must be finite, got inf` | `test_run_rejects_a_non_finite_duration` |
+| `SILRunner.run(NaN)` | Python run loop | `ValueError: duration_s must be finite, got nan` | same test |
+
+Every required cell is covered by an in-tree test, so the out-of-tree probes
+above are confirmation and exact-message capture rather than the only evidence.
+
+#### Pre-hardening failure evidence (the tests are not vacuous)
+
+Four representative cases, each driven against the real pre-hardening code:
+
+1. **Rust duration guard** (old `duration_s <= 0.0 || is_nan`, no finiteness,
+   no cap). The probe linked against `git archive HEAD core` reports
+   `ACCEPTED` for `inf`, `1e308`, and `900.1`, and `SimRunner::run(inf)` /
+   `run(1e308)` never return at all: a side thread is still spinning after
+   800 ms in debug and in release, because `(duration / DT).round() as usize`
+   saturates to `usize::MAX`. `run(NaN)` returns `Ok` having flown zero steps,
+   and `run(900.1)` completes a full 900.1 s flight when given 60 s (release).
+   Replaying the committed expectations (`TESTEQUIV` rows) against HEAD:
+   `validation_rejects_a_non_finite_or_over_cap_duration_with_a_named_error`
+   FAIL for both the `inf` and `900.1` arms, where the same rows PASS on the
+   hardened core (5 of 5 PASS versus 5 of 5 FAIL). The committed tests also
+   cannot even compile against HEAD, because `SimError::NonFiniteParameter`
+   and `SimError::OutOfRangeParameter` do not exist there.
+2. **Rust avoidance `< 0.0` guard.** HEAD's `AvoidanceConfig::validate` only
+   tests `< 0.0`, and NaN fails that comparison, so HEAD reports `ACCEPTED`
+   for a NaN margin, an infinite margin, an infinite buffer, and a 61 s
+   lookahead, and the hardened core rejects each with its named error.
+   `config_validation_rejects_non_finite_tuning_as_non_finite_not_negative`
+   FAIL under HEAD (`validate() returned Ok`, so the asserted error never
+   happens), PASS on the hardened core.
+3. **Python validator without `_check_finite`.** A pytest plugin loaded with
+   `-p old_head_validators` restores HEAD's `validate_flight_json` and
+   `SILRunner.run`, then runs the committed tests unchanged:
+   **17 failed, 18 passed** for
+   `python/tests/test_export_json.py` plus
+   `test_mavlink_sil.py::test_run_rejects_a_non_finite_duration`, against a
+   baseline of **35 passed** without the plugin. The failures are the finiteness,
+   meta-consistency, schema 1.0, seed, and dt tests
+   (e.g. `test_validate_flight_json_rejects_nan_in_a_1d_series` DID NOT RAISE),
+   and `test_run_rejects_a_non_finite_duration` fails with
+   `OverflowError: cannot convert float infinity to integer` at
+   `head_py/mavlink_sil_head.py:542` (`steps = round(duration_s / DT)`), the
+   old uncaught path the new guard short-circuits. Directly, HEAD's validator
+   returns `ACCEPTED` for `time_s[5] = NaN`, `truth_position[7][1] = inf`,
+   `meta.duration_s = NaN`, and an obstacle NaN radius.
+4. **TS cast plus unclamped `bufferCapacity`.** The HEAD `src/live/readout.ts`
+   (from `git archive HEAD src`) imported and called directly gives
+   `bufferCapacity(Infinity) = Infinity`, `bufferCapacity(NaN) = NaN`,
+   `bufferCapacity(JSON.parse('1e999')) = Infinity`,
+   `bufferCapacity(3600, 0.005) = 720064` (unbounded), while the new code
+   gives `0`, `0`, `0`, `180064`. Replaying the committed expectations against
+   HEAD: all 5 FAIL (`readout.test.ts` `=== 0` gets `Infinity` and `NaN`,
+   the `<= MAX_BUFFER_SAMPLES` assertion gets `720064`, and the two
+   `validate.test.ts` rejection expectations fail because HEAD's loader is a
+   bare cast: `git show HEAD:src/data/live.ts | grep -c validate` is 0, and
+   the cast lets a `NaN` duration and a `NaN` replay leaf through untouched).
+
+#### Legitimacy: the hardened code accepts what the repository ships
+
+| Shipped input | Count | Result |
+|---------------|-------|--------|
+| `public/data/live/configs.json` entries through Rust `ScenarioConfig::validate` | 5 | 5 ACCEPTED (hover, waypoints, obstacle_field, avoidance, wind); also flown by `npm run smoke:wasm` (5 of 5, 76 checks) |
+| Same file through TS `validateLiveConfigs` | 5 | 5 ACCEPTED (in-tree test plus probe) |
+| Committed recordings through Python `validate_flight_json` | 4 | 4 ACCEPTED (gps_outage, wind, emergency, obstacle_field) |
+| Same recordings through TS `validateFlightData` | 4 | 4 ACCEPTED with 7000/6000/5000/7000 samples (in-tree test plus probe) |
+| Scenario configs built from the seven `python/sims/scenario_*.py` module constants (hover, waypoints, rtl, obstacle_field, wind, gps_outage, emergency) through Rust `ScenarioConfig::validate` | 7 | 7 ACCEPTED (waypoints, keep-out zones, wind sigma, and the avoidance margin all present) |
+| Full pytest suite | 395 | 395 passed |
+| Full Rust workspace suite | 268 | 268 passed |
+| Full vitest suite | 173 | 173 passed |
+
+Cap headroom over every shipped value (probe `CAP` rows, 20 fields, 0 over
+cap): duration 120 of 900, takeoff 10 of 1000, cruise hold 2 of 60, GPS noise
+0.3 / 0.5 / 0.05 of 100 / 100 / 50, wind sigma 3 and steady 2 of 100,
+waypoint count 8 of 512, waypoint position 46 of 1e6, waypoint speed 5 of 200,
+waypoint radius 5 of 1e6, obstacle count 3 of 512, obstacle centre 37 of 1e6,
+obstacle radius 4.5 of 1e6, avoidance margin 2 of 1000. Fields absent from the
+shipped JSON validate at their serde defaults (battery soc 1.0, detour buffer
+1.0, lookahead 3.0) and passed in the ACCEPTED rows above. The four recordings'
+`meta.duration_s` values (50 to 70 s) are likewise inside the 900 s cap.
+
+#### Residual gaps found by this gate
+
+1. **The Python `SILRunner.run` has no magnitude cap.** Its new guard is
+   finiteness only, so `run(900.1)` is accepted and flies 900.1 s (verified:
+   both HEAD and working tree, 3.5 s wall), and `run(1e308)` passes
+   `math.isfinite` and dies later inside `round()` with an unlabelled
+   `OverflowError: cannot convert float infinity to integer` after sockets open
+   and the pre-roll runs, instead of a named `ValueError`. Non-finite durations
+   (`inf`, `NaN`) are rejected cleanly at the seam, and the 900 s cap itself is
+   enforced where scenarios are actually configured (Rust
+   `ScenarioConfig::validate`, TS `validateLiveConfigs`), so exposure is
+   limited to direct API callers of the Python harness. Reported, not fixed:
+   this gate does not modify source.
+2. **The TS loader checks finiteness and structure, not the physical caps.**
+   Finite over-cap values pass `validateLiveConfigs` by design (verified:
+   waypoint speed 201, waypoint radius 1e6+1, gps noise 1001, wind sigma 1000,
+   cruise hold 61, avoidance lookahead 61, obstacle radius 1e6+1 all ACCEPTED
+   there) and are rejected one layer later, because `Session::new` runs
+   `from_json` then `config.validate()` (`wasm/src/lib.rs:110-111`) before any
+   step. Duration (0, 900], takeoff (0, 1000], list lengths 512, and soc [0, 1]
+   are enforced in TS as well. So no hostile value can fly, but a bad config
+   now fails at the wasm boundary with a Rust message rather than at the fetch.
+3. **`validateFlightData` accepts any string as `meta.schema_version`** (it
+   requires finiteness and sample-count consistency but not a known version),
+   while the Python validator pins `{"1.0", "1.1"}`. Low risk: the app ignores
+   the value today.
+4. Unchanged from earlier gates: no browser tier exists, so the run view's
+   reaction to a rejected config (the error surfaced to the operator) is
+   asserted only through the pure validators, not through the DOM.
+5. **One Rust check has no committed test:** `cruise_hold_s` finiteness and
+   its 60 s cap are enforced by `SimConfig::validate` (the probe row above
+   shows the exact message) but no `#[test]` in the workspace sets that field
+   to `inf`, `NaN`, or a value above 60, and no scenario ships a non-default
+   value. The TypeScript side does pin its own variant
+   (`rejects negative GPS noise and cruise hold` covers `cruise_hold_s = -1`,
+   finiteness only, no 60 s cap). One small test would close it.
+
+#### Verification checklist
+
+- [x] All seven gates pass with exit 0 and exact counts recorded above
+  (Rust 268, pytest 395, vitest 173, clippy 0, fmt 0, build 648 modules,
+  smoke 76 checks on 5 of 5 configs).
+- [x] Every required adversarial cell is rejected or safely handled at its
+  seam with an exact message recorded, and each has an in-tree test.
+- [x] Not vacuous: four representative cases fail under pre-hardening
+  behaviour (5 of 5 Rust test equivalents, 17 real pytest failures under the
+  HEAD validators, 5 of 5 TS expectations against the real HEAD
+  `bufferCapacity` and cast, plus the never-returning HEAD `run(inf)`).
+- [x] Happy path: five live configs, four recordings, seven scenario configs,
+  and all three suites accepted; no cap rejects a shipped value (20 of 20
+  headroom rows OK).
+- [x] Edge cases: exact cap values (900, 1000, 512, 200, 1e6, 60, 1000, 1.0)
+  accepted; cap + 1 rejected; `bufferCapacity(0)` constructs a working
+  `LiveBuffer` at capacity 1.
+- [x] No em dashes, double hyphens, or dash equivalents in this section; this
+  subsection is appended after all prior content, and no source file was
+  modified by the gate.
