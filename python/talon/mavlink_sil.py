@@ -477,8 +477,14 @@ class SILRunner:
 
         During the outage no fix is generated or fed to the EKF (the
         filter dead-reckons on IMU only) and telemetry reports fix_type 0.
-        Repeated calls extend the outage.
+        Repeated calls extend the outage. A non-finite duration is rejected
+        first: `inf <= 0.0` is False, so the positivity guard alone would
+        black out GPS forever, and NaN would corrupt the outage window.
         """
+        if not math.isfinite(duration_s):
+            raise ValueError(
+                f"gps outage duration must be finite, got {duration_s}"
+            )
         if duration_s <= 0.0:
             raise ValueError(f"duration_s must be positive, got {duration_s}")
         if self._time >= self._gps_outage_end:
@@ -531,6 +537,8 @@ class SILRunner:
         main loop. realtime=True paces the loop against the wall clock;
         default False runs as fast as possible (pytest).
         """
+        if not math.isfinite(duration_s):
+            raise ValueError(f"duration_s must be finite, got {duration_s}")
         if duration_s <= 0.0:
             raise ValueError(f"duration_s must be positive, got {duration_s}")
         self._stop_event.clear()
@@ -1066,7 +1074,14 @@ class SILRunner:
                 continue
             if fields.get("msg_type") != "COMMAND_LONG":
                 continue
-            event = COMMAND_EVENT_MAP.get(int(fields["command"]))
+            # fields.get, not fields[]: a COMMAND_LONG that parses without a
+            # command id must count as a parse error, not raise KeyError out
+            # of the drain loop and kill the sim thread.
+            try:
+                event = COMMAND_EVENT_MAP.get(int(fields.get("command")))
+            except (TypeError, ValueError):
+                self._command_parse_errors += 1
+                continue
             if event is not None:
                 self._event_queue.append(event)
 

@@ -338,6 +338,22 @@ def test_inject_gps_outage_rejects_nonpositive() -> None:
         runner.inject_gps_outage(0.0)
 
 
+def test_inject_gps_outage_rejects_a_non_finite_duration() -> None:
+    # `inf <= 0.0` and `nan <= 0.0` are both False, so the positivity guard
+    # alone accepted them (the hardened Rust twin rejects them too).
+    runner = SILRunner(SILConfig(enable_udp=False))
+    for bad in (float("inf"), float("nan")):
+        with pytest.raises(
+            ValueError, match="gps outage duration must be finite"
+        ):
+            runner.inject_gps_outage(bad)
+    # Shaped-but-invalid input keeps the original message.
+    with pytest.raises(ValueError, match="duration_s must be positive"):
+        runner.inject_gps_outage(0.0)
+    with pytest.raises(ValueError, match="duration_s must be positive"):
+        runner.inject_gps_outage(-1.0)
+
+
 def test_request_event_at_time_is_scheduled() -> None:
     config = SILConfig(
         enable_udp=False,
@@ -384,3 +400,50 @@ def test_command_event_mapping_documented_commands() -> None:
     )
     assert COMMAND_EVENT_MAP[40001] == "arm"
     assert COMMAND_EVENT_MAP[40002] == "mission_start"
+
+
+def test_command_long_without_a_command_field_is_counted_not_raised(
+    monkeypatch,
+) -> None:
+    # A COMMAND_LONG that parses but carries no command id must be counted
+    # as a parse error: `int(fields["command"])` raised KeyError out of the
+    # drain loop and killed the sim thread.
+    config = SILConfig(enable_udp=False)
+    runner = SILRunner(config)
+    # enable_udp=False keeps run() from binding the configured ports, so the
+    # command socket is attached by hand on an ephemeral port. Non-blocking,
+    # like _open_sockets makes it, so the drain loop can return when the
+    # queue is empty.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.setblocking(False)
+    runner._command_sock = sock
+    monkeypatch.setattr(
+        MavlinkCodec, "parse", lambda data: {"msg_type": "COMMAND_LONG"}
+    )
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sender.sendto(b"\x00", sock.getsockname())
+        time.sleep(0.01)
+        runner._drain_commands()  # must not raise KeyError
+        assert list(runner._event_queue) == []
+        assert runner._command_parse_errors >= 1
+    finally:
+        sender.close()
+        sock.close()
+        runner._command_sock = None
+
+
+def test_run_rejects_a_non_finite_duration() -> None:
+    # JSON `1e999` reaches Python as math.inf; `inf <= 0.0` is False, so the
+    # positivity guard alone accepted it and `round(inf / DT)` then blew up
+    # with an opaque OverflowError deep inside the loop.
+    runner = SILRunner(SILConfig(enable_udp=False))
+    for bad in (float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="finite"):
+            runner.run(bad)
+    # The existing rejection message is unchanged for valid-shaped input.
+    with pytest.raises(ValueError, match="positive"):
+        runner.run(0.0)
+    with pytest.raises(ValueError, match="positive"):
+        runner.run(-1.0)

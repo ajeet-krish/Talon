@@ -198,3 +198,268 @@ def test_export_returns_absolute_path_and_creates_dirs(tmp_path) -> None:
     path = export_sil_result_json(_make_result(), target)
     assert target.exists()
     assert path == str(target.resolve())
+
+
+# ---------------------------------------------------------------------------
+# Validator finiteness (Phase 4 input hardening)
+#
+# `json.loads` happily parses a literal NaN or 1e999 (which becomes inf),
+# and neither survives a `<=` comparison, so the validator has to reject
+# them explicitly with the field named.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_flight_json_rejects_nan_in_a_1d_series(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["time_s"][2] = float("nan")
+    with pytest.raises(ValueError, match="time_s contains non-finite"):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_inf_in_a_3d_series(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["truth_position"][0][1] = float("inf")
+    with pytest.raises(
+        ValueError, match="truth_position contains non-finite"
+    ):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_nan_in_e_ct(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["e_ct"][1] = float("nan")
+    with pytest.raises(ValueError, match="e_ct contains non-finite"):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_a_non_finite_waypoint(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["waypoints_ned"][0][1] = float("nan")
+    with pytest.raises(ValueError, match="waypoints_ned contains non-finite"):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_a_non_finite_home(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["home_ned"][2] = float("inf")
+    with pytest.raises(ValueError, match="home_ned contains non-finite"):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_a_null_numeric_leaf(tmp_path) -> None:
+    # None is not a number: numpy reads it as NaN when casting to float.
+    data = _export_load(_make_result(), tmp_path)
+    data["home_ned"][0] = None
+    with pytest.raises(ValueError, match="home_ned contains non-finite"):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_a_non_finite_obstacle(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    # `nan <= 0` is False, so the positivity check alone accepts a NaN radius.
+    data["obstacles"] = [
+        {"id": "zone", "center_ned": [0.0, 0.0, -5.0], "radius_m": float("nan")}
+    ]
+    with pytest.raises(
+        ValueError, match=r"obstacles\[0\]\.radius_m contains non-finite"
+    ):
+        validate_flight_json(data)
+    data["obstacles"] = [
+        {"id": "zone", "center_ned": [0.0, float("nan"), -5.0], "radius_m": 2.0}
+    ]
+    with pytest.raises(
+        ValueError, match=r"obstacles\[0\]\.center_ned contains non-finite"
+    ):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_non_finite_meta(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["duration_s"] = float("nan")
+    with pytest.raises(
+        ValueError, match="meta.duration_s contains non-finite"
+    ):
+        validate_flight_json(data)
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["dt"] = float("inf")
+    with pytest.raises(ValueError, match="meta.dt contains non-finite"):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_accepts_a_missing_obstacles_key(tmp_path) -> None:
+    # Schema 1.0 documents carry no obstacles key; the Rust reader defaults
+    # it (serde(default), decision D4) and the validator must too. The writer
+    # still always emits the key, pinned by test_required_keys above.
+    data = _export_load(_make_result(), tmp_path)
+    assert "obstacles" in data
+    del data["obstacles"]
+    validate_flight_json(data)
+
+
+def test_validate_flight_json_still_rejects_a_missing_required_key(tmp_path) -> None:
+    # The obstacles exception is exactly one key wide.
+    data = _export_load(_make_result(), tmp_path)
+    del data["obstacles"]
+    del data["home_ned"]
+    with pytest.raises(ValueError, match="missing top-level keys"):
+        validate_flight_json(data)
+
+
+# ---------------------------------------------------------------------------
+# Validator completeness: log times, meta consistency, schema versions
+# ---------------------------------------------------------------------------
+
+
+def test_validate_flight_json_rejects_a_nan_timeline_time(tmp_path) -> None:
+    # A NaN time passes every isinstance in the timeline check and would
+    # corrupt the ordering downstream; the leaf must be finite.
+    data = _export_load(_make_result(), tmp_path)
+    data["phase_timeline"][1][0] = float("nan")
+    with pytest.raises(
+        ValueError, match=r"phase_timeline\[1\]\[0\] contains non-finite"
+    ):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_an_infinite_event_time(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["event_log"][0]["time"] = float("inf")
+    with pytest.raises(
+        ValueError, match=r"event_log\[0\]\.time contains non-finite"
+    ):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_a_sample_count_mismatch(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    assert data["meta"]["sample_count"] == N_SAMPLES
+    data["meta"]["sample_count"] = N_SAMPLES - 1
+    with pytest.raises(ValueError, match="meta.sample_count is 9"):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_a_non_int_sample_count(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["sample_count"] = 10.5
+    with pytest.raises(ValueError, match="meta.sample_count must be an int"):
+        validate_flight_json(data)
+    # bool is an int subclass; counts are not bools.
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["sample_count"] = True
+    with pytest.raises(ValueError, match="meta.sample_count must be an int"):
+        validate_flight_json(data)
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["sample_count"] = -1
+    with pytest.raises(
+        ValueError, match="meta.sample_count must be non-negative"
+    ):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_checks_the_seed_against_u64(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["seed"] = 2**64
+    with pytest.raises(ValueError, match="meta.seed must be in"):
+        validate_flight_json(data)
+    data["meta"]["seed"] = -1
+    with pytest.raises(ValueError, match="meta.seed must be in"):
+        validate_flight_json(data)
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["seed"] = 1.5
+    with pytest.raises(ValueError, match="meta.seed must be an int"):
+        validate_flight_json(data)
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["seed"] = True
+    with pytest.raises(ValueError, match="meta.seed must be an int"):
+        validate_flight_json(data)
+    # The u64 endpoints themselves are accepted.
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["seed"] = 2**64 - 1
+    validate_flight_json(data)
+
+
+def test_validate_flight_json_accepts_schema_1_0(tmp_path) -> None:
+    # D4: a 1.0 document predates the obstacles key, and both differences
+    # together are exactly what the committed 1.0 artifacts look like.
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["schema_version"] = "1.0"
+    del data["obstacles"]
+    validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_an_unknown_schema_version(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["schema_version"] = "1.2"
+    with pytest.raises(ValueError, match="meta.schema_version is"):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_a_non_positive_dt(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["dt"] = 0.0
+    with pytest.raises(ValueError, match="meta.dt must be positive"):
+        validate_flight_json(data)
+    data = _export_load(_make_result(), tmp_path)
+    data["meta"]["dt"] = -0.01
+    with pytest.raises(ValueError, match="meta.dt must be positive"):
+        validate_flight_json(data)
+
+
+# ---------------------------------------------------------------------------
+# Type guards: non-list containers and non-numeric leaves
+# ---------------------------------------------------------------------------
+
+
+def test_validate_flight_json_rejects_a_string_waypoints_ned(tmp_path) -> None:
+    data = _export_load(_make_result(), tmp_path)
+    data["waypoints_ned"] = "[[10.0, 0.0, -5.0]]"
+    with pytest.raises(ValueError, match="waypoints_ned must be a list"):
+        validate_flight_json(data)
+    # An int (or None) is what used to escape as TypeError from len().
+    data = _export_load(_make_result(), tmp_path)
+    data["waypoints_ned"] = 42
+    with pytest.raises(ValueError, match="waypoints_ned must be a list"):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_a_non_list_timeline_or_event_log(
+    tmp_path,
+) -> None:
+    # enumerate() on a non-list raised TypeError instead of naming the field.
+    data = _export_load(_make_result(), tmp_path)
+    data["phase_timeline"] = 42
+    with pytest.raises(ValueError, match="phase_timeline must be a list"):
+        validate_flight_json(data)
+    data = _export_load(_make_result(), tmp_path)
+    data["event_log"] = None
+    with pytest.raises(ValueError, match="event_log must be a list"):
+        validate_flight_json(data)
+
+
+def test_validate_flight_json_rejects_a_nan_string_or_bool_series_leaf(
+    tmp_path,
+) -> None:
+    # NaN is the numeric villain; the string and the bool are the leaves
+    # numpy coercion used to wave through as 1.5 and 1.0.
+    data = _export_load(_make_result(), tmp_path)
+    data["command_thrust"][0] = float("nan")
+    with pytest.raises(
+        ValueError, match="command_thrust contains non-finite"
+    ):
+        validate_flight_json(data)
+    data = _export_load(_make_result(), tmp_path)
+    data["command_thrust"][0] = "1.5"
+    with pytest.raises(
+        ValueError, match="command_thrust contains non-finite"
+    ):
+        validate_flight_json(data)
+    data = _export_load(_make_result(), tmp_path)
+    data["truth_position"][1][2] = True
+    with pytest.raises(
+        ValueError, match="truth_position contains non-finite"
+    ):
+        validate_flight_json(data)
+    data = _export_load(_make_result(), tmp_path)
+    data["time_s"][0] = True
+    with pytest.raises(ValueError, match="time_s contains non-finite"):
+        validate_flight_json(data)
