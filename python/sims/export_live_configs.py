@@ -4,9 +4,9 @@ Writes two committed artifacts from the Python reference implementation so
 the in-browser WASM run has a single source of truth:
 
 1. ``public/data/live/configs.json``: the LiveConfig for every runnable
-   scenario (hover, waypoints, obstacle_field, wind), built from the same
-   scenario constants and the same avoidance planner the recorded runs use.
-   The web Run view loads this; it never hardcodes scenario knobs.
+   scenario (hover, waypoints, obstacle_field, avoidance, wind), built from
+   the same scenario constants and the same avoidance planner the recorded
+   runs use. The web Run view loads this; it never hardcodes scenario knobs.
 
 2. ``fixtures/live_fixtures.json``: deterministic input/output pairs for the
    TypeScript glue port (NLGL guidance, the waypoint manager, the motor
@@ -128,7 +128,6 @@ def build_configs() -> list[dict]:
         _wp(w.position, w.speed, w.heading, w.radius) for w in augmented
     ]
     obstacles = [_obstacle(o) for o in sof.OBSTACLES]
-
     hover = _base(
         "hover",
         "Hover",
@@ -156,6 +155,25 @@ def build_configs() -> list[dict]:
     obstacle["waypoints"] = augmented_cfg
     obstacle["obstacles"] = obstacles
 
+    # The same circuit and the same zones, but with no detours planned: the
+    # autopilot flies the straight legs and deviates around each zone itself,
+    # in the loop, through the reactive law in talon-core.
+    avoidance = _base(
+        "avoidance",
+        "Reactive avoidance",
+        "The plain circuit straight through the same three keep-out spheres: "
+        "the autopilot sees each zone, bypasses it, and rejoins the leg.",
+        70.0,
+    )
+    avoidance["waypoints"] = circuit
+    avoidance["obstacles"] = obstacles
+    # The margin is stated rather than inherited, because it is the number the
+    # smoke check and the operator read the achieved clearance against.
+    avoidance["avoidance"] = {
+        "enabled": True,
+        "clearance_margin_m": _round(sof.CLEARANCE_MARGIN_M),
+    }
+
     wind = _base(
         "wind",
         "Hold in wind",
@@ -165,7 +183,7 @@ def build_configs() -> list[dict]:
     wind["wind_sigma"] = [3.0, 3.0, 1.5]
     wind["wind_steady_ned"] = [2.0, 0.0, 0.0]
 
-    return [hover, waypoints, obstacle, wind]
+    return [hover, waypoints, obstacle, avoidance, wind]
 
 
 def build_fixtures() -> dict:

@@ -2,6 +2,83 @@
 
 Last updated: 2026-10-18
 
+## One avoidance implementation (Phase 9b, 2026-10-18)
+
+Scope: `bindings/src/avoidance.rs` (new), `bindings/src/lib.rs` (registration),
+`python/talon/avoidance.py` (rewritten as a thin re-export),
+`python/sims/export_live_configs.py` (the fifth config), the regenerated
+`public/data/live/configs.json`, `scripts/smoke_live_wasm.mjs` (the
+scenario-specific acceptance), `src/live/types.ts` (the optional block),
+`src/live/view.test.ts` (the drift guard), and the docs.
+
+Verdict: PASS. The removal of the second implementation is proved by the frozen
+artifacts, not asserted.
+
+### Correctness
+
+- PASS: parity. `python/tests/test_avoidance.py` is untouched and all 20 of its
+  cases pass against the delegated module, including the near-miss margin case,
+  the degenerate leg, the on-leg perpendicular step, and the ValueError
+  contract. The full Python suite is 186 pass, the same count as before.
+- PASS: the exporter's output is the stronger check. Regenerating
+  `public/data/live/configs.json` leaves `hover`, `waypoints`, `obstacle_field`,
+  and `wind` identical field for field, so the recorded obstacle-field run's
+  eight detoured waypoints are reproduced by the Rust planner through the
+  Python wrapper. The diff is one changed `generated_utc` line plus the new
+  config block.
+- PASS: the new config actually exercises the law rather than carrying the
+  block. Its straight legs cross all three zones, and the headless smoke run
+  reports 3 activations, which is one per threatened leg and not a
+  configuration that happens to sit clear.
+- PASS: the demo's clearance is measured, not assumed. The smoke check reads
+  the margin from the config and asserts the achieved minimum against it, so
+  the acceptance cannot drift away from the artifact it is judging.
+- PASS: the planner's single-detour-per-leg and single-waypoint behaviour is
+  preserved through the boundary, and the wrapper rebuilds
+  `talon.types.Waypoint` objects so callers that read `.position`, `.speed`,
+  `.heading`, or `.radius` off the result are unaffected.
+- PASS: the boundary reuses the core's own conversions. Coordinates go through
+  `to_arr3`, so signed zero is canonicalized at the edge exactly as it is on
+  every other boundary in the crate.
+
+### Regression safety
+
+- PASS: this phase changed no Rust, and the rebuilt wasm bundle is byte
+  identical to the one committed in 9a. The four pre-existing live configs keep
+  their exact JSON, so the browser's runs are unchanged.
+- PASS: `fixtures/live_fixtures.json` regenerated identical, so the vitest
+  parity suites that read it are unaffected.
+- PASS: `cargo test --workspace` is 210 core, 12 wasm, 3 PyO3. The one new
+  PyO3 test is a pure function of the margin, deliberately, because formatting
+  a `PyErr` requires an initialized Python interpreter that the unit tests do
+  not have; the message itself is asserted where it belongs, in the Python
+  suite.
+- PASS: the TypeScript layer is unchanged in behaviour. The new interface field
+  is optional and additive, the drift guard reads the shipped file, and the
+  typecheck confirms the hand-declared types still match the served JSON.
+- PASS: the served build returns 200 for the page, the wasm module, and the
+  live configs.
+
+### Conventions
+
+- PASS: no em dashes, double hyphens, or dash equivalents in any new source,
+  test, or doc.
+- PASS: the Python module keeps the docstring style of the other thin
+  re-exports and states where the single source of truth lives, plus the one
+  behavioural tightening (negative margins rejected up front).
+- PASS: no autopilot logic in Python. `avoidance.py` contains no geometry, only
+  marshalling into the forms the existing callers pass and expect back.
+
+### Residual risk
+
+- RESIDUAL RISK: the clearance *readout* remains two expressions of the same
+  arithmetic, Rust in the summary and TypeScript in the per-frame rail, because
+  the rail must update between frames. The avoidance *decision* is single
+  source; the readout is documented as a deliberate mirror (D35).
+- RESIDUAL RISK: the live demonstration is a visual claim. `npm run smoke:wasm`
+  proves the run completes and holds clearance, but nothing automated can see
+  that the scene draws the deviation, so a human still has to look at the page.
+
 ## Reactive avoidance, native (Phase 9a, 2026-10-18)
 
 Scope: `core/src/avoidance.rs` (new: geometry, the reactive law, 23 unit

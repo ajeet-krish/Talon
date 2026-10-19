@@ -38,6 +38,13 @@ const DT = 0.005
 const DT_CONTROL = 0.01
 /** Plant steps per simulated frame, standing in for the frame budget. */
 const STEPS_PER_FRAME = 200
+/**
+ * Tracking tolerance the recorded obstacle-field run allows on its clearance
+ * margin (m), mirrored from `scenario_obstacle_field.CLEARANCE_TOLERANCE_M`.
+ * The reactive law is judged the same way: it must clear the margin it was
+ * given, less this much for tracking error.
+ */
+const CLEARANCE_TOLERANCE_M = 1.0
 
 const failures = []
 function check(ok, label, detail = '') {
@@ -154,6 +161,30 @@ for (const cfg of configs) {
       r.lastAltitude > 9.5 && r.lastAltitude < 10.5,
       'the vehicle holds the takeoff altitude',
       `alt ${r.lastAltitude.toFixed(2)} m`,
+    )
+  }
+
+  // The reactive avoidance scenario is the one whose path is not planned in
+  // advance: the mission runs straight through the zones and the autopilot
+  // deviates around each one itself. The clearance is judged the way the
+  // recorded obstacle-field run is judged, against the margin the config
+  // states minus the tracking tolerance that run allows.
+  if (cfg.avoidance && cfg.avoidance.enabled) {
+    check(
+      r.summary.avoidance_activations > 0,
+      'the avoidance law took at least one bypass',
+      `activations ${r.summary.avoidance_activations}`,
+    )
+    const margin = cfg.avoidance.clearance_margin_m ?? 2.0
+    const clearance = r.summary.min_obstacle_clearance_m
+    check(
+      typeof clearance === 'number' && clearance >= margin - CLEARANCE_TOLERANCE_M,
+      'the flown path held the clearance margin',
+      `clearance ${clearance} m against a ${margin} m margin`,
+    )
+    console.log(
+      `  info avoidance activations=${r.summary.avoidance_activations} ` +
+        `minClearance=${clearance.toFixed(2)}m`,
     )
   }
   console.log(

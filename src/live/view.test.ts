@@ -168,6 +168,22 @@ describe('altitudeLadder against the shipped live configs', () => {
       expect(ceiling?.flightLevel, cfg.id).toBe(true)
     }
   })
+
+  it('ships one reactive avoidance scenario beside the pre-planned one', () => {
+    // The demo config is the only scenario whose path is not planned in
+    // advance, so a drift in the exporter that dropped the block would quietly
+    // turn the browser demonstration back into a pre-computed detour.
+    const reactive = shipped.configs.filter((cfg) => cfg.avoidance?.enabled === true)
+    expect(reactive).toHaveLength(1)
+    const cfg = reactive[0] as LiveConfig
+    expect(cfg.obstacles.length).toBeGreaterThan(0)
+    expect(cfg.avoidance?.clearance_margin_m).toBeGreaterThan(0)
+    const planned = shipped.configs.find((c) => c.id === 'obstacle_field') as LiveConfig
+    // Same zones, but the reactive mission flies the plain legs: fewer
+    // waypoints than the planned detour, and the same zone list.
+    expect(cfg.obstacles.length).toBe(planned.obstacles.length)
+    expect(cfg.waypoints.length).toBeLessThan(planned.waypoints.length)
+  })
 })
 
 describe('rollPitchYaw', () => {

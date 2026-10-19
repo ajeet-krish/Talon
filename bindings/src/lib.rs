@@ -18,6 +18,7 @@
 
 use pyo3::prelude::*;
 
+mod avoidance;
 mod control;
 mod convert;
 mod estimation;
@@ -75,6 +76,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEkfConfig>()?;
     m.add_class::<PyEkfNominalState>()?;
     m.add_class::<PyEkf>()?;
+
+    // Keep-out-zone geometry, the offline detour planner, and clearance.
+    avoidance::register(m)?;
 
     Ok(())
 }

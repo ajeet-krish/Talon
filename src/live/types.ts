@@ -25,6 +25,21 @@ export interface Waypoint {
  * Everything the browser needs to run one SIL scenario. Field names are
  * snake_case to match the exported JSON (SILConfig) one-to-one.
  */
+/**
+ * Reactive avoidance tuning (talon-core `AvoidanceConfig`). Absent means the
+ * law is off; anything absent inside the block takes the core's default, so a
+ * scenario can turn it on with `{"enabled": true}` alone.
+ */
+export interface AvoidanceConfig {
+  enabled: boolean
+  /** Surface clearance the law plans to keep (m). */
+  clearance_margin_m?: number
+  /** Lookahead ahead of the vehicle at its ground speed (s). */
+  lookahead_s?: number
+  /** Standoff beyond radius + margin for a bypass point (m). */
+  detour_buffer_m?: number
+}
+
 export interface LiveConfig {
   id: string
   label: string
@@ -35,6 +50,7 @@ export interface LiveConfig {
   start_position_ned: Vec3
   waypoints: Waypoint[]
   obstacles: Obstacle[]
+  avoidance?: AvoidanceConfig
   wind_sigma: [number, number, number]
   wind_steady_ned: Vec3
   seed: number

@@ -52,6 +52,15 @@ SwarmGNC's cosmetic debris.
 one leg need a richer planner (v2, reactive potential field). Acceptable
 for the Phase 1 circuit.
 
+*Superseded in part.* The geometry and the planner are no longer pure Python:
+they live in `core/src/avoidance.rs` and the Python module re-exports them
+(D35), and the autopilot flies a reactive law that takes several zones on one
+leg one after another (D33, D34). The v2 "reactive potential field" named here
+became a latched bypass point instead, because a latched bypass can be released
+on a stated clearance condition and a potential field cannot be reasoned about
+the same way. The offline planner and its one-detour-per-leg limit remain in
+use for the recorded obstacle-field scenario.
+
 ### D4: Schema 1.1 with optional obstacles, backward compatible
 
 **Decision.** `SCHEMA_VERSION = "1.1"`. The `obstacles` top-level key
@@ -749,12 +758,56 @@ chosen so that a bypass guidance smooths early still clears. Both are stated in
 the module rather than tuned silently, and the closed-loop tests are what keep
 them honest.
 
+## One avoidance implementation (Phase 9b, 2026-10-18)
+
+### D35: Python delegates to the core, and the browser gets a straight-through demo
+
+**Decision.** The PyO3 extension publishes the avoidance boundary:
+`leg_obstacle_distance`, `leg_intersects_obstacle`, `compute_detour_point`,
+`plan_avoidance_mission`, and `min_clearance`. `python/talon/avoidance.py`
+becomes a thin re-export over `talon._core`, like `controller.py` and `ekf.py`
+before it, and no longer contains geometry. The Python objects stay the types
+the harness already uses: obstacles and waypoints cross as duck-typed
+attributes (`center_ned`, `radius_m`; `position`, `speed`, `heading`,
+`radius`), and the planner hands back tuples the wrapper wraps in
+`talon.types.Waypoint`. A negative clearance margin is now rejected up front by
+every entry point that takes one, rather than only where a leg and an obstacle
+happen to meet the geometry.
+
+The exporter gains a fifth live config, `avoidance`: the same circuit and the
+same three keep-out spheres as `obstacle_field`, but with the plain legs and
+the law switched on, so the browser shows the autopilot deviating around each
+zone itself. The recorded `obstacle_field` scenario is untouched and still
+flies its pre-planned detours.
+
+**Rationale.** Two implementations of one geometry is the thing this phase
+exists to remove, and the frozen recorded data is what proves it worked rather
+than the assertion that it did: `test_avoidance.py` runs unchanged against the
+delegated module, all 186 Python tests pass, and regenerating
+`public/data/live/configs.json` leaves the four existing entries identical
+field for field, including `obstacle_field`'s eight detoured waypoints. The
+demo config exists because a capability nothing exercises is a claim, not a
+feature: until this phase no shipped scenario had the law on, so the browser
+never showed the vehicle avoiding anything by itself. Writing the margin into
+that config (rather than inheriting the default that happens to match) keeps
+the number the smoke check reads the achieved clearance against visible in the
+artifact.
+
+**Trade-off.** The clearance *readout* is still computed client-side, from the
+streamed samples and the config's zones, because it has to update every frame
+while the run is in flight; the wasm summary now reports the same quantity for
+the end of a run, and the two are consistent by construction but are still two
+expressions of one line of arithmetic. The avoidance *decision* has one
+implementation, which is the part that matters: the geometry, the lookahead,
+and the latch exist once, in Rust, and the Python planner and the browser
+autopilot both run that code.
+
 ## Open decisions (resolved at Phase 4)
 
-- Acceptance metrics for v2 reactive avoidance: resolved by D33 and D34 (the
-  law is native, in the loop, and reports the clearance it achieved against the
-  margin it was given). The offline detour planner remains as mission planning
-  and delegates to the same geometry in 9b.
+- Acceptance metrics for v2 reactive avoidance: resolved by D33, D34, and D35
+  (the law is native and in the loop, it reports the clearance it achieved
+  against the margin it was given, and the offline detour planner delegates to
+  the same geometry).
 - WASM boundary: resolved by D17 (kernel in WASM, glue in TypeScript).
 - FlightDataSource reuse: resolved by keeping the recorded whole-history
   `FlightData` path and having the live run emit the same `FlightData`

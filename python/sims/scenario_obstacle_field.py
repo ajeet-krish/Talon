@@ -16,8 +16,10 @@ Architecture (documented choices):
   Centres and radii are chosen so the detour is visible in the 3-D
   replay and the clearance margin is meaningfully exercised.
 - Avoidance: talon.avoidance.plan_avoidance_mission runs BEFORE the
-  simulation and returns the augmented waypoint list. No change to
-  guidance.py or the Rust core.
+  simulation and returns the augmented waypoint list. It is a thin
+  re-export of the geometry in the Rust core (core/src/avoidance.rs)
+  through talon._core, so the planner and the reactive law the autopilot
+  flies in the loop are one implementation. No change to guidance.py.
 - SIL: SILRunner with enable_udp=False (headless, no loopback sockets)
   and the augmented waypoints. The full closed loop (EKF, state machine,
   NLGL, cascaded PD, motor lag, Dryden wind) runs exactly as in the

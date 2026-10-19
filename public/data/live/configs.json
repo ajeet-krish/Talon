@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-10-18T00:09:28Z",
+  "generated_utc": "2026-10-19T01:24:33Z",
   "configs": [
     {
       "id": "hover",
@@ -250,6 +250,119 @@
       "gps_velocity_noise": 0.05,
       "cruise_hold_s": 2.0,
       "auto_arm": true
+    },
+    {
+      "id": "avoidance",
+      "label": "Reactive avoidance",
+      "blurb": "The plain circuit straight through the same three keep-out spheres: the autopilot sees each zone, bypasses it, and rejoins the leg.",
+      "duration_s": 70.0,
+      "takeoff_altitude": 10.0,
+      "start_position_ned": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "waypoints": [
+        {
+          "position": [
+            0.0,
+            0.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            40.0,
+            0.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            40.0,
+            30.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            0.0,
+            30.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        },
+        {
+          "position": [
+            0.0,
+            0.0,
+            -10.0
+          ],
+          "speed": 5.0,
+          "heading": 0.0,
+          "radius": 2.0
+        }
+      ],
+      "obstacles": [
+        {
+          "id": "obs_north",
+          "center_ned": [
+            20.0,
+            3.0,
+            -10.0
+          ],
+          "radius_m": 4.0
+        },
+        {
+          "id": "obs_east",
+          "center_ned": [
+            37.0,
+            15.0,
+            -10.0
+          ],
+          "radius_m": 3.5
+        },
+        {
+          "id": "obs_west",
+          "center_ned": [
+            3.0,
+            22.0,
+            -10.0
+          ],
+          "radius_m": 4.5
+        }
+      ],
+      "wind_sigma": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "wind_steady_ned": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "seed": 20261012,
+      "gps_position_noise": 0.3,
+      "gps_position_noise_vertical": 0.5,
+      "gps_velocity_noise": 0.05,
+      "cruise_hold_s": 2.0,
+      "auto_arm": true,
+      "avoidance": {
+        "enabled": true,
+        "clearance_margin_m": 2.0
+      }
     },
     {
       "id": "wind",

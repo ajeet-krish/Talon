@@ -1,16 +1,12 @@
-"""Deterministic leg-detour obstacle avoidance (Phase 1, v1).
+"""Deterministic leg-detour obstacle avoidance and keep-out-zone geometry.
 
-Pure-Python geometric planner that inserts detour waypoints into a
-waypoint circuit so the resulting path steers around spherical keep-out
-zones. No change to ``guidance.py`` or the Rust core: the augmented
-waypoint list is consumed by the ordinary WaypointMission + NLGL path.
+Single source of truth: ``core/src/avoidance.rs``. This module is a thin
+re-export over the Rust core through the PyO3 extension ``talon._core``, with
+no Python reimplementation: the leg geometry, the detour point, the offline
+planner, and the clearance report are the same functions the autopilot flies in
+the loop through its reactive law.
 
-Geometry is horizontal-plane (2-D) for the detour decision because the
-flyable scenarios cruise at a constant altitude through a field of
-obstacles that overlap that altitude band. Clearance reporting uses the
-full 3-D Euclidean distance so a near-miss in altitude is also caught.
-
-The public surface is intentionally small and pure:
+The public surface is unchanged from the pure-Python v1:
 
 - :func:`leg_obstacle_distance` minimum horizontal distance from an
   obstacle centre to a leg segment;
@@ -19,29 +15,38 @@ The public surface is intentionally small and pure:
   pair;
 - :func:`plan_avoidance_mission` insert detour waypoints into a circuit;
 - :func:`min_clearance` minimum 3-D surface clearance over a trajectory.
+
+Geometry is horizontal-plane (2-D) for the detour decision because the
+flyable scenarios cruise at a constant altitude through a field of
+obstacles that overlap that altitude band. Clearance reporting uses the
+full 3-D Euclidean distance so a near-miss in altitude is also caught.
+
+One behaviour is slightly stricter than the retired Python version: a negative
+clearance margin is rejected up front by every function that takes one, rather
+than only when a leg and an obstacle happen to reach the geometry.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 from numpy.typing import NDArray
 
+from talon import _core
 from talon.types import SphericalObstacle, Waypoint
 
-# Extra standoff (m) added beyond obstacle radius + clearance margin so
-# the detour point itself stays outside the keep-out zone with a small
-# buffer for the acceptance radius and guidance tracking error.
-_DETOUR_BUFFER_M = 0.5
+def _leg(
+    p0: NDArray[np.float64] | Sequence[float],
+    p1: NDArray[np.float64] | Sequence[float],
+) -> tuple[Sequence[float], Sequence[float]]:
+    """Present two leg endpoints as plain sequences for the boundary."""
+    return _vec(p0), _vec(p1)
 
 
-def _horizontal_distance(a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
-    """North-East plane distance between two NED positions (m)."""
-    return float(np.linalg.norm(a[:2] - b[:2]))
-
-
-def _3d_distance(a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
-    """Full 3-D Euclidean distance between two NED positions (m)."""
-    return float(np.linalg.norm(a - b))
+def _vec(value: NDArray[np.float64] | Sequence[float]) -> Sequence[float]:
+    """Convert a numpy vector to a plain list so the boundary reads it."""
+    return [float(value[0]), float(value[1]), float(value[2])]
 
 
 def leg_obstacle_distance(
@@ -54,16 +59,8 @@ def leg_obstacle_distance(
     Projects the obstacle centre onto the 2-D leg segment (clamped to the
     segment endpoints) and returns the 2-D distance to that closest point.
     """
-    centre = np.asarray(obstacle.center_ned, dtype=np.float64)[:2]
-    a = np.asarray(p0, dtype=np.float64)[:2]
-    b = np.asarray(p1, dtype=np.float64)[:2]
-    d = b - a
-    d_norm_sq = float(np.dot(d, d))
-    if d_norm_sq < 1e-12:
-        return _horizontal_distance(a, centre)
-    t = float(np.clip(np.dot(centre - a, d) / d_norm_sq, 0.0, 1.0))
-    closest = a + t * d
-    return _horizontal_distance(centre, closest)
+    a, b = _leg(p0, p1)
+    return float(_core.leg_obstacle_distance(a, b, obstacle))
 
 
 def leg_intersects_obstacle(
@@ -73,14 +70,8 @@ def leg_intersects_obstacle(
     clearance_margin: float = 0.0,
 ) -> bool:
     """True when the horizontal leg passes within radius + margin of centre."""
-    if clearance_margin < 0.0:
-        raise ValueError(
-            f"clearance_margin must be non-negative, got {clearance_margin}"
-        )
-    return (
-        leg_obstacle_distance(p0, p1, obstacle)
-        < obstacle.radius_m + clearance_margin
-    )
+    a, b = _leg(p0, p1)
+    return bool(_core.leg_intersects_obstacle(a, b, obstacle, clearance_margin))
 
 
 def compute_detour_point(
@@ -96,34 +87,9 @@ def compute_detour_point(
     ``radius + clearance_margin + buffer`` so the detour point clears the
     keep-out zone. Altitude is held at the leg-start altitude.
     """
-    if clearance_margin < 0.0:
-        raise ValueError(
-            f"clearance_margin must be non-negative, got {clearance_margin}"
-        )
-    a = np.asarray(p0, dtype=np.float64)[:2]
-    b = np.asarray(p1, dtype=np.float64)[:2]
-    centre = np.asarray(obstacle.center_ned, dtype=np.float64)[:2]
-    d = b - a
-    d_norm_sq = float(np.dot(d, d))
-    if d_norm_sq < 1e-12:
-        # Degenerate leg: offset east of the obstacle as a safe fallback.
-        offset = obstacle.radius_m + clearance_margin + _DETOUR_BUFFER_M
-        return np.array(
-            [centre[0] + offset, centre[1], float(p0[2])], dtype=np.float64
-        )
-    t = float(np.clip(np.dot(centre - a, d) / d_norm_sq, 0.0, 1.0))
-    closest = a + t * d
-    away = closest - centre
-    away_norm = float(np.linalg.norm(away))
-    if away_norm < 1e-9:
-        # Centre lies on the leg: use the leg perpendicular (left of travel).
-        perp = np.array([-d[1], d[0]], dtype=np.float64)
-        away = perp / np.linalg.norm(perp)
-    else:
-        away = away / away_norm
-    reach = obstacle.radius_m + clearance_margin + _DETOUR_BUFFER_M
-    detour_2d = closest + away * reach
-    return np.array([detour_2d[0], detour_2d[1], float(p0[2])], dtype=np.float64)
+    a, b = _leg(p0, p1)
+    detour = _core.compute_detour_point(a, b, obstacle, clearance_margin)
+    return np.asarray(detour, dtype=np.float64)
 
 
 def plan_avoidance_mission(
@@ -138,31 +104,19 @@ def plan_avoidance_mission(
     single detour waypoint inserted before the leg end. The detour
     inherits the leg's cruise speed and acceptance radius. At most one
     detour per leg is inserted (v1); multiple obstacles on one leg would
-    need a richer planner (v2).
+    need a richer planner (v2), and the reactive law in the core is the path
+    that handles several.
     """
-    if len(waypoints) < 2:
-        return list(waypoints)
-    augmented: list[Waypoint] = [waypoints[0]]
-    for i in range(len(waypoints) - 1):
-        p0 = waypoints[i].position
-        p1 = waypoints[i + 1].position
-        inserted = False
-        for obs in obstacles:
-            if leg_intersects_obstacle(p0, p1, obs, clearance_margin):
-                detour = compute_detour_point(p0, p1, obs, clearance_margin)
-                augmented.append(
-                    Waypoint(
-                        detour,
-                        speed=waypoints[i].speed,
-                        heading=waypoints[i].heading,
-                        radius=waypoints[i].radius,
-                    )
-                )
-                inserted = True
-                break
-        _ = inserted
-        augmented.append(waypoints[i + 1])
-    return augmented
+    planned = _core.plan_avoidance_mission(waypoints, obstacles, clearance_margin)
+    return [
+        Waypoint(
+            np.asarray(position, dtype=np.float64),
+            speed=speed,
+            heading=heading,
+            radius=radius,
+        )
+        for position, speed, heading, radius in planned
+    ]
 
 
 def min_clearance(
@@ -175,18 +129,8 @@ def min_clearance(
     the sample to the obstacle centre minus the radius. Returns +inf when
     there are no obstacles or no samples.
     """
-    if len(obstacles) == 0 or len(truth_positions) == 0:
-        return float("inf")
-    positions = np.asarray(truth_positions, dtype=np.float64)
-    worst = float("inf")
-    for obs in obstacles:
-        centre = np.asarray(obs.center_ned, dtype=np.float64)
-        deltas = positions - centre
-        distances = np.sqrt(np.sum(deltas * deltas, axis=1)) - obs.radius_m
-        sample_min = float(np.min(distances))
-        if sample_min < worst:
-            worst = sample_min
-    return worst
+    positions = np.asarray(truth_positions, dtype=np.float64).reshape(-1, 3)
+    return float(_core.min_clearance(positions.tolist(), obstacles))
 
 
 __all__ = [

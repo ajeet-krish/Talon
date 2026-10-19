@@ -65,7 +65,7 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 | Phase 7 | Altitude legibility in the scene | Complete |
 | Phase 8 | Mission authoring (waypoints, wind, faults) | Not started |
 | Phase 9a | Reactive avoidance in Rust: geometry, the law, loop wiring, tests | Complete |
-| Phase 9b | One implementation (Python delegates to `_core`) + a browser demo config | Not started |
+| Phase 9b | One implementation (Python delegates to `_core`) + a browser demo config | Complete |
 
 ## Deep Docs
 
