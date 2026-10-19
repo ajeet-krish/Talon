@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { FlightData, ScenarioId } from '@/types/flight'
 import type { LiveRunSummary } from '@/live/types'
+import { validateFlightData } from '@/data/validate'
 
 export interface DisplayToggles {
   trail: boolean
@@ -108,10 +109,12 @@ export const useFlightStore = create<FlightStore>((set, get) => ({
       const base = import.meta.env.BASE_URL ?? '/'
       const res = await fetch(`${base}data/${id}.json`)
       if (!res.ok) throw new Error(`telemetry fetch failed (HTTP ${res.status})`)
-      const data = (await res.json()) as FlightData
-      // Schema 1.0 documents predate the obstacles key; normalize so the
-      // scene never has to guard against undefined.
-      if (!Array.isArray(data.obstacles)) data.obstacles = []
+      // Validated rather than cast: every history must exist, every number
+      // must be finite, and schema 1.0 documents without an obstacles key
+      // come back with obstacles: []. A malformed recording fails here and
+      // lands in `error` below, instead of surfacing as NaN in a chart.
+      const payload: unknown = await res.json()
+      const data = validateFlightData(payload)
       set((s) => ({
         scenarios: new Map(s.scenarios).set(id, data),
         loading: false,

@@ -97,7 +97,29 @@ export function readReadout(
   }
 }
 
-/** How many samples a run of `durationS` will record, plus headroom. */
+/**
+ * Upper bound on the recorder: 900 s at a 200 Hz control loop plus headroom.
+ *
+ * A config that somehow asks for more still gets a buffer the renderer can
+ * allocate; the overrun shows up as `isFull` rather than as a huge allocation.
+ */
+export const MAX_BUFFER_SAMPLES = 180_064
+
+/**
+ * How many samples a run of `cfg.duration_s` will record, plus headroom.
+ *
+ * Clamped into [0, MAX_BUFFER_SAMPLES]: a non-finite or non-positive duration,
+ * or a control period that can not divide one, sizes the recorder at 0 (there
+ * is nothing to record), and a hostile or corrupted config can not ask the
+ * renderer for an unbounded allocation.
+ *
+ * A capacity of 0 does not crash the run view: `LiveBuffer` floors its own
+ * capacity at 1 sample, so `new LiveBuffer(0)` constructs cleanly, `append`
+ * immediately reports `isFull`, and the run shows as an overrun.
+ */
 export function bufferCapacity(cfg: LiveConfig, controlDtS: number): number {
-  return Math.ceil(cfg.duration_s / controlDtS) + 64
+  const durationS = cfg.duration_s
+  if (!Number.isFinite(durationS) || durationS <= 0) return 0
+  if (!Number.isFinite(controlDtS) || controlDtS <= 0) return 0
+  return Math.max(0, Math.min(MAX_BUFFER_SAMPLES, Math.ceil(durationS / controlDtS) + 64))
 }
