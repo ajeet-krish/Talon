@@ -1,3 +1,5 @@
+<p align="center"><img src="public/logo.svg" alt="Talon FlightLab" width="112" height="112"></p>
+
 # Talon FlightLab: UAV Autopilot Simulator
 
 Talon FlightLab is a drone autopilot simulator you can fly and inspect in the browser. It pairs a validated guidance, navigation, and control (GNC) core with a web tool that presents the results: a replayable 3D flight, live telemetry channels, the automated validation report, the recorded flight videos, and a live run that executes the autopilot itself in the browser.

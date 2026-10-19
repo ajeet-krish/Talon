@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useFlightStore } from '@/store/useFlightStore'
+import { Logo } from '@/components/ui/Logo'
 import { ScenarioSelector } from '@/components/ui/ScenarioSelector'
 import { DisplayToggles } from '@/components/ui/DisplayToggles'
 import { ViewTabs } from '@/components/ui/ViewTabs'
@@ -37,13 +38,16 @@ export function App() {
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-panel text-ink">
       <header className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-1 border-b border-grid px-3 py-2">
-        <div className="flex items-baseline gap-2">
-          <span className="font-mono text-[13px] font-semibold tracking-[0.2em] text-ink">
-            TALON
-          </span>
-          <span className="font-mono text-[9px] tracking-[0.25em] text-ink-faint">
-            FLIGHTLAB
-          </span>
+        <div className="flex items-center gap-2">
+          <Logo className="h-6 w-6 shrink-0" />
+          <div className="flex items-baseline gap-2">
+            <span className="font-mono text-[13px] font-semibold tracking-[0.2em] text-ink">
+              TALON
+            </span>
+            <span className="font-mono text-[9px] tracking-[0.25em] text-ink-faint">
+              FLIGHTLAB
+            </span>
+          </div>
         </div>
         <ViewTabs />
         <div className="ml-auto hidden font-mono text-[9px] tracking-wider text-ink-faint lg:block">
