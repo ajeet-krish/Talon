@@ -276,12 +276,7 @@ impl PyDrydenWind {
         seed: u64,
     ) -> Self {
         Self {
-            inner: DrydenWind::new(
-                [sigma_u, sigma_v, sigma_w],
-                [l_u, l_v, l_w],
-                dt,
-                seed,
-            ),
+            inner: DrydenWind::new([sigma_u, sigma_v, sigma_w], [l_u, l_v, l_w], dt, seed),
         }
     }
 

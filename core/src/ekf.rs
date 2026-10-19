@@ -186,10 +186,12 @@ impl Ekf {
         self.p
             .fixed_view_mut::<3, 3>(6, 6)
             .copy_from(&(Mat3::identity() * (d.init_att_std * d.init_att_std)));
-        self.p.fixed_view_mut::<3, 3>(9, 9).copy_from(&(Mat3::identity()
-            * (d.init_gyro_bias_std * d.init_gyro_bias_std)));
-        self.p.fixed_view_mut::<3, 3>(12, 12).copy_from(&(Mat3::identity()
-            * (d.init_accel_bias_std * d.init_accel_bias_std)));
+        self.p
+            .fixed_view_mut::<3, 3>(9, 9)
+            .copy_from(&(Mat3::identity() * (d.init_gyro_bias_std * d.init_gyro_bias_std)));
+        self.p
+            .fixed_view_mut::<3, 3>(12, 12)
+            .copy_from(&(Mat3::identity() * (d.init_accel_bias_std * d.init_accel_bias_std)));
         self.reset_telemetry();
     }
 
@@ -265,7 +267,8 @@ impl Ekf {
         qd.fixed_view_mut::<3, 3>(0, 0)
             .copy_from(&(Mat3::identity() * (0.25 * sa2 * dt * dt * dt)));
         qd.fixed_view_mut::<3, 3>(0, 3).copy_from(&cross);
-        qd.fixed_view_mut::<3, 3>(3, 0).copy_from(&cross.transpose());
+        qd.fixed_view_mut::<3, 3>(3, 0)
+            .copy_from(&cross.transpose());
         qd.fixed_view_mut::<3, 3>(3, 3)
             .copy_from(&(Mat3::identity() * (sa2 * dt)));
         qd.fixed_view_mut::<3, 3>(6, 6)
@@ -328,10 +331,8 @@ impl Ekf {
 
         self.nominal.position += dp;
         self.nominal.velocity += dv;
-        self.nominal.attitude = quat_normalize(&quat_multiply(
-            &self.nominal.attitude,
-            &exp_quat(&dtheta),
-        ));
+        self.nominal.attitude =
+            quat_normalize(&quat_multiply(&self.nominal.attitude, &exp_quat(&dtheta)));
         self.nominal.gyro_bias += dbg;
         self.nominal.accel_bias += dba;
 
@@ -432,7 +433,11 @@ mod tests {
         ekf.predict(&zero, &zero, 0.005);
         let n = ekf.nominal();
         // a_ned = R * 0 + g_ned = +g downward (NED down is positive z).
-        assert!((n.velocity[2] - GRAVITY * 0.005).abs() < 1e-12, "{}", n.velocity);
+        assert!(
+            (n.velocity[2] - GRAVITY * 0.005).abs() < 1e-12,
+            "{}",
+            n.velocity
+        );
         assert!(n.position[2] > 0.0, "should sink");
     }
 
@@ -451,7 +456,10 @@ mod tests {
         assert!(ekf.update(&fix, &Vec3::zeros()));
         let p = ekf.nominal().position;
         assert!(p[0] > 5.0, "estimate should chase the fix, got {p}");
-        assert!(p[0] < 10.0, "estimate should not overshoot the fix, got {p}");
+        assert!(
+            p[0] < 10.0,
+            "estimate should not overshoot the fix, got {p}"
+        );
     }
 
     #[test]

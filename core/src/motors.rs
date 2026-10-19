@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 
 use nalgebra::{SMatrix, SVector};
 
-use crate::constants::{ARM_LENGTH, M_MAX, MOTOR_KF, MOTOR_KM, MOTOR_TIME_CONST};
+use crate::constants::{ARM_LENGTH, MOTOR_KF, MOTOR_KM, MOTOR_TIME_CONST, M_MAX};
 use crate::math;
 
 /// Per-motor force floor (N): motors cannot produce negative thrust.
@@ -339,7 +339,10 @@ mod tests {
             m.step(t, [0.0, 0.0, 0.0], 0.005);
         }
         let (thrust, moment) = forward_mix(m.forces());
-        assert!((thrust - crate::constants::MASS * GRAVITY).abs() < 1e-4, "{thrust}");
+        assert!(
+            (thrust - crate::constants::MASS * GRAVITY).abs() < 1e-4,
+            "{thrust}"
+        );
         assert!(moment.iter().all(|c| c.abs() < 1e-6), "{moment:?}");
     }
 }

@@ -104,7 +104,10 @@ mod tests {
         let mean = sum / n as f64;
         let variance = sum_sq / n as f64 - mean * mean;
         assert!(mean.abs() < 0.02, "mean drifted: {mean}");
-        assert!((variance - 1.0).abs() < 0.03, "variance drifted: {variance}");
+        assert!(
+            (variance - 1.0).abs() < 0.03,
+            "variance drifted: {variance}"
+        );
     }
 
     #[test]

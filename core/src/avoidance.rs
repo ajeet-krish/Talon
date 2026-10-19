@@ -457,7 +457,10 @@ impl ReactiveAvoidance {
 
         // Nothing latched: is any zone a threat within the lookahead?
         let lookahead_m = self.config.lookahead_distance_m(velocity_ned);
-        let leg_length = math::hypot(leg.waypoint[0] - leg.origin[0], leg.waypoint[1] - leg.origin[1]);
+        let leg_length = math::hypot(
+            leg.waypoint[0] - leg.origin[0],
+            leg.waypoint[1] - leg.origin[1],
+        );
         let mut threat: Option<(usize, f64)> = None;
         for (index, obstacle) in obstacles.iter().enumerate() {
             let lateral_m = leg_obstacle_distance(leg.origin, leg.waypoint, obstacle);
@@ -496,7 +499,9 @@ impl ReactiveAvoidance {
             leg_index: leg.index,
             bypass,
             abreast_m: along_track(obstacle.center_ned, leg.origin, direction),
-            reach_m: obstacle.radius_m + self.config.clearance_margin_m + self.config.detour_buffer_m,
+            reach_m: obstacle.radius_m
+                + self.config.clearance_margin_m
+                + self.config.detour_buffer_m,
         });
         self.activations += 1;
         AvoidanceDirective {
@@ -529,10 +534,7 @@ fn along_track(point: Arr3, origin: Arr3, direction: [f64; 2]) -> f64 {
 
 /// Full 3-D distance between two NED positions (m).
 fn distance3(a: Arr3, b: Arr3) -> f64 {
-    math::hypot(
-        math::hypot(a[0] - b[0], a[1] - b[1]),
-        a[2] - b[2],
-    )
+    math::hypot(math::hypot(a[0] - b[0], a[1] - b[1]), a[2] - b[2])
 }
 
 #[cfg(test)]
@@ -569,8 +571,12 @@ mod tests {
     #[test]
     fn leg_distance_clamps_to_the_segment() {
         // Beyond the start and beyond the end, so both clamp to an endpoint.
-        assert!((leg_obstacle_distance(A, B, &obstacle([-5.0, 0.0, 0.0], 1.0)) - 5.0).abs() < 1e-12);
-        assert!((leg_obstacle_distance(A, B, &obstacle([15.0, 0.0, 0.0], 1.0)) - 5.0).abs() < 1e-12);
+        assert!(
+            (leg_obstacle_distance(A, B, &obstacle([-5.0, 0.0, 0.0], 1.0)) - 5.0).abs() < 1e-12
+        );
+        assert!(
+            (leg_obstacle_distance(A, B, &obstacle([15.0, 0.0, 0.0], 1.0)) - 5.0).abs() < 1e-12
+        );
     }
 
     #[test]
@@ -580,8 +586,18 @@ mod tests {
 
     #[test]
     fn intersects_when_clear_and_when_penetrating() {
-        assert!(!leg_intersects_obstacle(A, B, &obstacle([5.0, 5.0, 0.0], 2.0), 0.0));
-        assert!(leg_intersects_obstacle(A, B, &obstacle([5.0, 1.0, 0.0], 2.0), 0.0));
+        assert!(!leg_intersects_obstacle(
+            A,
+            B,
+            &obstacle([5.0, 5.0, 0.0], 2.0),
+            0.0
+        ));
+        assert!(leg_intersects_obstacle(
+            A,
+            B,
+            &obstacle([5.0, 1.0, 0.0], 2.0),
+            0.0
+        ));
     }
 
     #[test]
@@ -598,11 +614,17 @@ mod tests {
         let zone = obstacle([5.0, 0.0, -10.0], 2.0);
         let detour = compute_detour_point([0.0, 0.0, -10.0], [10.0, 0.0, -10.0], &zone, 1.0);
         let gap = math::hypot(
-            math::hypot(detour[0] - zone.center_ned[0], detour[1] - zone.center_ned[1]),
+            math::hypot(
+                detour[0] - zone.center_ned[0],
+                detour[1] - zone.center_ned[1],
+            ),
             detour[2] - zone.center_ned[2],
         );
         // radius + margin + the standoff buffer.
-        assert!((gap - (2.0 + 1.0 + DETOUR_BUFFER_M)).abs() < 1e-9, "gap {gap}");
+        assert!(
+            (gap - (2.0 + 1.0 + DETOUR_BUFFER_M)).abs() < 1e-9,
+            "gap {gap}"
+        );
         assert!((detour[2] + 10.0).abs() < 1e-12, "altitude {detour:?}");
     }
 
@@ -634,8 +656,14 @@ mod tests {
 
     #[test]
     fn min_surface_clearance_is_the_worst_sample() {
-        assert_eq!(min_surface_clearance(&[[0.0, 0.0, 0.0]], &[]), f64::INFINITY);
-        assert_eq!(min_surface_clearance(&[], &[obstacle([0.0, 0.0, 0.0], 1.0)]), f64::INFINITY);
+        assert_eq!(
+            min_surface_clearance(&[[0.0, 0.0, 0.0]], &[]),
+            f64::INFINITY
+        );
+        assert_eq!(
+            min_surface_clearance(&[], &[obstacle([0.0, 0.0, 0.0], 1.0)]),
+            f64::INFINITY
+        );
         let zones = [obstacle([0.0, 0.0, 0.0], 2.0)];
         let positions = [[5.0, 0.0, 0.0], [3.0, 0.0, 0.0], [9.0, 0.0, 0.0]];
         // Closest sample is 3 m out, so 1 m of surface clearance.
@@ -651,7 +679,10 @@ mod tests {
 
     #[test]
     fn config_validation_rejects_negative_tuning() {
-        let mut config = AvoidanceConfig { enabled: true, ..Default::default() };
+        let mut config = AvoidanceConfig {
+            enabled: true,
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
         config.clearance_margin_m = -1.0;
         assert!(matches!(
@@ -674,7 +705,11 @@ mod tests {
 
     #[test]
     fn lookahead_grows_with_ground_speed_and_is_floored() {
-        let config = AvoidanceConfig { enabled: true, lookahead_s: 3.0, ..Default::default() };
+        let config = AvoidanceConfig {
+            enabled: true,
+            lookahead_s: 3.0,
+            ..Default::default()
+        };
         assert!((config.lookahead_distance_m([0.0, 0.0, 0.0]) - MIN_LOOKAHEAD_M).abs() < 1e-12);
         assert!((config.lookahead_distance_m([5.0, 0.0, 0.0]) - 15.0).abs() < 1e-12);
         assert!((config.lookahead_distance_m([4.0, 3.0, 0.0]) - 15.0).abs() < 1e-12);
@@ -746,10 +781,20 @@ mod tests {
     fn a_zone_abreast_of_the_leg_origin_or_past_its_end_is_not_on_the_leg() {
         let mut law = enabled();
         // North of the leg end: the leg ends before its closest approach.
-        let past = law.update([0.0, 0.0, -10.0], [5.0, 0.0, 0.0], Some(leg()), &[obstacle([60.0, 0.0, -10.0], 4.0)]);
+        let past = law.update(
+            [0.0, 0.0, -10.0],
+            [5.0, 0.0, 0.0],
+            Some(leg()),
+            &[obstacle([60.0, 0.0, -10.0], 4.0)],
+        );
         assert!(!past.active);
         // Behind the leg origin.
-        let behind = law.update([0.0, 0.0, -10.0], [5.0, 0.0, 0.0], Some(leg()), &[obstacle([-20.0, 0.0, -10.0], 4.0)]);
+        let behind = law.update(
+            [0.0, 0.0, -10.0],
+            [5.0, 0.0, 0.0],
+            Some(leg()),
+            &[obstacle([-20.0, 0.0, -10.0], 4.0)],
+        );
         assert!(!behind.active);
     }
 
@@ -786,7 +831,10 @@ mod tests {
         law.update([8.0, 0.0, -10.0], [5.0, 0.0, 0.0], Some(leg()), &zones);
         // Inside the zone: 2 m from the centre of a 4 m sphere.
         let inside = law.update([20.0, 1.0, -10.0], [5.0, 0.0, 0.0], Some(leg()), &zones);
-        assert!(inside.active, "the law never lets go while inside the margin");
+        assert!(
+            inside.active,
+            "the law never lets go while inside the margin"
+        );
         assert!(inside.clearance_m < 0.0);
     }
 
@@ -821,7 +869,10 @@ mod tests {
     fn several_zones_on_one_leg_are_taken_one_after_another() {
         // Two zones on an 80 m leg, 40 m apart. The law latches one bypass at a
         // time, which is how it handles more than the offline planner's one.
-        let zones = [obstacle([20.0, 3.0, -10.0], 4.0), obstacle([60.0, 3.0, -10.0], 4.0)];
+        let zones = [
+            obstacle([20.0, 3.0, -10.0], 4.0),
+            obstacle([60.0, 3.0, -10.0], 4.0),
+        ];
         let leg = MissionLeg {
             origin: [0.0, 0.0, -10.0],
             waypoint: [80.0, 0.0, -10.0],
@@ -846,8 +897,10 @@ mod tests {
             ];
         }
         let finished = math::hypot(position[0] - leg.waypoint[0], position[1] - leg.waypoint[1]);
-        assert!(finished < 1.0, "walk should reach the waypoint, ended at {position:?}");
+        assert!(
+            finished < 1.0,
+            "walk should reach the waypoint, ended at {position:?}"
+        );
         assert_eq!(law.activations(), 2, "one bypass per zone");
     }
 }
-

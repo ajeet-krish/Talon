@@ -395,7 +395,11 @@ mod tests {
         assert_eq!(parsed.meta.scenario, "waypoints");
         assert_eq!(parsed.meta.schema_version, "1.1");
         assert_eq!(parsed.meta.sample_count, parsed.time_s.len());
-        assert!(parsed.meta.sample_count > 1000, "{}", parsed.meta.sample_count);
+        assert!(
+            parsed.meta.sample_count > 1000,
+            "{}",
+            parsed.meta.sample_count
+        );
         assert_eq!(parsed.waypoints_ned.len(), 1);
     }
 
@@ -409,7 +413,10 @@ mod tests {
         }
         let json = document_json(&runner, &config, "x").unwrap();
         let parsed: talon_core::types::FlightData = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.meta.sample_count, 100, "1.0 s at the 100 Hz sample rate");
+        assert_eq!(
+            parsed.meta.sample_count, 100,
+            "1.0 s at the 100 Hz sample rate"
+        );
         assert!(parsed.meta.duration_s < 1.0);
     }
 
@@ -449,7 +456,8 @@ mod tests {
     }
 
     #[test]
-    fn the_summary_reports_the_mission_outcome() {        let config = waypoint_scenario();
+    fn the_summary_reports_the_mission_outcome() {
+        let config = waypoint_scenario();
         let mut runner = prepared_runner(&config);
         let steps = (config.duration_s / DT).round() as usize;
         for i in 0..steps {
@@ -525,7 +533,10 @@ mod tests {
             assert_eq!(a, b);
         }
         assert_eq!(bulk_result.gps_accepted, piecewise_result.gps_accepted);
-        assert_eq!(bulk_result.event_log.len(), piecewise_result.event_log.len());
+        assert_eq!(
+            bulk_result.event_log.len(),
+            piecewise_result.event_log.len()
+        );
     }
 
     #[test]

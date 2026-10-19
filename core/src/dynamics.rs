@@ -118,15 +118,41 @@ pub fn propagate(
 
     let sixth = dt / 6.0;
     let out = State {
-        position: state.position + sixth * (k1.position + 2.0 * k2.position + 2.0 * k3.position + k4.position),
-        velocity: state.velocity + sixth * (k1.velocity + 2.0 * k2.velocity + 2.0 * k3.velocity + k4.velocity),
+        position: state.position
+            + sixth * (k1.position + 2.0 * k2.position + 2.0 * k3.position + k4.position),
+        velocity: state.velocity
+            + sixth * (k1.velocity + 2.0 * k2.velocity + 2.0 * k3.velocity + k4.velocity),
         angular_rate: state.angular_rate
-            + sixth * (k1.angular_rate + 2.0 * k2.angular_rate + 2.0 * k3.angular_rate + k4.angular_rate),
+            + sixth
+                * (k1.angular_rate
+                    + 2.0 * k2.angular_rate
+                    + 2.0 * k3.angular_rate
+                    + k4.angular_rate),
         orientation: Quaternion::new(
-            state.orientation.w + sixth * (k1.orientation.w + 2.0 * k2.orientation.w + 2.0 * k3.orientation.w + k4.orientation.w),
-            state.orientation.x + sixth * (k1.orientation.x + 2.0 * k2.orientation.x + 2.0 * k3.orientation.x + k4.orientation.x),
-            state.orientation.y + sixth * (k1.orientation.y + 2.0 * k2.orientation.y + 2.0 * k3.orientation.y + k4.orientation.y),
-            state.orientation.z + sixth * (k1.orientation.z + 2.0 * k2.orientation.z + 2.0 * k3.orientation.z + k4.orientation.z),
+            state.orientation.w
+                + sixth
+                    * (k1.orientation.w
+                        + 2.0 * k2.orientation.w
+                        + 2.0 * k3.orientation.w
+                        + k4.orientation.w),
+            state.orientation.x
+                + sixth
+                    * (k1.orientation.x
+                        + 2.0 * k2.orientation.x
+                        + 2.0 * k3.orientation.x
+                        + k4.orientation.x),
+            state.orientation.y
+                + sixth
+                    * (k1.orientation.y
+                        + 2.0 * k2.orientation.y
+                        + 2.0 * k3.orientation.y
+                        + k4.orientation.y),
+            state.orientation.z
+                + sixth
+                    * (k1.orientation.z
+                        + 2.0 * k2.orientation.z
+                        + 2.0 * k3.orientation.z
+                        + k4.orientation.z),
         ),
         ..Default::default()
     };
@@ -162,7 +188,11 @@ mod tests {
         let s = State::default();
         let out = propagate(&s, 0.0, &Vec3::zeros(), &Vec3::zeros(), 0.005, &params());
         // After 5 ms of free fall: v = g*t downward, z = 0.5*g*t^2 downward.
-        assert!((out.velocity[2] - 9.81 * 0.005).abs() < 1e-6, "{}", out.velocity[2]);
+        assert!(
+            (out.velocity[2] - 9.81 * 0.005).abs() < 1e-6,
+            "{}",
+            out.velocity[2]
+        );
         assert!((out.position[2] - 0.5 * 9.81 * 0.005 * 0.005).abs() < 1e-9);
     }
 
@@ -175,8 +205,16 @@ mod tests {
         for _ in 0..200 {
             state = propagate(&state, t, &Vec3::zeros(), &Vec3::zeros(), 0.005, &p);
         }
-        assert!(state.position[2].abs() < 1e-3, "drifted {}", state.position[2]);
-        assert!(state.velocity[2].abs() < 1e-3, "climbing {}", state.velocity[2]);
+        assert!(
+            state.position[2].abs() < 1e-3,
+            "drifted {}",
+            state.position[2]
+        );
+        assert!(
+            state.velocity[2].abs() < 1e-3,
+            "climbing {}",
+            state.velocity[2]
+        );
     }
 
     #[test]
@@ -185,7 +223,14 @@ mod tests {
         let mut state = State::default();
         let moment = Vec3::new(0.01, -0.005, 0.002);
         for _ in 0..1000 {
-            state = propagate(&state, hover_thrust_with(&p), &moment, &Vec3::zeros(), 0.005, &p);
+            state = propagate(
+                &state,
+                hover_thrust_with(&p),
+                &moment,
+                &Vec3::zeros(),
+                0.005,
+                &p,
+            );
         }
         assert!((state.orientation.norm() - 1.0).abs() < 1e-12);
     }
@@ -196,7 +241,13 @@ mod tests {
         let p = params();
         let mut s = State::default();
         s.velocity = Vec3::new(10.0, 0.0, 0.0);
-        let d = state_derivative(&s, hover_thrust_with(&p), &Vec3::zeros(), &Vec3::zeros(), &p);
+        let d = state_derivative(
+            &s,
+            hover_thrust_with(&p),
+            &Vec3::zeros(),
+            &Vec3::zeros(),
+            &p,
+        );
         assert!(d.velocity[0] < 0.0, "drag should oppose northward motion");
     }
 
@@ -205,7 +256,13 @@ mod tests {
         // Positive roll moment on a level vehicle should increase roll rate.
         let p = params();
         let s = State::default();
-        let d = state_derivative(&s, hover_thrust_with(&p), &Vec3::new(0.05, 0.0, 0.0), &Vec3::zeros(), &p);
+        let d = state_derivative(
+            &s,
+            hover_thrust_with(&p),
+            &Vec3::new(0.05, 0.0, 0.0),
+            &Vec3::zeros(),
+            &p,
+        );
         assert!(d.angular_rate[0] > 0.0);
     }
 
@@ -218,7 +275,11 @@ mod tests {
         let s = State::default();
         let wind = Vec3::new(-8.0, 0.0, 0.0);
         let d = state_derivative(&s, hover_thrust_with(&p), &Vec3::zeros(), &wind, &p);
-        assert!(d.velocity[0] < 0.0, "wind should carry the vehicle downwind, got {}", d.velocity[0]);
+        assert!(
+            d.velocity[0] < 0.0,
+            "wind should carry the vehicle downwind, got {}",
+            d.velocity[0]
+        );
     }
 
     #[test]
@@ -227,7 +288,14 @@ mod tests {
         let mut s = State::default();
         s.angular_rate = Vec3::new(0.0, 0.0, to_radians(90.0));
         for _ in 0..200 {
-            s = propagate(&s, hover_thrust_with(&p), &Vec3::zeros(), &Vec3::zeros(), 0.005, &p);
+            s = propagate(
+                &s,
+                hover_thrust_with(&p),
+                &Vec3::zeros(),
+                &Vec3::zeros(),
+                0.005,
+                &p,
+            );
         }
         // 1 s at 90 deg/s about down is a quarter turn; body +x now points east.
         let v = s.orientation.rotate_vector(&Vec3::new(1.0, 0.0, 0.0));

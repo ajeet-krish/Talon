@@ -66,9 +66,8 @@ fn optional_f64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<f64>> {
 /// Kept pure so the message the Python tests match on is testable without an
 /// initialized interpreter.
 fn margin_error(clearance_margin: f64) -> Option<String> {
-    (clearance_margin < 0.0).then(|| {
-        format!("clearance_margin must be non-negative, got {clearance_margin}")
-    })
+    (clearance_margin < 0.0)
+        .then(|| format!("clearance_margin must be non-negative, got {clearance_margin}"))
 }
 
 /// Reject a negative margin the way the retired Python module did.
@@ -151,19 +150,18 @@ fn plan_avoidance_mission(
     for obstacle in obstacles.try_iter()? {
         zones.push(obstacle_from(&obstacle?)?);
     }
-    Ok(avoidance::plan_avoidance_mission(&route, &zones, clearance_margin)
-        .into_iter()
-        .map(|w| (w.position.to_vec(), w.speed, w.heading, w.radius))
-        .collect())
+    Ok(
+        avoidance::plan_avoidance_mission(&route, &zones, clearance_margin)
+            .into_iter()
+            .map(|w| (w.position.to_vec(), w.speed, w.heading, w.radius))
+            .collect(),
+    )
 }
 
 /// Minimum 3-D surface clearance (m) over a trajectory, or `inf` when there
 /// are no positions or no zones.
 #[pyfunction]
-fn min_clearance(
-    positions: &Bound<'_, PyAny>,
-    obstacles: &Bound<'_, PyAny>,
-) -> PyResult<f64> {
+fn min_clearance(positions: &Bound<'_, PyAny>, obstacles: &Bound<'_, PyAny>) -> PyResult<f64> {
     let mut samples: Vec<Arr3> = Vec::new();
     for position in positions.try_iter()? {
         samples.push(arr3_from(&position?, "position")?);

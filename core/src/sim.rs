@@ -622,7 +622,10 @@ impl SimRunner {
             None => self.event_queue.push_back(event.to_string()),
             Some(t) => {
                 let owned = event.to_string();
-                self.schedule(t, Box::new(move |s: &mut SimRunner| s.event_queue.push_back(owned)));
+                self.schedule(
+                    t,
+                    Box::new(move |s: &mut SimRunner| s.event_queue.push_back(owned)),
+                );
             }
         }
     }
@@ -753,7 +756,9 @@ impl SimRunner {
         }
 
         // 7. Motors, wind, truth, ground clamp.
-        let forces = self.motors.step(self.command_thrust, self.command_moment, DT);
+        let forces = self
+            .motors
+            .step(self.command_thrust, self.command_moment, DT);
         let (thrust_actual, moment_actual) = forward_mix(forces);
         self.plant_step(
             Some(thrust_actual),
@@ -777,12 +782,8 @@ impl SimRunner {
     fn sensor_step(&mut self, i: usize, steps_per_gps: usize) {
         let truth_velocity = self.truth.velocity;
         let rotation = self.truth.orientation.to_dcm();
-        let f_body = specific_force_from_velocity(
-            &to_vec3(self.v_prev),
-            &truth_velocity,
-            &rotation,
-            DT,
-        );
+        let f_body =
+            specific_force_from_velocity(&to_vec3(self.v_prev), &truth_velocity, &rotation, DT);
         self.v_prev = to_arr3(&truth_velocity);
         let imu = self
             .sensors
@@ -822,7 +823,11 @@ impl SimRunner {
     }
 
     /// One truth RK4 step plus wind and the ground clamp.
-    fn plant_step(&mut self, thrust_actual: Option<f64>, moment_actual: Option<nalgebra::Vector3<f64>>) {
+    fn plant_step(
+        &mut self,
+        thrust_actual: Option<f64>,
+        moment_actual: Option<nalgebra::Vector3<f64>>,
+    ) {
         let (thrust, moment) = match (thrust_actual, moment_actual) {
             (Some(t), Some(m)) => (t, m),
             _ => {
@@ -888,7 +893,8 @@ impl SimRunner {
     /// so a post-flight review never skips a phase the vehicle passed through.
     fn note_phase_change(&mut self) {
         if self.state_machine.phase() != self.last_phase {
-            self.phase_timeline.push((self.time, self.state_machine.phase()));
+            self.phase_timeline
+                .push((self.time, self.state_machine.phase()));
             self.phase_enter_time = self.time;
             self.last_phase = self.state_machine.phase();
         }
@@ -955,7 +961,10 @@ impl SimRunner {
         if phase == FlightPhase::Takeoff
             && telemetry.altitude_above_home() > self.config.takeoff_altitude - 0.5
         {
-            if self.state_machine.request("altitude_reached", &telemetry, t) {
+            if self
+                .state_machine
+                .request("altitude_reached", &telemetry, t)
+            {
                 self.note_phase_change();
             }
         }
@@ -969,7 +978,10 @@ impl SimRunner {
         }
         if phase == FlightPhase::Waypoint {
             if telemetry.mission_complete {
-                if self.state_machine.request("mission_complete", &telemetry, t) {
+                if self
+                    .state_machine
+                    .request("mission_complete", &telemetry, t)
+                {
                     self.note_phase_change();
                 }
             }
@@ -1005,7 +1017,10 @@ impl SimRunner {
                 telemetry = self.build_telemetry();
             }
             if telemetry.altitude_above_home() < 0.5 {
-                if self.state_machine.request("emergency_landing", &telemetry, t) {
+                if self
+                    .state_machine
+                    .request("emergency_landing", &telemetry, t)
+                {
                     self.note_phase_change();
                 }
             }
@@ -1039,13 +1054,8 @@ impl SimRunner {
                     self.home[1],
                     self.home[2] - self.config.takeoff_altitude,
                 ];
-                let mut rtl = WaypointMission::new(vec![Waypoint::new(
-                    home_hover,
-                    5.0,
-                    0.0,
-                    1.0,
-                )])
-                .expect("a single waypoint is a valid mission");
+                let mut rtl = WaypointMission::new(vec![Waypoint::new(home_hover, 5.0, 0.0, 1.0)])
+                    .expect("a single waypoint is a valid mission");
                 rtl.set_start(ekf_position);
                 self.rtl_mission = Some(rtl);
             }
@@ -1097,10 +1107,7 @@ impl SimRunner {
             }
             FlightPhase::Waypoint => {
                 let ekf_velocity = to_arr3(&self.ekf.nominal().velocity);
-                let mission = self
-                    .mission
-                    .as_ref()
-                    .expect("WAYPOINT implies a mission");
+                let mission = self.mission.as_ref().expect("WAYPOINT implies a mission");
                 let mission_leg = MissionLeg {
                     origin: mission.previous_point(ekf_position),
                     waypoint: mission.active_waypoint().position,
@@ -1143,7 +1150,8 @@ impl SimRunner {
                     .expect("RTL implies an RTL mission");
                 rtl.update(ekf_position);
                 let (v_des, diagnostics) =
-                    self.guidance.compute_mission(ekf_position, ekf_velocity, rtl);
+                    self.guidance
+                        .compute_mission(ekf_position, ekf_velocity, rtl);
                 self.v_cmd = v_des;
                 self.reference = [
                     self.reference[0] + v_des[0] * DT_CONTROL,
@@ -1172,15 +1180,15 @@ impl SimRunner {
                     self.home[0] - ekf_position[0],
                     self.home[1] - ekf_position[1],
                 ];
-                let v_ne = if math::sqrt(ne_error[0] * ne_error[0] + ne_error[1] * ne_error[1]) < 5.0
-                {
-                    [
-                        math::clamp(0.8 * ne_error[0], -1.0, 1.0),
-                        math::clamp(0.8 * ne_error[1], -1.0, 1.0),
-                    ]
-                } else {
-                    [0.0, 0.0]
-                };
+                let v_ne =
+                    if math::sqrt(ne_error[0] * ne_error[0] + ne_error[1] * ne_error[1]) < 5.0 {
+                        [
+                            math::clamp(0.8 * ne_error[0], -1.0, 1.0),
+                            math::clamp(0.8 * ne_error[1], -1.0, 1.0),
+                        ]
+                    } else {
+                        [0.0, 0.0]
+                    };
                 self.v_cmd = [v_ne[0], v_ne[1], rate_z];
                 self.reference = [
                     self.reference[0] + self.v_cmd[0] * DT_CONTROL,
@@ -1201,9 +1209,13 @@ impl SimRunner {
             FlightPhase::Idle | FlightPhase::Arm => unreachable!("handled above"),
         }
 
-        let command = self
-            .controller
-            .step(&estimated, &to_vec3(self.reference), &to_vec3(self.v_cmd), yaw_desired, DT_CONTROL);
+        let command = self.controller.step(
+            &estimated,
+            &to_vec3(self.reference),
+            &to_vec3(self.v_cmd),
+            yaw_desired,
+            DT_CONTROL,
+        );
         self.command_thrust = f64::max(0.0, command.collective_thrust);
         self.command_moment = to_arr3(&command.moment);
     }
@@ -1228,8 +1240,10 @@ impl SimRunner {
         self.history_time.push(self.time);
         self.history_truth_pos.push(to_arr3(&self.truth.position));
         self.history_truth_vel.push(to_arr3(&self.truth.velocity));
-        self.history_ekf_pos.push(to_arr3(&self.ekf.nominal().position));
-        self.history_ekf_vel.push(to_arr3(&self.ekf.nominal().velocity));
+        self.history_ekf_pos
+            .push(to_arr3(&self.ekf.nominal().position));
+        self.history_ekf_vel
+            .push(to_arr3(&self.ekf.nominal().velocity));
         self.history_thrust.push(self.last_thrust_actual);
         self.history_moment.push(self.last_moment_actual);
         self.history_wind.push(self.last_wind_ned);
@@ -1315,10 +1329,7 @@ mod tests {
     #[test]
     fn an_invalid_run_duration_is_rejected() {
         let mut r = SimRunner::new(SimConfig::default()).unwrap();
-        assert!(matches!(
-            r.run(0.0),
-            Err(SimError::NonPositiveDuration(_))
-        ));
+        assert!(matches!(r.run(0.0), Err(SimError::NonPositiveDuration(_))));
     }
 
     #[test]
@@ -1342,7 +1353,10 @@ mod tests {
             r.step_once(i);
         }
         // No arm, no takeoff: on the ground, at rest, nothing commanding thrust.
-        assert!((r.truth().position[2]).abs() < 1e-9, "should be on the ground");
+        assert!(
+            (r.truth().position[2]).abs() < 1e-9,
+            "should be on the ground"
+        );
         assert!((r.truth().velocity[2]).abs() < 1e-6);
         assert_eq!(r.state_machine().phase(), FlightPhase::Idle);
     }
@@ -1500,7 +1514,10 @@ mod tests {
         r.request_event("arm", None);
         r.request_event("takeoff", None);
         // Divergence is only reported from 5 s of sim time.
-        r.schedule(6.0, Box::new(|s| s.inject_ekf_divergence(DivergenceMode::CorruptBias)));
+        r.schedule(
+            6.0,
+            Box::new(|s| s.inject_ekf_divergence(DivergenceMode::CorruptBias)),
+        );
         let result = r.run(20.0).unwrap();
         let visited = result.phases_visited();
         assert!(
@@ -1892,7 +1909,9 @@ mod tests {
         };
         assert!(matches!(
             SimRunner::new(cfg),
-            Err(SimError::Avoidance(AvoidanceError::NegativeClearanceMargin(_)))
+            Err(SimError::Avoidance(
+                AvoidanceError::NegativeClearanceMargin(_)
+            ))
         ));
     }
 }

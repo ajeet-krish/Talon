@@ -203,7 +203,10 @@ mod tests {
         assert_eq!(doc.meta.seed, config.seed);
         assert_eq!(doc.meta.dt, 0.01);
         assert_eq!(doc.meta.units.len(), 9);
-        assert_eq!(doc.meta.units.get("position").map(String::as_str), Some("m NED"));
+        assert_eq!(
+            doc.meta.units.get("position").map(String::as_str),
+            Some("m NED")
+        );
     }
 
     #[test]
@@ -235,7 +238,11 @@ mod tests {
         assert!((doc.meta.duration_s - last).abs() < 1e-12);
         // 45 s at the control rate means about 4500 samples, so the last time
         // is a hair under 45 s.
-        assert!((doc.meta.duration_s - 44.99).abs() < 0.02, "{}", doc.meta.duration_s);
+        assert!(
+            (doc.meta.duration_s - 44.99).abs() < 0.02,
+            "{}",
+            doc.meta.duration_s
+        );
     }
 
     #[test]
@@ -334,8 +341,14 @@ mod tests {
         let (result, _) = fly();
         let doc = flight_data(&result, "waypoints", 1, Vec::new(), "x".into(), Some(6));
         let json = to_json(&doc).unwrap();
-        assert!(json.contains("\"from_phase\":\"idle\""), "phases must be lowercase");
-        assert!(!json.contains("\"Idle\""), "no Rust-style phase names in the document");
+        assert!(
+            json.contains("\"from_phase\":\"idle\""),
+            "phases must be lowercase"
+        );
+        assert!(
+            !json.contains("\"Idle\""),
+            "no Rust-style phase names in the document"
+        );
     }
 
     #[test]

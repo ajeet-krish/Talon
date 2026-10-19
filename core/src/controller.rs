@@ -237,7 +237,11 @@ mod tests {
         let mut c = CascadedController::with_defaults();
         let state = State::default();
         let cmd = c.step(&state, &Vec3::zeros(), &Vec3::zeros(), 0.0, 0.01);
-        assert!((cmd.collective_thrust - 1.5 * 9.81).abs() < 1e-9, "{}", cmd.collective_thrust);
+        assert!(
+            (cmd.collective_thrust - 1.5 * 9.81).abs() < 1e-9,
+            "{}",
+            cmd.collective_thrust
+        );
         assert!(cmd.moment.norm() < 1e-12, "moment {}", cmd.moment);
     }
 
@@ -264,7 +268,13 @@ mod tests {
         let state = State::default();
         // Level, at the setpoint, but with a 90 degree yaw command: the
         // attitude error must be non-zero and about the yaw axis.
-        let cmd = c.step(&state, &Vec3::zeros(), &Vec3::zeros(), to_radians(90.0), 0.01);
+        let cmd = c.step(
+            &state,
+            &Vec3::zeros(),
+            &Vec3::zeros(),
+            to_radians(90.0),
+            0.01,
+        );
         let e = c.last_attitude_error();
         assert!(e[2].abs() > 1e-3, "expected yaw error: {e}");
         assert!(cmd.moment[2].abs() > 0.0, "expected yaw moment");
@@ -279,11 +289,23 @@ mod tests {
         let mut c = CascadedController::with_defaults();
         let state = State::default();
         for _ in 0..200 {
-            c.step(&state, &Vec3::new(1000.0, 0.0, 0.0), &Vec3::zeros(), 0.0, 0.01);
+            c.step(
+                &state,
+                &Vec3::new(1000.0, 0.0, 0.0),
+                &Vec3::zeros(),
+                0.0,
+                0.01,
+            );
         }
         let accumulated = c.integral_position()[0].abs();
-        assert!(accumulated < 1.0, "integrator should stay bounded, got {accumulated}");
-        assert!(accumulated > 0.0, "integrator should not be clipped to zero");
+        assert!(
+            accumulated < 1.0,
+            "integrator should stay bounded, got {accumulated}"
+        );
+        assert!(
+            accumulated > 0.0,
+            "integrator should not be clipped to zero"
+        );
     }
 
     #[test]
@@ -292,10 +314,20 @@ mod tests {
         let mut c = CascadedController::with_defaults();
         let state = State::default();
         for _ in 0..100 {
-            c.step(&state, &Vec3::new(0.05, 0.0, 0.0), &Vec3::zeros(), 0.0, 0.01);
+            c.step(
+                &state,
+                &Vec3::new(0.05, 0.0, 0.0),
+                &Vec3::zeros(),
+                0.0,
+                0.01,
+            );
         }
         // 100 steps * 0.05 m * 0.01 s = 0.05 m*s.
-        assert!((c.integral_position()[0] - 0.05).abs() < 1e-9, "{}", c.integral_position()[0]);
+        assert!(
+            (c.integral_position()[0] - 0.05).abs() < 1e-9,
+            "{}",
+            c.integral_position()[0]
+        );
     }
 
     #[test]
@@ -311,7 +343,14 @@ mod tests {
         let target = Vec3::new(0.0, 0.0, 0.0);
         for _ in 0..2000 {
             let cmd = c.step(&s, &target, &Vec3::zeros(), 0.0, 0.005);
-            s = propagate(&s, cmd.collective_thrust, &cmd.moment, &Vec3::zeros(), 0.005, &params);
+            s = propagate(
+                &s,
+                cmd.collective_thrust,
+                &cmd.moment,
+                &Vec3::zeros(),
+                0.005,
+                &params,
+            );
         }
         assert!(s.position.norm() < 0.5, "did not converge: {}", s.position);
         assert!(s.velocity.norm() < 0.5, "still moving: {}", s.velocity);

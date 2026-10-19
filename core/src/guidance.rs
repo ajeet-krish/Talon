@@ -154,7 +154,10 @@ impl NlglGuidance {
         let ground_speed = math::sqrt(v_g[0] * v_g[0] + v_g[1] * v_g[1]);
 
         // Look-ahead distance from the true ground speed, floored at l1_min.
-        let l1 = f64::max(cfg.l1_min, cfg.zeta * cfg.period_t * ground_speed / math::PI);
+        let l1 = f64::max(
+            cfg.l1_min,
+            cfg.zeta * cfg.period_t * ground_speed / math::PI,
+        );
 
         let (e_ct, nu1, nu2, nu, chi_d, behind_a_recovery);
         if leg_length < LEG_LENGTH_EPS {
@@ -178,10 +181,7 @@ impl NlglGuidance {
             // Nu1: cross-track angle, clipped so a large offset cannot demand
             // more than nu1_clip of capture angle.
             let sin_clip = math::sin(nu1_clip);
-            nu1 = math::asin(f64::min(
-                sin_clip,
-                f64::max(-sin_clip, e_ct / l1),
-            ));
+            nu1 = math::asin(f64::min(sin_clip, f64::max(-sin_clip, e_ct / l1)));
 
             // Nu2 from the EKF ground velocity. Below the speed floor the
             // course is undefined, so Nu2 = 0 and only Nu1 steers.
@@ -196,8 +196,8 @@ impl NlglGuidance {
 
             // Behind-A recovery: well behind the leg start and far from A, so
             // steer directly at A and ignore path steering.
-            behind_a_recovery = s < BEHIND_S_THRESHOLD
-                && math::sqrt(r_ne[0] * r_ne[0] + r_ne[1] * r_ne[1]) > l1;
+            behind_a_recovery =
+                s < BEHIND_S_THRESHOLD && math::sqrt(r_ne[0] * r_ne[0] + r_ne[1] * r_ne[1]) > l1;
             if behind_a_recovery {
                 let to_a = [a[0] - p[0], a[1] - p[1]];
                 chi_d = if math::sqrt(to_a[0] * to_a[0] + to_a[1] * to_a[1]) < 1e-12 {
@@ -323,7 +323,11 @@ mod tests {
         // Track runs north; the ground velocity is crabbed to the west, so the
         // law must aim east of the track to cancel the drift.
         let (_, d) = g().compute_leg([25.0, 0.0, -10.0], [6.0, -1.2, 0.0], A, B);
-        assert!(d.nu2 > 0.0, "expected an eastward correction, got {}", d.nu2);
+        assert!(
+            d.nu2 > 0.0,
+            "expected an eastward correction, got {}",
+            d.nu2
+        );
         assert!(d.chi_d > 0.0);
     }
 
@@ -340,7 +344,11 @@ mod tests {
         let b = [50.0, 0.0, -25.0];
         let (v, _) = g().compute_leg([0.0, 0.0, -10.0], [0.0; 3], A, b);
         assert!(v[2] < 0.0, "climb must be negative in NED, got {}", v[2]);
-        assert!((v[2] + 2.0).abs() < 1e-9, "should saturate the climb rate, got {}", v[2]);
+        assert!(
+            (v[2] + 2.0).abs() < 1e-9,
+            "should saturate the climb rate, got {}",
+            v[2]
+        );
     }
 
     #[test]
@@ -391,7 +399,11 @@ mod tests {
             d.chi_d
         );
         // Without recovery the clipped track angle would be nu1 alone.
-        assert!(d.chi_d > -0.5, "recovery should not clip to -45 deg: {}", d.chi_d);
+        assert!(
+            d.chi_d > -0.5,
+            "recovery should not clip to -45 deg: {}",
+            d.chi_d
+        );
     }
 
     #[test]

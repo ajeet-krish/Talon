@@ -225,7 +225,10 @@ mod tests {
         let mut b = BatteryModel::with_defaults();
         let cfg = BatteryConfig::default();
         let state = b.update(cfg.hover_thrust_n, 0.005);
-        assert!((state.current_a - cfg.hover_current_a).abs() < 1e-12, "{state:?}");
+        assert!(
+            (state.current_a - cfg.hover_current_a).abs() < 1e-12,
+            "{state:?}"
+        );
     }
 
     #[test]
@@ -242,7 +245,10 @@ mod tests {
         let mut b = BatteryModel::new(cfg, 1.0).unwrap();
         let before = b.soc();
         let state = b.update(0.0, 60.0);
-        assert!((state.current_a - cfg.idle_current_a).abs() < 1e-12, "{state:?}");
+        assert!(
+            (state.current_a - cfg.idle_current_a).abs() < 1e-12,
+            "{state:?}"
+        );
         assert!(b.soc() < before, "should still drain slowly");
     }
 
@@ -332,6 +338,9 @@ mod tests {
         let cfg = BatteryConfig::default();
         let mut b = BatteryModel::new(cfg, 1.0).unwrap();
         let state = b.update(-50.0, 0.005);
-        assert!((state.current_a - cfg.idle_current_a).abs() < 1e-12, "{state:?}");
+        assert!(
+            (state.current_a - cfg.idle_current_a).abs() < 1e-12,
+            "{state:?}"
+        );
     }
 }

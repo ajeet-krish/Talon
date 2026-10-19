@@ -118,7 +118,11 @@ mod tests {
         for _ in 0..50 {
             w.step(0.0);
         }
-        assert_eq!(w.wind_arr(), [0.0, 0.0, 0.0], "frozen process must stay at zero");
+        assert_eq!(
+            w.wind_arr(),
+            [0.0, 0.0, 0.0],
+            "frozen process must stay at zero"
+        );
     }
 
     #[test]
@@ -151,7 +155,10 @@ mod tests {
         let mean = sum / n as f64;
         let var = sum_sq / n as f64 - mean * mean;
         let sd = var.sqrt();
-        assert!((sd - sigma).abs() < 0.15 * sigma, "sd {sd} vs sigma {sigma}");
+        assert!(
+            (sd - sigma).abs() < 0.15 * sigma,
+            "sd {sd} vs sigma {sigma}"
+        );
     }
 
     #[test]

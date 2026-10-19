@@ -168,10 +168,7 @@ pub struct PyCascadedController {
 impl PyCascadedController {
     #[new]
     #[pyo3(signature = (gains, params=None))]
-    fn new(
-        gains: PyRef<'_, PyControlGains>,
-        params: Option<PyRef<'_, PyVehicleParams>>,
-    ) -> Self {
+    fn new(gains: PyRef<'_, PyControlGains>, params: Option<PyRef<'_, PyVehicleParams>>) -> Self {
         let params = params.map(|p| p.inner).unwrap_or_default();
         Self {
             inner: CascadedController::new(gains.inner, params),

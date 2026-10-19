@@ -138,7 +138,8 @@ impl WaypointMission {
     pub fn distance_remaining(&self, position_ned: Arr3) -> f64 {
         let mut total = horizontal_distance(position_ned, self.active_waypoint().position);
         for i in self.active_index..self.waypoints.len() - 1 {
-            total += horizontal_distance(self.waypoints[i].position, self.waypoints[i + 1].position);
+            total +=
+                horizontal_distance(self.waypoints[i].position, self.waypoints[i + 1].position);
         }
         total
     }
@@ -266,7 +267,10 @@ mod tests {
         m.update([20.0, 0.0, -10.0]);
         assert_eq!(m.active_index(), 2);
         let after = m.distance_remaining([20.0, 0.0, -10.0]);
-        assert!((after - 20.0).abs() < 1e-9, "only the last leg remains: {after}");
+        assert!(
+            (after - 20.0).abs() < 1e-9,
+            "only the last leg remains: {after}"
+        );
         assert!(after < 40.0);
     }
 

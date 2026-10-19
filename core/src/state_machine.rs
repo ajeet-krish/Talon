@@ -241,7 +241,13 @@ impl FlightPhaseMachine {
             if telemetry.ekf_diverged || telemetry.motor_fault {
                 if self.phase == FlightPhase::Emergency {
                     let phase = self.phase;
-                    self.log(time_s, phase, phase, "critical_fault:already_emergency", true);
+                    self.log(
+                        time_s,
+                        phase,
+                        phase,
+                        "critical_fault:already_emergency",
+                        true,
+                    );
                     return true;
                 }
                 let from = self.phase;
@@ -349,7 +355,10 @@ mod tests {
         let mut m = machine();
         t.ekf_converged = true;
         t.battery_soc = 0.30;
-        assert!(!m.request("arm", &t, 0.0), "the guard is a strict inequality");
+        assert!(
+            !m.request("arm", &t, 0.0),
+            "the guard is a strict inequality"
+        );
         t.battery_soc = 0.31;
         assert!(m.request("arm", &t, 0.0));
     }
@@ -376,7 +385,10 @@ mod tests {
             position_ned: [0.0, 0.0, -9.4],
             ..Default::default()
         };
-        assert!(!m.request("altitude_reached", &below, 1.0), "9.4 m is short");
+        assert!(
+            !m.request("altitude_reached", &below, 1.0),
+            "9.4 m is short"
+        );
         let above = Telemetry {
             position_ned: [0.0, 0.0, -9.6],
             ..Default::default()
@@ -477,9 +489,7 @@ mod tests {
 
     #[test]
     fn critical_fault_reaches_emergency_from_every_phase() {
-        for phase in [
-            Idle, Arm, Takeoff, Cruise, Waypoint, Rtl, Land, Emergency,
-        ] {
+        for phase in [Idle, Arm, Takeoff, Cruise, Waypoint, Rtl, Land, Emergency] {
             let mut m = machine();
             m.force_phase(phase, 0.0, "test");
             let fault = Telemetry {
@@ -651,7 +661,10 @@ mod tests {
             home_position_ned: [0.0, 0.0, -2.0],
             ..Default::default()
         };
-        assert!((t.altitude_above_home() - 10.0).abs() < 1e-12, "up is positive");
+        assert!(
+            (t.altitude_above_home() - 10.0).abs() < 1e-12,
+            "up is positive"
+        );
         assert!((t.horizontal_dist_to_home() - 50.0).abs() < 1e-12);
         assert!((t.vel_z() - 1.5).abs() < 1e-12, "positive is descending");
     }

@@ -285,7 +285,10 @@ mod tests {
         assert!(on.avoidance.enabled);
         assert_eq!(on.avoidance.clearance_margin_m, 2.0);
         assert_eq!(on.avoidance.lookahead_s, 3.0);
-        assert_eq!(on.avoidance.detour_buffer_m, crate::avoidance::DETOUR_BUFFER_M);
+        assert_eq!(
+            on.avoidance.detour_buffer_m,
+            crate::avoidance::DETOUR_BUFFER_M
+        );
         // And the projection carries both the zones and the tuning through.
         let sim = on.to_sim_config();
         assert!(sim.avoidance.enabled);
@@ -306,7 +309,10 @@ mod tests {
             duration_s: 0.0,
             ..Default::default()
         };
-        assert!(matches!(cfg.validate(), Err(SimError::NonPositiveDuration(_))));
+        assert!(matches!(
+            cfg.validate(),
+            Err(SimError::NonPositiveDuration(_))
+        ));
     }
 
     #[test]
