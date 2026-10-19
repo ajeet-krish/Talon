@@ -2137,3 +2137,12 @@ upstream invariant. (2) A `unwrap_or_else(|_| "{}")` (or `"[]"`) fallback
 combined with a parse-then-cast on the other side converts an impossible
 error into a render-time throw; prefer a typed default or a guard at the
 consuming site.
+
+### Phase 5c security follow-up (2026-10-19)
+
+The one actionable Low from the Phase 5c security review is closed:
+`src/live/sim.ts` normalizes a missing or non-array `phases` from the
+summary JSON to `[]`, so the impossible `"{}"` serialization fallback
+can no longer throw during render. Two tests pin the missing and null
+cases. The non-finite-nullability note remains theoretical and is
+recorded as a future invariant, not a bug.

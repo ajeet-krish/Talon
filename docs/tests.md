@@ -1387,3 +1387,11 @@ configs, `validation.json`) is untouched.
   binary moved, and the working tree is exactly as the gate found it.
 - [x] No em dashes, double hyphens, or dash equivalents in this section; nothing
   outside `docs/tests.md` was modified by this gate.
+
+### Phase 5c follow-up (2026-10-19)
+
+After the Phase 5c gate, two defensive tests were added for the summary
+passthrough: `phases` missing and `phases: null` from `summary_json()`
+both normalize to `[]` instead of throwing in `RunView`. Final counts:
+272 Rust tests (245 talon-core, 14 talon-wasm, 13 talon-py), 399 pytest,
+and 182 vitest. clippy and rustfmt remain clean.
