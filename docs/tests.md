@@ -746,3 +746,50 @@ Git status caveat: `git diff --stat` shows core/src/math.rs (124 insertions,
 modified, plus the untracked eagle-shield.svg. The math.rs change is the
 subject under test; the reviews.md edit is a separate, pre-existing agent
 write-up, not produced by this gate. No source file was modified by the Tester.
+
+### Phase 2b test gate (2026-10-18)
+
+Scope: clippy cleanup in `core/src` and `bindings/src`, CI gates in
+`.github/workflows/ci.yml`, and the TypeScript wasm contract fix
+(`src/live/engine.ts`, `sim.ts`, `sim.test.ts`, `engine.contract.test.ts`).
+No source file was modified by this gate beyond adding tests.
+
+Gate commands and exact results (all from the repository root):
+
+| Command | Result |
+|---------|--------|
+| `cargo test --workspace` (before new tests) | PASS: 235 passed, 0 failed (talon-core 220, talon-py 3, talon-wasm 12, doc-tests 0) |
+| `npm test` | PASS: 11 test files, 137 tests passed |
+| `npm run build` | PASS: 647 modules transformed, built in 1.78 s (chunk-size warning only) |
+| `npm run smoke:wasm` | PASS: all live smoke checks passed (fast + paced loop) |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS: 0 warnings, exit 0 |
+| `cargo fmt --all -- --check` | PASS: exit 0, no diffs |
+| `cargo test --workspace` (after new tests) | PASS: 240 passed, 0 failed (talon-core 225, talon-py 3, talon-wasm 12, doc-tests 0) |
+
+Regression tests added for the six validation guards rewritten from
+`!(x > 0.0)` (true for NaN) to `x <= 0.0 || x.is_nan()` (false for NaN).
+Each pins NaN rejection, zero rejection, negative rejection, and acceptance
+of a normal positive value, and stays valid when a later phase tightens the
+guards to `!x.is_finite()` (NaN and the tested values keep their verdicts):
+
+| Test | File | Verdict | Notes |
+|------|------|---------|-------|
+| `battery::tests::nan_capacity_and_hover_thrust_are_rejected_like_non_positive_values` | core/src/battery.rs | PASS | Covers both `capacity_mah` and `hover_thrust_n` guards through `BatteryModel::new`, pinning `NonPositiveCapacity` and `NonPositiveHoverThrust` variants |
+| `motors::tests::a_nan_time_constant_is_rejected_but_a_normal_one_is_accepted` | core/src/motors.rs | PASS | `MotorModel::new` rejects NaN, 0.0, -0.02; accepts 0.02 and reports it back via `time_const()` |
+| `scenario::tests::validation_rejects_a_nan_duration_like_a_non_positive_one` | core/src/scenario.rs | PASS | `ScenarioConfig::validate` rejects NaN, 0.0, -1.0 `duration_s` with `NonPositiveDuration`; accepts 30.0 |
+| `sim::tests::a_nan_takeoff_altitude_is_rejected_but_a_normal_one_is_accepted` | core/src/sim.rs | PASS | `SimRunner::new` rejects NaN, 0.0, -1.0 `takeoff_altitude` with `NonPositiveTakeoffAltitude`; accepts 10.0 |
+| `state_machine::tests::nan_takeoff_altitude_is_rejected_but_a_normal_one_is_accepted` | core/src/state_machine.rs | PASS | `FlightPhaseMachine::new` rejects NaN, 0.0, -1.0 pinning the error variant; accepts 12.0 and reports it via `takeoff_altitude()` |
+
+`BEHIND_S_THRESHOLD` Python parity (out-of-tree script, repository
+untouched): the Rust constant `core/src/guidance.rs:55`
+`const BEHIND_S_THRESHOLD: f64 = -7071.0 / 10_000.0` and the Python
+`python/talon/guidance.py:94` `_BEHIND_S_THRESHOLD = -0.7071` were parsed
+from source and compared as IEEE 754 doubles. Both are bit-identical,
+little-endian hex `1b0de02d90a0e6bf` (-0.7071). The correctly rounded f64
+division of the exactly representable literals equals the nearest double to
+the decimal literal, so the `s < BEHIND_S_THRESHOLD` comparisons at
+core/src/guidance.rs:203 and python/talon/guidance.py:244 branch identically.
+
+Verification checklist: all suites pass (Rust 240, TypeScript 137, smoke
+green), clippy and fmt clean, happy path and error paths covered, guards
+pinned against NaN regressions, parity with Python confirmed bit-exact.

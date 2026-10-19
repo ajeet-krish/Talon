@@ -119,7 +119,9 @@ impl Default for SimConfig {
 impl SimConfig {
     /// Validate the scenario parameters.
     pub fn validate(&self) -> Result<(), SimError> {
-        if !(self.takeoff_altitude > 0.0) {
+        // NaN is rejected on purpose: !(NaN > 0.0) was true, so a NaN
+        // takeoff altitude must fail validation just like a non-positive one.
+        if self.takeoff_altitude <= 0.0 || self.takeoff_altitude.is_nan() {
             return Err(SimError::NonPositiveTakeoffAltitude(self.takeoff_altitude));
         }
         self.avoidance.validate()?;
@@ -292,6 +294,9 @@ impl SimResult {
     }
 }
 
+/// One-shot fault callback: runs against the runner when its fire time is due.
+pub type ScheduledAction = Box<dyn FnOnce(&mut SimRunner)>;
+
 /// Full-stack closed-loop SIL, single-threaded and steppable.
 ///
 /// Build with [`SimRunner::new`], configure faults, then either [`SimRunner::run`]
@@ -350,7 +355,7 @@ pub struct SimRunner {
     last_phase: FlightPhase,
 
     event_queue: VecDeque<String>,
-    scheduled: Vec<(f64, Box<dyn FnOnce(&mut SimRunner)>)>,
+    scheduled: Vec<(f64, ScheduledAction)>,
 
     history_time: Vec<f64>,
     history_truth_pos: Vec<Arr3>,
@@ -423,8 +428,10 @@ impl SimRunner {
             Some(WaypointMission::new(config.waypoints.clone())?)
         };
 
-        let mut truth = State::default();
-        truth.position = to_vec3(config.start_position_ned);
+        let truth = State {
+            position: to_vec3(config.start_position_ned),
+            ..State::default()
+        };
         let home = config.start_position_ned;
         let ground_z = home[2];
 
@@ -631,7 +638,7 @@ impl SimRunner {
     }
 
     /// Run `action` once sim time reaches `at_time`.
-    pub fn schedule(&mut self, at_time: f64, action: Box<dyn FnOnce(&mut SimRunner)>) {
+    pub fn schedule(&mut self, at_time: f64, action: ScheduledAction) {
         self.scheduled.push((at_time, action));
     }
 
@@ -960,54 +967,50 @@ impl SimRunner {
         let t = self.time;
         if phase == FlightPhase::Takeoff
             && telemetry.altitude_above_home() > self.config.takeoff_altitude - 0.5
-        {
-            if self
+            && self
                 .state_machine
                 .request("altitude_reached", &telemetry, t)
-            {
-                self.note_phase_change();
-            }
+        {
+            self.note_phase_change();
         }
         if phase == FlightPhase::Cruise
             && self.mission.is_some()
             && (self.time - self.phase_enter_time) >= self.config.cruise_hold_s
+            && self.state_machine.request("mission_start", &telemetry, t)
         {
-            if self.state_machine.request("mission_start", &telemetry, t) {
-                self.note_phase_change();
-            }
+            self.note_phase_change();
         }
         if phase == FlightPhase::Waypoint {
-            if telemetry.mission_complete {
-                if self
+            if telemetry.mission_complete
+                && self
                     .state_machine
                     .request("mission_complete", &telemetry, t)
-                {
-                    self.note_phase_change();
-                }
-            }
-            if telemetry.battery_soc < 0.20 {
-                if self.state_machine.request("low_battery", &telemetry, t) {
-                    self.note_phase_change();
-                }
-            }
-            if telemetry.gps_outage_duration > 5.0 {
-                if self.state_machine.request("gps_lost", &telemetry, t) {
-                    self.note_phase_change();
-                }
-            }
-        }
-        if phase == FlightPhase::Rtl && telemetry.horizontal_dist_to_home() < 1.0 {
-            if self.state_machine.request("home_reached", &telemetry, t) {
+            {
                 self.note_phase_change();
             }
+            if telemetry.battery_soc < 0.20
+                && self.state_machine.request("low_battery", &telemetry, t)
+            {
+                self.note_phase_change();
+            }
+            if telemetry.gps_outage_duration > 5.0
+                && self.state_machine.request("gps_lost", &telemetry, t)
+            {
+                self.note_phase_change();
+            }
+        }
+        if phase == FlightPhase::Rtl
+            && telemetry.horizontal_dist_to_home() < 1.0
+            && self.state_machine.request("home_reached", &telemetry, t)
+        {
+            self.note_phase_change();
         }
         if phase == FlightPhase::Land
             && telemetry.altitude_above_home() < 0.1
             && telemetry.vel_z().abs() < 0.1
+            && self.state_machine.request("landed", &telemetry, t)
         {
-            if self.state_machine.request("landed", &telemetry, t) {
-                self.note_phase_change();
-            }
+            self.note_phase_change();
         }
         if phase == FlightPhase::Emergency {
             // Latch the descent flag on the first step in EMERGENCY so the
@@ -1016,13 +1019,12 @@ impl SimRunner {
                 self.emergency_descent_active = true;
                 telemetry = self.build_telemetry();
             }
-            if telemetry.altitude_above_home() < 0.5 {
-                if self
+            if telemetry.altitude_above_home() < 0.5
+                && self
                     .state_machine
                     .request("emergency_landing", &telemetry, t)
-                {
-                    self.note_phase_change();
-                }
+            {
+                self.note_phase_change();
             }
         }
 
@@ -1324,6 +1326,32 @@ mod tests {
             SimRunner::new(cfg),
             Err(SimError::NonPositiveTakeoffAltitude(_))
         ));
+    }
+
+    #[test]
+    fn a_nan_takeoff_altitude_is_rejected_but_a_normal_one_is_accepted() {
+        // Regression: `takeoff_altitude <= 0.0` alone would accept NaN,
+        // pinning the phase machine's climb target to an undefined value.
+        // These cases stay valid when the guard later tightens to
+        // `!takeoff_altitude.is_finite()`.
+        for bad in [f64::NAN, 0.0, -1.0] {
+            let cfg = SimConfig {
+                takeoff_altitude: bad,
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    SimRunner::new(cfg),
+                    Err(SimError::NonPositiveTakeoffAltitude(_))
+                ),
+                "takeoff_altitude {bad} should be rejected"
+            );
+        }
+        SimRunner::new(SimConfig {
+            takeoff_altitude: 10.0,
+            ..Default::default()
+        })
+        .expect("a normal positive takeoff altitude is accepted");
     }
 
     #[test]

@@ -83,10 +83,12 @@ impl std::error::Error for BatteryError {}
 impl BatteryConfig {
     /// Validate the configuration.
     pub fn validate(&self) -> Result<(), BatteryError> {
-        if !(self.capacity_mah > 0.0) {
+        // NaN is rejected here on purpose: !(NaN > 0.0) is true, so the
+        // original form failed on NaN and `x <= 0.0` alone would accept it.
+        if self.capacity_mah <= 0.0 || self.capacity_mah.is_nan() {
             return Err(BatteryError::NonPositiveCapacity(self.capacity_mah));
         }
-        if !(self.hover_thrust_n > 0.0) {
+        if self.hover_thrust_n <= 0.0 || self.hover_thrust_n.is_nan() {
             return Err(BatteryError::NonPositiveHoverThrust(self.hover_thrust_n));
         }
         Ok(())
@@ -210,6 +212,41 @@ mod tests {
             BatteryModel::new(bad_hover, 1.0),
             Err(BatteryError::NonPositiveHoverThrust(_))
         ));
+    }
+
+    #[test]
+    fn nan_capacity_and_hover_thrust_are_rejected_like_non_positive_values() {
+        // Regression: `x <= 0.0` alone would accept NaN, so both guards
+        // carry an explicit `is_nan()` branch. These cases stay valid when
+        // the guards later tighten to `!x.is_finite()`.
+        for bad in [f64::NAN, 0.0, -1500.0] {
+            let cfg = BatteryConfig {
+                capacity_mah: bad,
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    BatteryModel::new(cfg, 1.0),
+                    Err(BatteryError::NonPositiveCapacity(_))
+                ),
+                "capacity_mah {bad} should be rejected"
+            );
+        }
+        for bad in [f64::NAN, 0.0, -12.0] {
+            let cfg = BatteryConfig {
+                hover_thrust_n: bad,
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    BatteryModel::new(cfg, 1.0),
+                    Err(BatteryError::NonPositiveHoverThrust(_))
+                ),
+                "hover_thrust_n {bad} should be rejected"
+            );
+        }
+        BatteryModel::new(BatteryConfig::default(), 1.0)
+            .expect("normal positive capacity and hover thrust are accepted");
     }
 
     #[test]

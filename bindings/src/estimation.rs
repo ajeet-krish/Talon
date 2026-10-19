@@ -8,17 +8,10 @@ use crate::convert::{mat15_to, vec3_from, vec3_to, vec6_to};
 use crate::types::PyQuaternion;
 
 /// Noise densities, initial covariances and the innovation gate.
+#[derive(Default)]
 #[pyclass(name = "EKFConfig")]
 pub struct PyEkfConfig {
     inner: EkfConfig,
-}
-
-impl Default for PyEkfConfig {
-    fn default() -> Self {
-        Self {
-            inner: EkfConfig::default(),
-        }
-    }
 }
 
 #[pymethods]
@@ -173,17 +166,10 @@ impl PyEkfConfig {
 }
 
 /// Nominal (mean) EKF state.
+#[derive(Default)]
 #[pyclass(name = "EKFNominalState")]
 pub struct PyEkfNominalState {
     pub(crate) inner: EkfNominalState,
-}
-
-impl Default for PyEkfNominalState {
-    fn default() -> Self {
-        Self {
-            inner: EkfNominalState::default(),
-        }
-    }
 }
 
 #[pymethods]

@@ -139,7 +139,9 @@ impl ScenarioConfig {
     /// Checks the duration, which the runner needs, on top of everything
     /// [`SimConfig::validate`] already covers.
     pub fn validate(&self) -> Result<(), SimError> {
-        if !(self.duration_s > 0.0) {
+        // NaN is rejected on purpose: !(NaN > 0.0) was true, so the run
+        // duration guard must fail for NaN as well as for zero or negatives.
+        if self.duration_s <= 0.0 || self.duration_s.is_nan() {
             return Err(SimError::NonPositiveDuration(self.duration_s));
         }
         self.to_sim_config().validate()
@@ -313,6 +315,29 @@ mod tests {
             cfg.validate(),
             Err(SimError::NonPositiveDuration(_))
         ));
+    }
+
+    #[test]
+    fn validation_rejects_a_nan_duration_like_a_non_positive_one() {
+        // Regression: `duration_s <= 0.0` alone would accept NaN, which
+        // would leave a run without a defined end. These cases stay valid
+        // when the guard later tightens to `!duration_s.is_finite()`.
+        for bad in [f64::NAN, 0.0, -1.0] {
+            let cfg = ScenarioConfig {
+                duration_s: bad,
+                ..Default::default()
+            };
+            assert!(
+                matches!(cfg.validate(), Err(SimError::NonPositiveDuration(_))),
+                "duration_s {bad} should be rejected"
+            );
+        }
+        let cfg = ScenarioConfig {
+            duration_s: 30.0,
+            ..Default::default()
+        };
+        cfg.validate()
+            .expect("a normal positive duration is accepted");
     }
 
     #[test]

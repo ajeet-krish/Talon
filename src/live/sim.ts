@@ -174,7 +174,12 @@ export class LiveSim {
 
   /** GPS fix accounting from the core: accepted, gated, skipped. */
   gpsCounts(): [number, number, number] {
-    return [this.session.gps_accepted, this.session.gps_gated, this.session.gps_skipped]
+    // The core counts are u64 and arrive as bigint; they are narrowed here for display.
+    return [
+      Number(this.session.gps_accepted),
+      Number(this.session.gps_gated),
+      Number(this.session.gps_skipped),
+    ]
   }
 
   /** Estimator flags from the core: converged, diverged. */

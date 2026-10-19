@@ -154,7 +154,6 @@ pub fn propagate(
                         + 2.0 * k3.orientation.z
                         + k4.orientation.z),
         ),
-        ..Default::default()
     };
     State {
         orientation: out.orientation.normalized(),
@@ -239,8 +238,10 @@ mod tests {
     fn drag_opposes_motion() {
         // Moving north in still air, drag must decelerate northward motion.
         let p = params();
-        let mut s = State::default();
-        s.velocity = Vec3::new(10.0, 0.0, 0.0);
+        let s = State {
+            velocity: Vec3::new(10.0, 0.0, 0.0),
+            ..State::default()
+        };
         let d = state_derivative(
             &s,
             hover_thrust_with(&p),
@@ -285,8 +286,10 @@ mod tests {
     #[test]
     fn yaw_rate_produces_heading_change() {
         let p = params();
-        let mut s = State::default();
-        s.angular_rate = Vec3::new(0.0, 0.0, to_radians(90.0));
+        let mut s = State {
+            angular_rate: Vec3::new(0.0, 0.0, to_radians(90.0)),
+            ..State::default()
+        };
         for _ in 0..200 {
             s = propagate(
                 &s,

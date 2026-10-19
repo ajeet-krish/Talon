@@ -201,7 +201,9 @@ pub struct FlightPhaseMachine {
 impl FlightPhaseMachine {
     /// Build a machine that starts in `IDLE`.
     pub fn new(takeoff_altitude: f64) -> Result<Self, PhaseError> {
-        if !(takeoff_altitude > 0.0) {
+        // NaN is rejected on purpose: !(NaN > 0.0) was true, so a NaN
+        // altitude guard would otherwise slip past a plain `<= 0.0` check.
+        if takeoff_altitude <= 0.0 || takeoff_altitude.is_nan() {
             return Err(PhaseError::NonPositiveTakeoffAltitude(takeoff_altitude));
         }
         Ok(Self {
@@ -333,6 +335,24 @@ mod tests {
         ));
         assert!(FlightPhaseMachine::new(-1.0).is_err());
         assert!(FlightPhaseMachine::new(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn nan_takeoff_altitude_is_rejected_but_a_normal_one_is_accepted() {
+        // Regression: `takeoff_altitude <= 0.0` alone would accept NaN. The
+        // error variant is pinned too, not just `is_err()`. These cases stay
+        // valid when the guard later tightens to `!is_finite()`.
+        for bad in [f64::NAN, 0.0, -1.0] {
+            assert!(
+                matches!(
+                    FlightPhaseMachine::new(bad),
+                    Err(PhaseError::NonPositiveTakeoffAltitude(_))
+                ),
+                "takeoff_altitude {bad} should be rejected"
+            );
+        }
+        let m = FlightPhaseMachine::new(12.0).expect("a normal positive altitude is accepted");
+        assert_eq!(m.takeoff_altitude(), 12.0);
     }
 
     #[test]

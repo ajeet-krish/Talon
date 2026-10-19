@@ -124,7 +124,9 @@ pub struct MotorModel {
 impl MotorModel {
     /// Build a motor model with the given lag time constant (s).
     pub fn new(time_const: f64) -> Result<Self, MotorError> {
-        if !(time_const > 0.0) {
+        // NaN is rejected on purpose: !(NaN > 0.0) was true, and
+        // `time_const <= 0.0` alone would accept a NaN lag.
+        if time_const <= 0.0 || time_const.is_nan() {
             return Err(MotorError::NonPositiveTimeConstant(time_const));
         }
         Ok(Self {
@@ -151,9 +153,9 @@ impl MotorModel {
         let dt = if dt > 0.0 { dt } else { 0.0 };
         let commanded = motor_mixing(thrust, moment);
         let alpha = 1.0 - math::exp(-dt / self.time_const);
-        for i in 0..4 {
-            self.forces[i] += (commanded[i] - self.forces[i]) * alpha;
-            self.forces[i] = math::clamp(self.forces[i], MOTOR_FORCE_MIN, MOTOR_FORCE_MAX);
+        for (force, cmd) in self.forces.iter_mut().zip(commanded) {
+            *force += (cmd - *force) * alpha;
+            *force = math::clamp(*force, MOTOR_FORCE_MIN, MOTOR_FORCE_MAX);
         }
         self.forces
     }
@@ -327,6 +329,24 @@ mod tests {
             Err(MotorError::NonPositiveTimeConstant(_))
         ));
         assert!(MotorModel::new(-0.02).is_err());
+    }
+
+    #[test]
+    fn a_nan_time_constant_is_rejected_but_a_normal_one_is_accepted() {
+        // Regression: `time_const <= 0.0` alone would accept a NaN lag, so
+        // the guard carries an explicit `is_nan()` branch. These cases stay
+        // valid when the guard later tightens to `!time_const.is_finite()`.
+        for bad in [f64::NAN, 0.0, -0.02] {
+            assert!(
+                matches!(
+                    MotorModel::new(bad),
+                    Err(MotorError::NonPositiveTimeConstant(_))
+                ),
+                "time_const {bad} should be rejected"
+            );
+        }
+        let m = MotorModel::new(0.02).expect("a normal positive time constant is accepted");
+        assert_eq!(m.time_const(), 0.02);
     }
 
     #[test]

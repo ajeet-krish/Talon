@@ -135,12 +135,14 @@ fn compute_detour_point(
 
 /// A waypoint list with one detour waypoint inserted per threatened leg, as
 /// `(position, speed, heading, radius)` tuples.
+type DetourRoute = Vec<(Vec<f64>, f64, f64, f64)>;
+
 #[pyfunction]
 fn plan_avoidance_mission(
     waypoints: &Bound<'_, PyAny>,
     obstacles: &Bound<'_, PyAny>,
     clearance_margin: f64,
-) -> PyResult<Vec<(Vec<f64>, f64, f64, f64)>> {
+) -> PyResult<DetourRoute> {
     check_margin(clearance_margin)?;
     let mut route: Vec<Waypoint> = Vec::new();
     for waypoint in waypoints.try_iter()? {

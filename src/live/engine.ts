@@ -11,7 +11,10 @@
  * `talon_core.d.ts`. A runtime import carries no types, so hand-declaring the
  * small surface the app uses is what keeps `tsc` honest about it. The names and
  * signatures are the contract: if the Rust side changes them, this fails to
- * typecheck, which is the point.
+ * typecheck, which is the point. Hand-mirroring can still drift on its own
+ * (the GPS counters did, as `number` against the core's u64), so
+ * `engine.contract.test.ts` reads the generated file from disk and checks this
+ * interface against it.
  */
 
 /** One steppable mission run, backed by `talon_core::sim::SimRunner`. */
@@ -37,12 +40,12 @@ export interface CoreSession {
   readonly battery_soc: number
   /** Samples recorded so far, at the control rate. */
   readonly sample_count: number
-  /** Accepted GPS fixes since the run started. */
-  readonly gps_accepted: number
-  /** GPS fixes rejected by the innovation gate. */
-  readonly gps_gated: number
-  /** GPS fixes dropped for an injected outage. */
-  readonly gps_skipped: number
+  /** Accepted GPS fixes since the run started (u64, so bigint at the boundary). */
+  readonly gps_accepted: bigint
+  /** GPS fixes rejected by the innovation gate (u64, so bigint at the boundary). */
+  readonly gps_gated: bigint
+  /** GPS fixes dropped for an injected outage (u64, so bigint at the boundary). */
+  readonly gps_skipped: bigint
   /** Whether the estimator has converged. */
   readonly ekf_converged: boolean
   /** Whether the estimator has been declared divergent. */

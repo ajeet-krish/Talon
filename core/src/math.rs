@@ -117,7 +117,7 @@ mod tests {
         while theta <= 4.0 * PI {
             let w = wrap_to_pi(theta);
             assert!(
-                w >= -PI && w < PI,
+                (-PI..PI).contains(&w),
                 "wrap_to_pi({theta}) = {w} outside [-pi, pi)"
             );
             theta += 0.01;

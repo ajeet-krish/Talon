@@ -185,14 +185,14 @@ class FakeSession implements CoreSession {
   get sample_count(): number {
     return 42
   }
-  get gps_accepted(): number {
-    return 90
+  get gps_accepted(): bigint {
+    return BigInt(90)
   }
-  get gps_gated(): number {
-    return 2
+  get gps_gated(): bigint {
+    return BigInt(2)
   }
-  get gps_skipped(): number {
-    return 0
+  get gps_skipped(): bigint {
+    return BigInt(0)
   }
   get ekf_converged(): boolean {
     return true
@@ -377,6 +377,7 @@ describe('LiveSim', () => {
 
   it('reads the GPS and estimator flags off the session', () => {
     const { sim } = run()
+    // The session reports the counts as bigint; gpsCounts narrows them to numbers.
     expect(sim.gpsCounts()).toEqual([90, 2, 0])
     expect(sim.ekfFlags()).toEqual([true, false])
   })

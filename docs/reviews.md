@@ -933,3 +933,236 @@ Recurring pattern: parity fixtures must keep at least one case in each
 function's wrap and branch corner, per the Python harness deep dive above; the
 Rust side of the wrap corner is now pinned by `wrap_matches_python_pinned_cases`
 and `sweep_stays_in_half_open_interval`.
+
+### Phase 2 review (2026-10-18)
+
+Scope: Phase 2b cleanup, uncommitted at review time on top of `1b63d4e`
+(rustfmt): clippy deny-level cleanup across `core/src/{guidance,battery,motors,
+scenario,sim,state_machine,dynamics,math}.rs` and
+`bindings/src/{avoidance,estimation,types}.rs`, CI gates in
+`.github/workflows/ci.yml`, and the TypeScript wasm contract fix in
+`src/live/{engine,sim,sim.test}.ts` plus the new
+`src/live/engine.contract.test.ts`. Closes the High clippy deny-level, rustfmt
+non-compliance, and wasm `bigint` getter drift findings from the full codebase
+review above.
+
+Verdict: PASS. All seven verification commands are green, every rewrite is
+behavior preserving, and the contract test was mutation-proven to fail on name
+and type drift. No blocking issues; three Low notes below.
+
+- PASS: NaN semantics of the six `neg_cmp_op_on_partial_ord` rewrites. Every
+  site (core/src/battery.rs:88, core/src/battery.rs:91, core/src/motors.rs:129,
+  core/src/scenario.rs:144, core/src/sim.rs:124,
+  core/src/state_machine.rs:206) reads `x <= 0.0 || x.is_nan()`, which equals
+  the original `!(x > 0.0)` for every input class, confirmed case by case:
+  NaN is true on both sides (the new form via `is_nan`, the old because
+  `NaN > 0.0` is false), negative and both zeros are true on both sides, and
+  positive values and infinities are false on both sides. No rewrite changed
+  behavior. Each site carries a comment stating the NaN intent, which matters
+  because a bare `x <= 0.0` would have silently accepted NaN.
+- PASS: `BEHIND_S_THRESHOLD` (core/src/guidance.rs:55) is bit-identical to the
+  old `-0.7071` literal. Both `-7071.0 / 10_000.0` and the decimal literal are
+  correctly rounded values of the same rational (negative 7071 over 10000;
+  both division operands are exactly representable, and IEEE 754 rounds both
+  the literal and the division to nearest even), so all 64 bits agree.
+  Emulation confirms `Object.is` equality, and the trigger comparison
+  `s < BEHIND_S_THRESHOLD` (core/src/guidance.rs:203) matches Python
+  `_BEHIND_S_THRESHOLD = -0.7071` (python/talon/guidance.py:94) across every
+  boundary sample, so parity holds. The `approx_constant` workaround is
+  legitimate and well commented.
+- PASS: the `collapsible_if` merges in `SimRunner::handle_events`
+  (core/src/sim.rs:968-1028, eight merges) preserve evaluation order and short
+  circuit behavior. The state-mutating `state_machine.request(...)`, which
+  logs every evaluation to `event_log` accepted and rejected alike, remains the
+  rightmost `&&` operand at every site, so it runs exactly once and only when
+  all guards pass, exactly as the nested form did, and `note_phase_change()`
+  still runs iff `request` returns true. No logging, phase, or ordering change.
+- PASS: the remaining clippy fixes are behavior preserving and the public API
+  is unchanged where it matters. `needless_update` (core/src/dynamics.rs:147-156):
+  dropping `..Default::default()` with every field listed is a no-op (the crate
+  compiles, so no field is missing; the remaining `..Default::default()` at
+  dynamics.rs:68 is a different literal that needs it). `field_reassign_with_default`
+  (core/src/dynamics.rs:243, core/src/dynamics.rs:291, core/src/sim.rs:433):
+  struct literal plus `..State::default()` yields the same final state as
+  mutate after default. `needless_range_loop` (core/src/motors.rs:156): the
+  `iter_mut().zip(commanded)` loop performs the same per-element arithmetic in
+  the same 0 to 4 order over two length-4 arrays, and the math.rs:120
+  `(-PI..PI).contains(&w)` predicate is identical to `w >= -PI && w < PI`.
+  `type_complexity`: `DetourRoute` (bindings/src/avoidance.rs:138) is a private
+  alias, so the PyO3 surface is unchanged, and `ScheduledAction`
+  (core/src/sim.rs:298) is an additive public alias with `SimRunner::schedule`
+  type-identical, so callers still compile. Derivable `Default`
+  (bindings/src/estimation.rs:11, bindings/src/estimation.rs:169):
+  `#[derive(Default)]` over manual impls delegating to the inner defaults is
+  the same trait behavior. The single `#[allow(clippy::too_many_arguments)]`
+  (bindings/src/types.rs:259) is justified by the keyword-argument Python API
+  it mirrors and is the only `allow` in the tree.
+- PASS: CI gates (.github/workflows/ci.yml). The fmt step (line 51) and the
+  clippy step (line 58) sit after `uv sync` (line 41) and after the toolchain
+  install carrying `components: rustfmt, clippy` (line 46), so both tools exist
+  and `.cargo/config.toml` (PYO3_PYTHON at `.venv/bin/python`) is satisfied
+  before the workspace compiles. Workflow-level `permissions: contents: read`
+  (lines 15-16) suffices for all three jobs: checkout, builds, tests, and the
+  local `git diff --exit-code` all need read access only. The YAML is well
+  formed. The gate fails on drift: `cargo fmt --all -- --check` exits non-zero
+  on any formatting diff and `cargo clippy --workspace --all-targets -- -D
+  warnings` denies every warning, both under `bash -e`.
+- PASS: TypeScript contract. `CoreSession` now matches
+  `public/wasm-rust/talon_core.d.ts` exactly for the GPS getters
+  (`readonly gps_accepted: bigint` and siblings, d.ts:114-122) and every other
+  member. `LiveSim.gpsCounts` (src/live/sim.ts:176) narrows with `Number(...)`
+  to `[number, number, number]`, and the HUD consumers stay number-typed
+  (src/live/readout.ts:77 destructures `gpsCounts`, src/views/RunView.tsx:506
+  reads the JSON summary numbers, which are unrelated to the bigint boundary);
+  sim.test.ts fakes bigint getters to match.
+- PASS: `engine.contract.test.ts` genuinely fails on name or type drift.
+  Proven by four temporary mutations, each reverted and hash-verified:
+  generated-side type drift (`gps_accepted: bigint` to `number`) fails two
+  tests with the mismatch message, generated-side name drift (`gps_gated`
+  renamed) fails three tests as a missing member, mirror-side type drift fails
+  `declares every member the app relies on...` with the mismatch message, and
+  a mirror-side rename fails the same test as a missing member. Baseline is 5
+  passed and the tree was byte-identical afterwards.
+- PASS: verification, all from the repository root: `cargo clippy --workspace
+  --all-targets -- -D warnings` clean, `cargo fmt --all -- --check` clean,
+  `cargo test --workspace` 235 passed (220 talon-core, 3 talon-py, 12
+  talon-wasm), `npm test` 137 passed across 11 files, `npm run build`
+  typecheck plus production bundle green.
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | src/live/engine.contract.test.ts:98-133 | The `required` name pin list is asserted against the generated Session only; deleting a member from the CoreSession mirror escapes every assertion (test 1 iterates the mirror, tests 2 and 3 read the generated file). tsc still catches the fallout at the usage sites, so nothing ships broken. | Assert the `required` names against `coreSessionMembers(ENGINE)` as well |
+| Low | core/src/sim.rs:650, core/src/sim.rs:689 | Pre-existing `duration_s <= 0.0` guards accept a NaN duration (`NaN <= 0.0` is false); untouched by this change and now inconsistent with the new `<= 0.0 \|\| is_nan()` guards. | Fold into a future hardening pass: append `\|\| duration_s.is_nan()` |
+| Low | dist/assets (npm run build) | Non-fatal vite warning: the 1247.98 kB bundle exceeds the 1200 kB chunk suggestion. Pre-existing. | Code-split the live kernel and views when it starts to matter |
+
+Recurring patterns: a clippy `neg_cmp_op_on_partial_ord` fix on a validation
+guard must read `x <= 0.0 || x.is_nan()`, never bare `x <= 0.0`, or NaN slips
+through; keep a comment saying so at the site. A `collapsible_if` merge is only
+safe while the state-mutating call stays the last `&&` operand, which keeps
+short circuit order equal to the nested form. A hand-mirrored wasm surface
+needs a drift test that reads the generated declaration from disk; typechecking
+the mirror alone cannot see the other side, and the pin list should be asserted
+against both files.
+
+### Phase 2 security review (2026-10-18)
+
+Focused security review of the Phase 2b cleanup (same uncommitted change set as
+the Phase 2 review above, on top of `1b63d4e`), scoped to the security weight of
+five items: the CI workflow changes, the six NaN-preserving validation guard
+rewrites, the bigint to Number narrowing in the live seam, the new contract
+test's disk read, and any new secret, network, or dependency surface. The 2026
+10-18 full security review and the Phase 2 review above are treated as read;
+non-security findings and already-recorded findings are referenced, not
+repeated. This phase closes the full security review's Medium CI finding
+(missing `permissions:` block in ci.yml).
+
+Overall verdict: PASS. All five items pass. No Critical or High findings; no
+new Medium; two Low notes (one of which is a carried-over pre-existing entry).
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | core/src/scenario.rs:144, core/src/sim.rs:124 | The rewritten guards reject NaN but deliberately accept `+inf` (`inf <= 0.0` is false, `is_nan` is false), exactly as the old `!(x > 0.0)` form did. This is a faithful rewrite, not a regression, but it leaves the full security review's Medium finiteness finding (validation accepts `1e999`-parsed infinities) open, and the new `is_nan` comments could be read as "validation is now airtight" when it is not. | In the future hardening pass, tighten to `!(x.is_finite() && x > 0.0)` per the recurring pattern in the full security review |
+| Low | src/live/engine.contract.test.ts:19-20 | `readFileSync` paths are relative, so the test depends on the process working directory being the repository root (it is for `npm test` and the CI `web` job). From any other cwd the read throws ENOENT and the suite fails closed, so this is an environment assumption, not a vulnerability. | Optionally anchor with `path.resolve(__dirname, '../..')` if the test is ever run from a non-root cwd |
+
+Per-item results (PASS/FAIL):
+
+1. PASS: CI workflow permissions (.github/workflows/ci.yml:15-16). The
+   workflow-level `permissions: contents: read` constrains all three jobs
+   (`core`, `wasm`, `web`): there is no job-level `permissions:` key anywhere in
+   the file (grep: the only `permissions:` match is line 15), and GitHub applies
+   the workflow-level block to every job that does not override it. Every step
+   needs read only: `actions/checkout` (contents: read), toolchain and package
+   installs (registry network, no token scope), `cargo fmt --all -- --check`
+   (line 51) and `cargo clippy --workspace --all-targets -- -D warnings`
+   (line 58) as pure local read-only compiler passes, `cargo test`, `npm ci`,
+   `npm test`, `npm run build`, and the local `git diff --exit-code` drift check
+   (lines 108-112), which reads the worktree and needs no token at all. No step
+   pushes, comments, uploads a release, or touches Pages: the Pages deploy
+   (actions/deploy-pages, `pages: write`, `id-token: write`) lives only in
+   deploy.yml:39-42, which this change does not touch. No privilege regression:
+   `permissions:` can only narrow the default token, and the two new run steps
+   contain no `${{ }}` expressions, so there is no script-injection path. The
+   triggers remain `push` and `pull_request` (never `pull_request_target`), so
+   fork PRs get the read-only token with no secrets. This closes the full
+   security review's Medium finding at ci.yml:13-16. The pre-existing Low about
+   tag-pinned actions (full security review, `.github/workflows/*.yml`) is
+   unchanged and not repeated here.
+
+2. PASS: NaN semantics of the six guard rewrites. All six sites
+   (core/src/battery.rs:88 capacity_mah, core/src/battery.rs:91
+   hover_thrust_n, core/src/motors.rs:129 time_const,
+   core/src/scenario.rs:144 duration_s, core/src/sim.rs:124 takeoff_altitude,
+   core/src/state_machine.rs:206 takeoff_altitude) read `x <= 0.0 ||
+   x.is_nan()` inside a reject guard (`return Err(...)`), and each rejects NaN:
+   `NaN <= 0.0` is false but `is_nan()` is true, so the disjunction fires and
+   the error is returned, identical to the old `!(NaN > 0.0)`. Full truth-table
+   equivalence with the old form: NaN rejected on both; zero (both signs) and
+   all negatives and `-inf` rejected on both (`-inf <= 0.0` is true);
+   positives accepted on both; `+inf` accepted on both (see the Low above:
+   unchanged pre-existing behavior, not an admission introduced here). No guard
+   admits NaN, `+inf`, or `-inf` where it previously did not. Each site carries
+   a comment stating the NaN intent, and the sibling guards rewritten in this
+   change set (sim.rs:968-1028 `collapsible_if` merges) keep the state-mutating
+   `state_machine.request(...)` as the rightmost `&&` operand at all eight
+   sites (sim.rs:968-975, 976-982, 983-1001, 1002-1007, 1008-1014, 1015-1028),
+   so no transition event can fire or be skipped relative to the nested form.
+   The untouched `duration_s <= 0.0` guards at sim.rs:650 and sim.rs:689 still
+   admit NaN; that pre-existing gap is already recorded as Low in the Phase 2
+   review and is not repeated as a new finding.
+
+3. PASS: bigint to Number narrowing (src/live/sim.ts:176-183). `gpsCounts()`
+   uses `Number(this.session.gps_accepted)` and siblings, typed
+   `[number, number, number]`; there is no `as`, `any`, `@ts-ignore`, or
+   `unknown` escape anywhere in the narrowing (grep over src/live confirms zero
+   `any`/`as any`/`as unknown`/ts-ignore matches). Precision: `Number(bigint)`
+   is exact up to 2^53, and the GPS counters are u64 fix counts that grow at
+   GPS rate (10 Hz to 100 Hz); reaching 2^53 would take roughly 2.8 million
+   years of continuous stepping, so lossy rounding is unreachable even before
+   the browser DoS caps. No wrapping: `Number(bigint)` rounds, it never
+   truncates or wraps, and these values are display-only (src/live/readout.ts,
+   the summary at sim.ts:214-215, which arrives as plain JSON numbers via
+   `summary_json`, not bigints). No allocation size, array index, or slice
+   bound derives from a GPS counter, so even a hypothetical rounding error is
+   cosmetic. The generated d.ts confirms the boundary types are the ones being
+   narrowed (public/wasm-rust/talon_core.d.ts:114-122 declare the three
+   counters as `bigint`, while sample_count/steps_done/total_steps are
+   `number`), and the mirror (src/live/engine.ts:43-48) now agrees. The test
+   fake returns bigint getters (src/live/sim.test.ts:188-194), so the seam is
+   exercised end to end.
+
+4. PASS: engine.contract.test.ts disk read (src/live/engine.contract.test.ts:
+   16-20). The test reads exactly two path-constant, committed files with
+   `readFileSync('public/wasm-rust/talon_core.d.ts')` and
+   `readFileSync('src/live/engine.ts')`; there is no user, environment, or
+   fixture input reaching the path (no `process.env`, no argv, no glob), so no
+   path traversal is constructible. It is strictly read-only (no write, no
+   import of the read content as code, no `eval`/`new Function`; the parsing is
+   `indexOf` plus constant regexes, and `run_scenario\([^)]*\)` and friends are
+   fixed patterns with no interpolation and no ReDoS shape). Both filenames are
+   ordinary tracked files under the repository, so no symlink or untrusted-file
+   concern beyond the standard "committed files are trusted" posture. The one
+   environmental assumption is the relative-path cwd noted in the Low table
+   entry; failure mode is a loud ENOENT test failure, never a silent pass. In
+   CI the `web` job runs `npm test` from the checkout root (vitest root and
+   `environment: 'node'`, vitest.config.ts:11-12), where both reads resolve.
+
+5. PASS: no new secret, network, or dependency surface. The two new CI steps
+   (`cargo fmt --check`, `cargo clippy`) are offline passes after the existing
+   toolchain install; `components: rustfmt, clippy` (ci.yml:46) adds two
+   standard components from the official Rust distribution to the existing
+   `dtolnay/rust-toolchain` install and nothing else. No `uses:` was added or
+   changed (the nine action references in ci.yml are the pre-existing set). No
+   manifest change is in scope: the contract test imports only the `node:fs`
+   builtin and the existing `vitest` devDependency, and no new fetch, socket,
+   or process spawn appears anywhere in the change (grep over src/ and the
+   three Rust crates shows only the pre-existing same-origin asset fetches and
+   type names like `ControlCommand`). No credentials, tokens, or `.env` content
+   in any touched file. The full security review's OSV advisory sweep of locked
+   dependencies stands unchanged.
+
+Recurring pattern reinforced: a validation guard rewritten for clippy
+`neg_cmp_op_on_partial_ord` must keep NaN rejection explicitly (`x <= 0.0 ||
+x.is_nan()`) and should grow `is_finite()` when the hardening pass lands; the
+security-relevant invariant is the truth table, not the shape of the
+expression. A test that reads generated artifacts from disk should use
+path-constant, repo-relative reads and fail closed, as this one does.

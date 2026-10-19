@@ -254,6 +254,9 @@ pub struct PyDrydenWind {
 
 #[pymethods]
 impl PyDrydenWind {
+    // Allowed: these eight parameters mirror the DrydenWind constructor the
+    // Python harness calls by keyword; a wrapper would change that API.
+    #[allow(clippy::too_many_arguments)]
     #[new]
     #[pyo3(signature = (
         sigma_u = 2.0,

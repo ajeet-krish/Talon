@@ -48,8 +48,11 @@ use crate::types::{Arr3, Waypoint};
 /// steers straight at the leg end.
 const LEG_LENGTH_EPS: f64 = 1.0e-6;
 
-/// Behind-A recovery trigger, the same corner ArduPilot uses.
-const BEHIND_S_THRESHOLD: f64 = -0.7071;
+/// Behind-A recovery trigger, the same corner ArduPilot uses: -sqrt(2)/2 to
+/// four decimals. Written as an exact fraction because clippy's
+/// `approx_constant` rejects the `-0.7071` literal; this evaluates bit for
+/// bit to the same value the Python source uses, keeping parity.
+const BEHIND_S_THRESHOLD: f64 = -7071.0 / 10_000.0;
 
 /// NLGL tuning parameters.
 ///

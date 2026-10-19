@@ -10,6 +10,11 @@
 
 name: CI
 
+# Least privilege: no CI step writes to the repository, so the default
+# (writable) token is narrowed to read-only file access.
+permissions:
+  contents: read
+
 on:
   push:
   pull_request:
@@ -37,6 +42,20 @@ jobs:
 
       - name: Install the Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        # Style gate before any test runs: rustfmt output is authoritative,
+        # so a diff here means an edit bypassed `cargo fmt --all`.
+        run: cargo fmt --all -- --check
+
+      - name: Lint (clippy)
+        # Deny-by-default so warnings cannot accumulate. Runs after `uv sync`
+        # and the toolchain install: the repo's .cargo/config.toml points
+        # PYO3_PYTHON at .venv/bin/python, so the PyO3 crate only compiles
+        # once both are in place.
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Rust tests (talon-core, talon-wasm, talon-py)
         # The wasm binding tests run natively; no wasm target needed here.
