@@ -12,7 +12,13 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { SCENARIO_IDS } from '@/store/useFlightStore'
-import { validateFlightData, validateLiveConfigs } from './validate'
+import { LIMITS, SCENARIO_DEFAULTS } from '@/types/generated/talon_core'
+import {
+  MAX_LIST_LENGTH,
+  validateFlightData,
+  validateLiveConfigs,
+  validateScenarioConfig,
+} from './validate'
 
 // ---------------------------------------------------------------------------
 // Fixtures: one valid config, one valid flight document, as plain JSON values.
@@ -365,6 +371,375 @@ describe('validateLiveConfigs', () => {
     negative.avoidance = { enabled: true, lookahead_s: -1 }
     expect(() => validateLiveConfigs(configsFile(negative))).toThrow(
       'configs[0].avoidance.lookahead_s must be >= 0',
+    )
+  })
+
+  it('keeps MAX_LIST_LENGTH wired to the generated list caps', () => {
+    // The exported name stays the wider of the two per-list caps, so a caller
+    // holding one number cannot under-count either list.
+    expect(MAX_LIST_LENGTH).toBe(Math.max(LIMITS.max_waypoints, LIMITS.max_obstacles))
+  })
+
+  it('enforces the core caps so the browser gate and the runner agree', () => {
+    const speed = validConfig()
+    speed.waypoints = [{ position: [0, 0, -10], speed: 200.5, heading: 0, radius: 2 }]
+    expect(() => validateLiveConfigs(configsFile(speed))).toThrow(
+      'configs[0].waypoints[0].speed must be <= 200',
+    )
+    const radius = validConfig()
+    radius.obstacles = [{ id: 'o', center_ned: [1, 2, -3], radius_m: 1_000_001 }]
+    expect(() => validateLiveConfigs(configsFile(radius))).toThrow(
+      'configs[0].obstacles[0].radius_m must be <= 1000000',
+    )
+    const far = validConfig()
+    far.start_position_ned = [1_000_001, 0, 0]
+    expect(() => validateLiveConfigs(configsFile(far))).toThrow(
+      'configs[0].start_position_ned[0] must be in [-1000000, 1000000]',
+    )
+    const sigma = validConfig()
+    sigma.wind_sigma = [101, 0, 0]
+    expect(() => validateLiveConfigs(configsFile(sigma))).toThrow(
+      'configs[0].wind_sigma[0] must be <= 100',
+    )
+    const steady = validConfig()
+    steady.wind_steady_ned = [0, -101, 0]
+    expect(() => validateLiveConfigs(configsFile(steady))).toThrow(
+      'configs[0].wind_steady_ned[1] must be in [-100, 100]',
+    )
+    const gps = validConfig()
+    gps.gps_velocity_noise = 50.5
+    expect(() => validateLiveConfigs(configsFile(gps))).toThrow(
+      'configs[0].gps_velocity_noise must be <= 50',
+    )
+    const hold = validConfig()
+    hold.cruise_hold_s = 60.5
+    expect(() => validateLiveConfigs(configsFile(hold))).toThrow(
+      'configs[0].cruise_hold_s must be <= 60',
+    )
+    const seed = validConfig()
+    seed.seed = Number.MAX_SAFE_INTEGER + 2
+    expect(() => validateLiveConfigs(configsFile(seed))).toThrow(
+      'configs[0].seed must be <= 9007199254740991',
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// validateScenarioConfig
+// ---------------------------------------------------------------------------
+
+/** The minimal authored draft: only the id, every other knob defaulted. */
+function minimalScenario(): Record<string, unknown> {
+  return { id: 'custom_mission' }
+}
+
+/** A draft with `overrides` applied on top of the minimal one. */
+function scenario(...overrides: Record<string, unknown>[]): Record<string, unknown> {
+  return { ...minimalScenario(), ...Object.assign({}, ...overrides) }
+}
+
+/** A full authored document: waypoints, zones, wind, avoidance, one of each fault. */
+function fullScenario(): Record<string, unknown> {
+  return {
+    id: 'author_smoke',
+    label: 'Author smoke',
+    blurb: 'Every authored knob at once.',
+    duration_s: 30,
+    takeoff_altitude: 12,
+    start_position_ned: [1, -2, 0],
+    waypoints: [{ position: [10, 5, -12], speed: 6, heading: 1.5, radius: 2.5 }],
+    obstacles: [{ id: 'obs_a', center_ned: [4, -3, -6], radius_m: 3 }],
+    avoidance: { enabled: true, clearance_margin_m: 2.5, lookahead_s: 1.5, detour_buffer_m: 1 },
+    wind_sigma: [1, 1, 0.5],
+    wind_steady_ned: [2, 0, -0.5],
+    battery_initial_soc: 0.9,
+    gps_position_noise: 0.4,
+    gps_position_noise_vertical: 0.6,
+    gps_velocity_noise: 0.07,
+    cruise_hold_s: 3,
+    seed: 42,
+    auto_arm: true,
+    faults: [
+      { kind: 'gps_outage', at_s: 1, duration_s: 2 },
+      { kind: 'ekf_divergence', at_s: 5, mode: 'adversarial_gps' },
+      { kind: 'battery_soc', at_s: 8, soc: 0.4 },
+      { kind: 'motor_fault', at_s: 10 },
+      { kind: 'emergency', at_s: 12 },
+      { kind: 'rtl', at_s: 15 },
+    ],
+  }
+}
+
+describe('validateScenarioConfig', () => {
+  it('fills a minimal document from the scenario defaults', () => {
+    const cfg = validateScenarioConfig(minimalScenario())
+    expect(cfg.id).toBe('custom_mission')
+    expect(cfg.duration_s).toBe(60)
+    expect(cfg.takeoff_altitude).toBe(10)
+    expect(cfg.avoidance?.enabled).toBe(false)
+    expect(cfg.avoidance?.clearance_margin_m).toBe(2)
+    expect(cfg.faults).toEqual([])
+    // The whole document equals the defaults with only the id swapped, which
+    // pins every defaulted field at once.
+    expect(cfg).toEqual({ ...SCENARIO_DEFAULTS, id: 'custom_mission' })
+  })
+
+  it('merges a partial avoidance block over the defaults', () => {
+    const cfg = validateScenarioConfig(scenario({ avoidance: { enabled: true } }))
+    expect(cfg.avoidance).toEqual({
+      enabled: true,
+      clearance_margin_m: SCENARIO_DEFAULTS.avoidance?.clearance_margin_m,
+      lookahead_s: SCENARIO_DEFAULTS.avoidance?.lookahead_s,
+      detour_buffer_m: SCENARIO_DEFAULTS.avoidance?.detour_buffer_m,
+    })
+  })
+
+  it('accepts a full authored document with one of each fault kind', () => {
+    const cfg = validateScenarioConfig(fullScenario())
+    expect(cfg.label).toBe('Author smoke')
+    expect(cfg.waypoints).toHaveLength(1)
+    expect(cfg.obstacles).toHaveLength(1)
+    expect(cfg.faults).toHaveLength(6)
+    expect(cfg.faults?.[0]).toEqual({ kind: 'gps_outage', at_s: 1, duration_s: 2 })
+    expect(cfg.faults?.[5]).toEqual({ kind: 'rtl', at_s: 15 })
+    expect(cfg.avoidance).toEqual({
+      enabled: true,
+      clearance_margin_m: 2.5,
+      lookahead_s: 1.5,
+      detour_buffer_m: 1,
+    })
+    expect(cfg.wind_steady_ned).toEqual([2, 0, -0.5])
+    expect(cfg.seed).toBe(42)
+    expect(cfg.auto_arm).toBe(true)
+  })
+
+  it('requires a non-reserved slug for the id', () => {
+    expect(() => validateScenarioConfig({})).toThrow('id must be a string')
+    for (const id of ['Hover', '2nd_try', '', 'a'.repeat(65), 'has space']) {
+      expect(() => validateScenarioConfig({ id }), id).toThrow(
+        'id must be a lowercase slug: a letter, then up to 63 letters, digits, or underscores',
+      )
+    }
+    for (const id of [
+      'hover',
+      'waypoints',
+      'obstacle_field',
+      'avoidance',
+      'wind',
+      'gps_outage',
+      'emergency',
+      'draft',
+    ]) {
+      expect(() => validateScenarioConfig({ id }), id).toThrow(
+        `id must not be a reserved scenario id ("${id}")`,
+      )
+    }
+  })
+
+  it('rejects a duration that is non-finite or outside (0, 900]', () => {
+    for (const duration of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => validateScenarioConfig(scenario({ duration_s: duration }))).toThrow(
+        'duration_s must be finite',
+      )
+    }
+    for (const duration of [0, -1, 901]) {
+      expect(() => validateScenarioConfig(scenario({ duration_s: duration }))).toThrow(
+        'duration_s must be in (0, 900]',
+      )
+    }
+  })
+
+  it('rejects a takeoff altitude outside (0, 1000]', () => {
+    expect(() => validateScenarioConfig(scenario({ takeoff_altitude: Number.NaN }))).toThrow(
+      'takeoff_altitude must be finite',
+    )
+    for (const altitude of [0, 1000.5]) {
+      expect(() => validateScenarioConfig(scenario({ takeoff_altitude: altitude }))).toThrow(
+        'takeoff_altitude must be in (0, 1000]',
+      )
+    }
+  })
+
+  it('rejects a coordinate beyond the coordinate cap', () => {
+    expect(() => validateScenarioConfig(scenario({ start_position_ned: [1_000_001, 0, 0] }))).toThrow(
+      'start_position_ned[0] must be in [-1000000, 1000000]',
+    )
+    const waypoint = { position: [0, -1_000_001, -10], speed: 5, heading: 0, radius: 2 }
+    expect(() => validateScenarioConfig(scenario({ waypoints: [waypoint] }))).toThrow(
+      'waypoints[0].position[1] must be in [-1000000, 1000000]',
+    )
+    const obstacle = { id: 'o', center_ned: [1, 2, 1_000_001], radius_m: 4 }
+    expect(() => validateScenarioConfig(scenario({ obstacles: [obstacle] }))).toThrow(
+      'obstacles[0].center_ned[2] must be in [-1000000, 1000000]',
+    )
+  })
+
+  it('rejects a waypoint speed or radius above its cap', () => {
+    const speed = { position: [0, 0, -10], speed: 200.5, heading: 0, radius: 2 }
+    expect(() => validateScenarioConfig(scenario({ waypoints: [speed] }))).toThrow(
+      'waypoints[0].speed must be <= 200',
+    )
+    const radius = { position: [0, 0, -10], speed: 5, heading: 0, radius: 1_000_001 }
+    expect(() => validateScenarioConfig(scenario({ waypoints: [radius] }))).toThrow(
+      'waypoints[0].radius must be <= 1000000',
+    )
+    const zone = { id: 'o', center_ned: [1, 2, -3], radius_m: 1_000_001 }
+    expect(() => validateScenarioConfig(scenario({ obstacles: [zone] }))).toThrow(
+      'obstacles[0].radius_m must be <= 1000000',
+    )
+  })
+
+  it('caps waypoints, obstacles and faults at the generated list caps', () => {
+    const waypoint = { position: [0, 0, -10], speed: 5, heading: 0, radius: 2 }
+    const ok = scenario({ waypoints: rows(LIMITS.max_waypoints, () => waypoint) })
+    expect(() => validateScenarioConfig(ok)).not.toThrow()
+    const manyWaypoints = scenario({ waypoints: rows(513, () => waypoint) })
+    expect(() => validateScenarioConfig(manyWaypoints)).toThrow(
+      'waypoints must have at most 512 entries (got 513)',
+    )
+    const zone = { id: 'o', center_ned: [1, 2, -3], radius_m: 4 }
+    const manyZones = scenario({ obstacles: rows(513, () => zone) })
+    expect(() => validateScenarioConfig(manyZones)).toThrow(
+      'obstacles must have at most 512 entries (got 513)',
+    )
+    const fault = { kind: 'rtl', at_s: 1 }
+    const manyFaults = scenario({ faults: rows(17, () => fault) })
+    expect(() => validateScenarioConfig(manyFaults)).toThrow(
+      'faults must have at most 16 entries (got 17)',
+    )
+  })
+
+  it('rejects an avoidance knob above its cap and a non-boolean switch', () => {
+    expect(() =>
+      validateScenarioConfig(scenario({ avoidance: { enabled: 'yes' } })),
+    ).toThrow('avoidance.enabled must be a boolean')
+    expect(() =>
+      validateScenarioConfig(scenario({ avoidance: { clearance_margin_m: 1000.5 } })),
+    ).toThrow('avoidance.clearance_margin_m must be <= 1000')
+    expect(() => validateScenarioConfig(scenario({ avoidance: { lookahead_s: 60.5 } }))).toThrow(
+      'avoidance.lookahead_s must be <= 60',
+    )
+    expect(() =>
+      validateScenarioConfig(scenario({ avoidance: { detour_buffer_m: 1000.5 } })),
+    ).toThrow('avoidance.detour_buffer_m must be <= 1000')
+  })
+
+  it('rejects a wind component beyond the wind cap', () => {
+    expect(() => validateScenarioConfig(scenario({ wind_sigma: [101, 0, 0] }))).toThrow(
+      'wind_sigma[0] must be <= 100',
+    )
+    expect(() => validateScenarioConfig(scenario({ wind_sigma: [-1, 0, 0] }))).toThrow(
+      'wind_sigma[0] must be >= 0',
+    )
+    expect(() => validateScenarioConfig(scenario({ wind_steady_ned: [-101, 0, 0] }))).toThrow(
+      'wind_steady_ned[0] must be in [-100, 100]',
+    )
+  })
+
+  it('rejects a GPS noise or cruise hold above its cap', () => {
+    expect(() => validateScenarioConfig(scenario({ gps_position_noise: 100.5 }))).toThrow(
+      'gps_position_noise must be <= 100',
+    )
+    expect(() =>
+      validateScenarioConfig(scenario({ gps_position_noise_vertical: 100.5 })),
+    ).toThrow('gps_position_noise_vertical must be <= 100')
+    expect(() => validateScenarioConfig(scenario({ gps_velocity_noise: 50.5 }))).toThrow(
+      'gps_velocity_noise must be <= 50',
+    )
+    expect(() => validateScenarioConfig(scenario({ cruise_hold_s: 60.5 }))).toThrow(
+      'cruise_hold_s must be <= 60',
+    )
+  })
+
+  it('rejects a battery state of charge outside [0, 1]', () => {
+    for (const soc of [-0.1, 1.2, Number.NaN]) {
+      expect(() => validateScenarioConfig(scenario({ battery_initial_soc: soc }))).toThrow(
+        Number.isNaN(soc)
+          ? 'battery_initial_soc must be finite'
+          : 'battery_initial_soc must be in [0, 1]',
+      )
+    }
+  })
+
+  it('requires a seed that is a safe non-negative integer', () => {
+    expect(() => validateScenarioConfig(scenario({ seed: 1.5 }))).toThrow(
+      'seed must be an integer',
+    )
+    expect(() => validateScenarioConfig(scenario({ seed: -3 }))).toThrow('seed must be >= 0')
+    expect(() => validateScenarioConfig(scenario({ seed: Number.MAX_SAFE_INTEGER + 2 }))).toThrow(
+      'seed must be <= 9007199254740991',
+    )
+  })
+
+  it('requires a known fault kind and its kind-specific field', () => {
+    expect(() => validateScenarioConfig(scenario({ faults: [{ at_s: 1 }] }))).toThrow(
+      'faults[0].kind must be a string',
+    )
+    expect(() =>
+      validateScenarioConfig(scenario({ faults: [{ kind: 'gps_blackout', at_s: 1 }] })),
+    ).toThrow(
+      'faults[0].kind must be one of gps_outage, ekf_divergence, battery_soc, motor_fault, emergency, rtl',
+    )
+    expect(() => validateScenarioConfig(scenario({ faults: [{ kind: 'gps_outage', at_s: 1 }] }))).toThrow(
+      'faults[0].duration_s must be finite',
+    )
+    expect(() =>
+      validateScenarioConfig(scenario({ faults: [{ kind: 'ekf_divergence', at_s: 1 }] })),
+    ).toThrow('faults[0].mode must be a string')
+    expect(() =>
+      validateScenarioConfig(
+        scenario({ faults: [{ kind: 'ekf_divergence', at_s: 1, mode: 'corrupt_all' }] }),
+      ),
+    ).toThrow('faults[0].mode must be one of corrupt_bias, suppress_updates, adversarial_gps')
+    expect(() =>
+      validateScenarioConfig(scenario({ faults: [{ kind: 'battery_soc', at_s: 1 }] })),
+    ).toThrow('faults[0].soc must be finite')
+  })
+
+  it('rejects an outage duration or forced state of charge outside its range', () => {
+    for (const duration of [0, 901]) {
+      expect(() =>
+        validateScenarioConfig(
+          scenario({ faults: [{ kind: 'gps_outage', at_s: 1, duration_s: duration }] }),
+        ),
+      ).toThrow('faults[0].duration_s must be in (0, 900]')
+    }
+    for (const soc of [-0.1, 1.2]) {
+      expect(() =>
+        validateScenarioConfig(scenario({ faults: [{ kind: 'battery_soc', at_s: 1, soc }] })),
+      ).toThrow('faults[0].soc must be in [0, 1]')
+    }
+  })
+
+  it('requires each at_s inside the run window of its own duration', () => {
+    expect(() =>
+      validateScenarioConfig(scenario({ duration_s: 30, faults: [{ kind: 'rtl', at_s: Number.NaN }] })),
+    ).toThrow('faults[0].at_s must be finite')
+    // Negative, and at the duration itself: the last step clock of a 30 s run
+    // is one step earlier, so a fault there would never fire.
+    for (const at_s of [-1, 30]) {
+      expect(() =>
+        validateScenarioConfig(scenario({ duration_s: 30, faults: [{ kind: 'rtl', at_s }] })),
+      ).toThrow('faults[0].at_s must be in [0,')
+    }
+  })
+
+  it('rejects every fault when the run has no fault window', () => {
+    expect(() =>
+      validateScenarioConfig(scenario({ duration_s: 0.005, faults: [{ kind: 'rtl', at_s: 0 }] })),
+    ).toThrow('faults must be empty: a run of 0.005 s has fewer than two steps')
+  })
+
+  it('accepts a fault on the last step clock and rejects one step later', () => {
+    // The exact window end a 30 s run has: `(round(30 / 0.005) - 1) * 0.005`.
+    const last = (Math.round(30 / 0.005) - 1) * 0.005
+    const ok = validateScenarioConfig(
+      scenario({ duration_s: 30, faults: [{ kind: 'rtl', at_s: last }] }),
+    )
+    expect(ok.faults).toEqual([{ kind: 'rtl', at_s: last }])
+    const late = scenario({ duration_s: 30, faults: [{ kind: 'rtl', at_s: last + 0.005 }] })
+    expect(() => validateScenarioConfig(late)).toThrow(
+      `faults[0].at_s must be in [0, ${last}]`,
     )
   })
 })

@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use ts_rs::{Config, TS};
 
 use talon_core::avoidance::AvoidanceConfig;
+use talon_core::constants::Limits;
 use talon_core::faults::{FaultKind, FaultSpec};
 use talon_core::scenario::ScenarioConfig;
 use talon_core::sim::DivergenceMode;
@@ -71,6 +72,9 @@ fn declarations() -> Vec<String> {
         exported::<DivergenceMode>(),
         exported::<FaultSpec>(),
         exported::<ScenarioConfig>(),
+        // The input-validation caps, mirroring the Rust constants the core
+        // rejects on, so the editor validator reads the same numbers.
+        exported::<Limits>(),
     ]
 }
 
@@ -96,6 +100,14 @@ fn module() -> String {
     out.push_str(&format!(
         "export const SCENARIO_DEFAULTS: ScenarioConfig = {};\n",
         serde_json::to_string_pretty(&defaults).expect("ScenarioConfig serializes")
+    ));
+
+    // The validation caps as a literal, annotated with its type so the
+    // editor's validator can read one generated value instead of a
+    // hand-copied list of numbers that drifts from the Rust constants.
+    out.push_str(&format!(
+        "export const LIMITS: Limits = {};\n",
+        serde_json::to_string_pretty(&Limits::current()).expect("Limits serializes")
     ));
     out
 }
@@ -129,6 +141,10 @@ fn generate_the_typescript_mirrors() {
     assert!(body.contains("FlightData"));
     assert!(body.contains("ScenarioConfig"));
     assert!(body.contains("SCENARIO_DEFAULTS"));
+    // The input-validation caps: the `Limits` declaration and the `LIMITS`
+    // literal the editor validator reads.
+    assert!(body.contains("Limits"));
+    assert!(body.contains("LIMITS"));
     let avoid = serde_json::to_value(AvoidanceConfig::default()).expect("serializes");
     assert!(avoid.is_object());
 

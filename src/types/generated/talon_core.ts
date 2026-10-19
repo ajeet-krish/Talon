@@ -140,6 +140,77 @@ auto_arm?: boolean,
  */
 faults?: Array<FaultSpec>, };
 
+export type Limits = { 
+/**
+ * Dynamics / RK4 step (s): also the grid the fault window is cut on.
+ */
+dt: number, 
+/**
+ * Longest accepted run duration (s).
+ */
+max_duration_s: number, 
+/**
+ * Highest accepted takeoff altitude above home (m).
+ */
+max_takeoff_altitude_m: number, 
+/**
+ * Largest accepted wind component, turbulence sigma or steady (m/s).
+ */
+max_wind_component_mps: number, 
+/**
+ * Largest accepted GPS position noise, horizontal or vertical (m).
+ */
+max_gps_position_noise_m: number, 
+/**
+ * Largest accepted GPS velocity noise (m/s).
+ */
+max_gps_velocity_noise_mps: number, 
+/**
+ * Longest accepted CRUISE hold before the mission releases (s).
+ */
+max_cruise_hold_s: number, 
+/**
+ * Most accepted mission waypoints.
+ */
+max_waypoints: number, 
+/**
+ * Most accepted keep-out zones.
+ */
+max_obstacles: number, 
+/**
+ * Largest accepted coordinate magnitude in any NED position (m).
+ */
+max_coordinate_m: number, 
+/**
+ * Largest accepted waypoint leg speed (m/s).
+ */
+max_waypoint_speed_mps: number, 
+/**
+ * Largest accepted radius magnitude: waypoint acceptance radius or
+ * keep-out zone radius (m).
+ */
+max_radius_m: number, 
+/**
+ * Largest accepted avoidance clearance margin (m).
+ */
+max_avoidance_margin_m: number, 
+/**
+ * Largest accepted avoidance detour buffer (m).
+ */
+max_avoidance_buffer_m: number, 
+/**
+ * Longest accepted avoidance lookahead time (s).
+ */
+max_avoidance_lookahead_s: number, 
+/**
+ * Most authored faults one scenario may schedule.
+ */
+max_faults: number, 
+/**
+ * Largest accepted battery state of charge forced by a fault.
+ */
+max_battery_soc: number, };
+
 export const SCENARIO_DEFAULTS: ScenarioConfig = {
   "id": "scenario",
   "label": "",
@@ -177,4 +248,23 @@ export const SCENARIO_DEFAULTS: ScenarioConfig = {
   "seed": 20261012,
   "auto_arm": false,
   "faults": []
+};
+export const LIMITS: Limits = {
+  "dt": 0.005,
+  "max_duration_s": 900.0,
+  "max_takeoff_altitude_m": 1000.0,
+  "max_wind_component_mps": 100.0,
+  "max_gps_position_noise_m": 100.0,
+  "max_gps_velocity_noise_mps": 50.0,
+  "max_cruise_hold_s": 60.0,
+  "max_waypoints": 512,
+  "max_obstacles": 512,
+  "max_coordinate_m": 1000000.0,
+  "max_waypoint_speed_mps": 200.0,
+  "max_radius_m": 1000000.0,
+  "max_avoidance_margin_m": 1000.0,
+  "max_avoidance_buffer_m": 1000.0,
+  "max_avoidance_lookahead_s": 60.0,
+  "max_faults": 16,
+  "max_battery_soc": 1.0
 };

@@ -8,7 +8,8 @@
  * `number`-not-`bigint` treatment of the integer fields, the fixed-tuple NED
  * triple fields, the `RunSummary` field list with its number counters and
  * nullable clearance, the optionality of the serde-defaulted
- * `ScenarioConfig` fields, and the parsed `SCENARIO_DEFAULTS` literal.
+ * `ScenarioConfig` fields, the parsed `SCENARIO_DEFAULTS` literal, and the
+ * `Limits` validation caps with their parsed `LIMITS` literal.
  *
  * It is a text check, not a TypeScript parser: it only has to hold for the
  * output ts-rs actually emits.
@@ -176,8 +177,12 @@ describe('generated talon-core mirrors', () => {
     const marker = 'export const SCENARIO_DEFAULTS: ScenarioConfig = '
     const start = SOURCE.indexOf(marker)
     expect(start, 'SCENARIO_DEFAULTS literal is present').toBeGreaterThanOrEqual(0)
-    // The literal is JSON; strip the trailing `;` before parsing.
-    const literal = SOURCE.slice(start + marker.length).replace(/;\s*$/, '')
+    // The literal is JSON. Top-level `};` ends the object: inner closers are
+    // indented, so `\n};` at the line start is the object's own brace.
+    const end = SOURCE.indexOf('\n};', start)
+    expect(end, 'SCENARIO_DEFAULTS literal is terminated').toBeGreaterThan(start)
+    // Slice through the closing brace, then drop the trailing `;`.
+    const literal = SOURCE.slice(start + marker.length, end + 2).replace(/;\s*$/, '')
     const parsed: unknown = JSON.parse(literal)
 
     expect(parsed).toBeTypeOf('object')
@@ -188,5 +193,82 @@ describe('generated talon-core mirrors', () => {
     const avoidance = obj['avoidance'] as Record<string, unknown>
     expect(avoidance['enabled']).toBe(false)
     expect(obj['seed']).toBe(20261012)
+  })
+
+  it('emits Limits with the count caps typed as number, not bigint', () => {
+    const limits = declBody('export type Limits =')
+    // The Rust usize caps mirror as plain `number`, so the editor validator
+    // can compare them against JSON-parsed counts without a bigint cast.
+    expect(limits).toMatch(/max_waypoints: number/)
+    expect(limits).toMatch(/max_obstacles: number/)
+    expect(limits).toMatch(/max_faults: number/)
+    expect(limits).not.toMatch(/: bigint/)
+    // Every field the validator reads is declared on the type.
+    for (const field of [
+      'dt',
+      'max_duration_s',
+      'max_takeoff_altitude_m',
+      'max_wind_component_mps',
+      'max_gps_position_noise_m',
+      'max_gps_velocity_noise_mps',
+      'max_cruise_hold_s',
+      'max_waypoints',
+      'max_obstacles',
+      'max_coordinate_m',
+      'max_waypoint_speed_mps',
+      'max_radius_m',
+      'max_avoidance_margin_m',
+      'max_avoidance_buffer_m',
+      'max_avoidance_lookahead_s',
+      'max_faults',
+      'max_battery_soc',
+    ]) {
+      expect(limits, `${field} should be declared`).toContain(`${field}:`)
+    }
+  })
+
+  it('emits LIMITS that parses as an object with the expected caps', () => {
+    const marker = 'export const LIMITS: Limits = '
+    const start = SOURCE.indexOf(marker)
+    expect(start, 'LIMITS literal is present').toBeGreaterThanOrEqual(0)
+    // The literal is JSON. Top-level `};` ends the object: inner closers are
+    // indented, so `\n};` at the line start is the object's own brace. Slicing
+    // through it keeps the parse robust if a later constant follows.
+    const end = SOURCE.indexOf('\n};', start)
+    expect(end, 'LIMITS literal is terminated').toBeGreaterThan(start)
+    const literal = SOURCE.slice(start + marker.length, end + 2).replace(/;\s*$/, '')
+    const parsed: unknown = JSON.parse(literal)
+
+    expect(parsed).toBeTypeOf('object')
+    expect(parsed).not.toBeNull()
+    const obj = parsed as Record<string, unknown>
+    // The caps the editor validator pins: the sim step and the run-length
+    // ceiling come straight from the Rust constants.
+    expect(obj['dt']).toBe(0.005)
+    expect(obj['max_duration_s']).toBe(900)
+    expect(obj['max_faults']).toBe(16)
+    expect(obj['max_battery_soc']).toBe(1.0)
+    // Every key on the Limits type is present in the literal.
+    for (const key of [
+      'dt',
+      'max_duration_s',
+      'max_takeoff_altitude_m',
+      'max_wind_component_mps',
+      'max_gps_position_noise_m',
+      'max_gps_velocity_noise_mps',
+      'max_cruise_hold_s',
+      'max_waypoints',
+      'max_obstacles',
+      'max_coordinate_m',
+      'max_waypoint_speed_mps',
+      'max_radius_m',
+      'max_avoidance_margin_m',
+      'max_avoidance_buffer_m',
+      'max_avoidance_lookahead_s',
+      'max_faults',
+      'max_battery_soc',
+    ]) {
+      expect(obj, `${key} should be present`).toHaveProperty(key)
+    }
   })
 })

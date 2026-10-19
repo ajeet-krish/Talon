@@ -21,12 +21,11 @@ use serde::{Deserialize, Serialize};
 use crate::constants::{DT, MAX_DURATION_S};
 use crate::sim::{check_range, DivergenceMode, SimError};
 
-/// Most authored faults one scenario may schedule.
-///
-/// A cap keeps a mistyped or hostile document from queueing an unbounded list
-/// of one-shot actions; sixteen is far more than any FDIR scenario needs and
-/// small enough that a runaway editor loop is caught at the first write.
-pub const MAX_FAULTS: usize = 16;
+/// Most authored faults one scenario may schedule; defined with the other
+/// input-validation caps in [`crate::constants`] so it rides along with
+/// [`crate::constants::Limits`] into the generated TypeScript mirror, and
+/// re-exported here so the fault call sites keep one import.
+pub use crate::constants::MAX_FAULTS;
 
 /// The sim time of the last step of a run of `duration_s`, the latest clock
 /// at which a fault still has a step to act in, or `None` when the run is
