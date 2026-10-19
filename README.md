@@ -1,24 +1,8 @@
 # Talon FlightLab: UAV Autopilot Simulator
 
-Talon FlightLab is a drone autopilot simulator you can fly and inspect in
-the browser. It pairs a validated guidance, navigation, and control (GNC)
-core with a web tool that presents the results: a replayable 3D flight,
-live telemetry channels, the automated validation report, the recorded
-flight videos, and a live run that executes the autopilot itself in the
-browser.
+Talon FlightLab is a drone autopilot simulator you can fly and inspect in the browser. It pairs a validated guidance, navigation, and control (GNC) core with a web tool that presents the results: a replayable 3D flight, live telemetry channels, the automated validation report, the recorded flight videos, and a live run that executes the autopilot itself in the browser.
 
-The core is a complete autopilot for a 1.5 kg Crazyflie-class quadrotor: a
-15-state multiplicative error-state Kalman filter, NLGL line-of-sight
-guidance, a cascaded PD controller, an 8-state flight-phase state machine
-with FDIR, and a UDP MAVLink software-in-the-loop (SIL) runner, all closed
-loop against a Rust rigid-body truth plant. The autopilot is one Rust
-library, `talon-core`: the browser runs it through WebAssembly
-(`wasm/`, wasm-bindgen) and the Python analysis harness runs it through a
-PyO3 extension (`bindings/`, exposing `talon._core`). The mission,
-guidance, estimation glue, SIL, and analysis tooling are Python. Talon is
-the single-agent companion to SwarmGNC: where SwarmGNC studies multi-agent
-formation flight, Talon proves one vehicle done honestly, estimator in the
-loop, with every acceptance number checked by an automated report.
+The core is a complete autopilot for a 1.5 kg Crazyflie-class quadrotor: a 15-state multiplicative error-state Kalman filter, NLGL line-of-sight guidance, a cascaded PD controller, an 8-state flight-phase state machine with FDIR, and a UDP MAVLink software-in-the-loop (SIL) runner, all closed loop against a Rust rigid-body truth plant. The autopilot is one Rust library, `talon-core`: the browser runs it through WebAssembly (`wasm/`, wasm-bindgen) and the Python analysis harness runs it through a PyO3 extension (`bindings/`, exposing `talon._core`). The mission, guidance, estimation glue, SIL, and analysis tooling are Python.
 
 ## Run the app
 
@@ -33,27 +17,17 @@ npm test         # vitest unit tests
 ```
 
 The app is a GitHub Pages *project* site, served from a subpath
-(`https://ajeet-krish.github.io/Talon/`), so Vite's `base` is `/Talon/` and
-the dev and preview servers use the same prefix. Override it for a
-root-served local session with `VITE_BASE=/ npm run dev`. The deploy workflow
-derives the base from the repository name at build time, so it follows a
-rename without any edit here.
+(`https://ajeet-krish.github.io/Talon/`), so Vite's `base` is `/Talon/` and the dev and preview servers use the same prefix. Override it for a root-served local session with `VITE_BASE=/ npm run dev`. The deploy workflow derives the base from the repository name at build time, so it follows a rename without any edit here.
 
 Deployment requires the repository's Pages source to be set to
-**GitHub Actions** (Settings > Pages > Build and deployment > Source). Left on
-"Deploy from a branch", GitHub publishes the raw repository through Jekyll and
-the site serves an untranspiled `index.html`.
+**GitHub Actions** (Settings > Pages > Build and deployment > Source). Left on "Deploy from a branch", GitHub publishes the raw repository through Jekyll and the site serves an untranspiled `index.html`.
 
 The Run section needs the WebAssembly kernel. Build it once with
-`./wasm/build.sh` (needs wasm-pack and the wasm32 target); the built bundle is
-committed under `public/wasm-rust/`, so a fresh clone can run it without the
-toolchain. Without a built bundle, every other section still works and Run
-disables itself with a clear message.
+`./wasm/build.sh` (needs wasm-pack and the wasm32 target); the built bundle is committed under `public/wasm-rust/`, so a fresh clone can run it without the toolchain. Without a built bundle, every other section still works and Run disables itself with a clear message.
 
 ## Sections
 
-One entry point, five sections (the replay and telemetry sections share the
-playback clock; the left rail always carries the scenario list):
+One entry point, five sections (the replay and telemetry sections share the playback clock; the left rail always carries the scenario list):
 
 - **Replay**: a full-bleed 3D scene. Scrub a recorded flight and read the autopilot working: EKF state estimation with a 3-sigma covariance ellipsoid, the flight-phase state machine (phase-colored trail and phase-segmented timeline), NLGL guidance, and detour avoidance around spherical keep-out zones with a live clearance readout.
 - **Telemetry**: the recorded channels as time-series (altitude, ground speed, EKF error, wind, thrust, 3-sigma, obstacle clearance).
