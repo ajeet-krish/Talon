@@ -411,3 +411,299 @@ pythonpath), `python/sims/run_all.py` (`PY_ROOT`/`REPO_ROOT`, pytest path),
 - `scripts/copy_data.sh` staged five JSON documents into `public/data/` and
   five recordings into `public/videos/`; the production build copies both
   trees into `dist/`.
+
+---
+
+<!-- BEGIN FULL TEST AUDIT 2026-10-18 -->
+
+## Full test audit (2026-10-18)
+
+Whole-project audit, not a phase diff. Every suite was re-run from the
+repository root, coverage was assessed by inspection against every core
+module, the `wrap_to_pi` finding in docs/reviews.md was independently
+reproduced out of tree, and the missing parity story was verified against the
+actual import graph and fixture consumers. No source, test, or CI file was
+modified; this appended section is the only change made by the audit.
+Environment: macOS (darwin), rustc 1.99.0, clippy 0.1.99, Python 3.14.3
+locally (CI pins 3.12), pytest 9.1.1, Node 26, vitest 5.0.4, cargo workspace
+with warm incremental builds.
+
+### Suite results: PASS/FAIL, exact counts, timings, warnings
+
+| Suite | Command | Verdict | Exact result | Timing | Warnings |
+|-------|---------|---------|--------------|--------|----------|
+| Rust core | `cargo test -p talon-core` | PASS | 210 passed, 0 failed, 0 ignored, 0 doc-tests | test binary 11.08 s (command wall 11.6 s) | none |
+| Rust wasm binding | `cargo test -p talon-wasm` | PASS | 12 passed, 0 failed, 0 ignored | test binary 9.66 s (wall 10.0 s) | none |
+| Rust PyO3 binding | `cargo test -p talon-py` | PASS | 3 passed, 0 failed | test binary < 0.01 s (wall 0.2 s) | none |
+| Python harness | `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` | PASS | 186 passed, 0 skipped, 0 xfail, 186 collected | 8.56 s (8.34 s on the durations run) | none |
+| Web unit (vitest) | `npm test` | PASS | 132 passed in 10 files, 0 failed | 221 ms in-suite (0.76 s wall) | none |
+| Live wasm smoke | `npm run smoke:wasm` | PASS | 76 ok checks, 0 FAIL, 5 of 5 configs (hover, waypoints, obstacle_field, avoidance, wind) plus the paced loop | about 0.4 s wall (the paced section advances a virtual wall clock, `wallMs += frameMs`, so 60 s of paced flight is simulated, not slept) | none |
+| Formatting gate | `cargo fmt --all -- --check` | FAIL | exit 1, 87 diff hunks across 19 files (3 in bindings, 15 in core, 1 in wasm) | about 1 s | n/a |
+| Lint gate | `cargo clippy --workspace --all-targets` | FAIL | exit 101, 1 deny-level error aborts the workspace: `core/src/guidance.rs:52` `approx_constant` on `-0.7071`; 18 lib + 20 lib-test warnings emitted (17 duplicates), clippy stops at talon-core so talon-wasm and talon-py lints never report | about 1 s (cached) | 20 (talon-core only) |
+
+Aggregate: 543 green unit and integration tests (210 + 12 + 3 Rust,
+186 Python, 132 TypeScript) plus 76 headless smoke checks. Both reported
+tooling failures are confirmed exactly as docs/reviews.md states: rustfmt 87
+hunks in 19 files, clippy red on the deny-level `approx_constant` at
+`core/src/guidance.rs:52`. Nothing was fixed in this audit. Note the clippy
+run I observed aborts before linting the other two crates, so the 4
+talon-py warnings listed in reviews.md could not be re-confirmed in this
+run; they will surface only after the deny error is cleared.
+
+Not re-run (deliberately): `npm run build` (gated in CI, last recorded clean
+2026-10-18), and `python/sims/run_all.py` (the validation driver regenerates
+committed plots and videos, which this audit is not permitted to write, and
+CI does not gate it).
+
+### Bug probe: `wrap_to_pi` (out of tree, repository untouched)
+
+A scratch crate outside the repository (the session's
+approved temp directory `opencode/wrap_probe`, pinned `libm =0.2.16` to
+match the workspace lockfile) compiled the repository's `core/src/math.rs`
+unmodified via `#[path]` and printed `wrap_to_pi` for the four cases pinned by
+`python/tests/test_guidance.py:19-22` plus the review's `-4.0` example. The
+Python column is `talon.guidance.wrap_angle` executed directly.
+
+| Input theta | Python `wrap_angle` (pinned by test) | Rust `wrap_to_pi` (probe) | Verdict |
+|-------------|--------------------------------------|---------------------------|---------|
+| `pi + 0.1` = 3.241592653589793 | -3.041592653589793 (= -pi + 0.1) | -3.04159265358979347 | MATCH |
+| `-pi - 0.1` = -3.241592653589793 | +3.041592653589793 (= pi - 0.1) | -3.24159265358979320 | FAIL: equals the input, outside [-pi, pi) |
+| `0.3` | 0.29999999999999982 | 0.29999999999999982 | MATCH |
+| `-2*pi + 0.3` = -5.983185307179586 | 0.29999999999999982 (= 0.3) | -5.98318530717958641 | FAIL: outside [-pi, pi) |
+| `-4.0` (review example) | 2.28318530717958623 | -4.00000000000000000 | FAIL: returns the input unchanged |
+
+Confirmed: 2 of the 4 Python-pinned cases fail through the Rust formula, and
+the review's `-4.0` case fails as reported. Root cause is exactly as
+reported: `fmod(theta + PI, TAU) - PI` (`math.rs:48-50`) inherits libm
+`fmod`'s numerator sign, so any `theta < -pi` produces a remainder in
+`(-2pi, 0)` and the result stays at or below `-pi`. The Python
+`(theta + pi) % (2pi) - pi` always lands in `[-pi, pi)` because Python's
+modulo takes the divisor's sign. `core/src/math.rs` has zero tests (no
+`#[test]`, no `#[cfg(test)]` module; 7 public functions), which is why the
+defect survives both suites: the Python tests only pin the Python helper,
+the Rust side pins nothing, and no Rust test asserts a `chi_d` range.
+Consumer reachability re-verified: the only call site is
+`core/src/guidance.rs:209`, `chi_d = wrap(chi_q + nu)` with
+`chi_q in [-pi, pi]` and `nu in [-pi/2, pi/2]`, so `chi_q + nu` can reach
+`-3pi/2`; `chi_d` is consumed only through `sin`/`cos` (guidance.rs:215-216,
+controller.rs:167), so flown trajectories are unaffected today while the
+diagnostics value can fall outside the documented range and the doc comment's
+"matches the Python helper one-to-one" claim is false.
+
+### Parity story (Python vs Rust): verified missing
+
+- Six logic layers exist twice, documented as D28: guidance (316 py lines vs
+  433 rs), mission (132 vs 291), state_machine (324 vs 658), motors (121 vs
+  345), sensors (238 vs 507), battery (112 vs 337). controller.py, ekf.py,
+  avoidance.py, constants.py are verified thin re-exports of `_core` (checked
+  by import and docstring), and dynamics, wind, types come from `_core`
+  directly.
+- No parity test compares any of the six duplicated pairs. The pytest suite
+  exercises the Python copies; the cargo suite exercises the Rust copies;
+  neither fails when one side is tuned. The `wrap_to_pi` divergence is the
+  live proof: `wrap_angle` and `wrap_to_pi` already disagree and 543 green
+  tests do not notice.
+- The fixture pipeline is dead. `fixtures/live_fixtures.json` and
+  `fixtures/sil_reference.json` are written by
+  `python/sims/export_live_configs.py:63-64` and read by nothing: a grep
+  across `src/`, `scripts/`, `python/`, and `vitest.config.ts` finds zero
+  consumers (the vitest consumers were deleted in Phase 5b; the exporter
+  docstrings and architecture.md still claim otherwise). Worse for parity
+  purposes, the fixtures are generated from the Python modules themselves,
+  so even a consumer could only prove Python self-consistency, not
+  Python-vs-Rust agreement.
+- What cross-language evidence does exist today: (a)
+  `python/tests/test_dynamics.py::test_parity_one_step_against_python_reference`,
+  a pure-Python RK4 oracle compared against the Rust `talon.propagate`, the
+  one genuine numerical parity test in the repository; (b) the 20
+  `test_avoidance.py` cases, which now pass against Rust by delegation (same
+  code, not comparison); (c) the 186-test suite passing unchanged against
+  `_core` for controller and ekf (also delegation); (d) the frozen recorded
+  artifacts plus the byte-identical config regeneration recorded in prior
+  phases. For the six duplicated layers there is no evidence at all.
+
+### Coverage map (module, direct tests, gap assessment)
+
+Rust counts are from `cargo test -p talon-core -- --list` (210 total).
+Python counts are test functions before parametrization expansion (186 items
+total; state_machine parametrizes over phases).
+
+| Core module | Direct Rust tests | Python-side tests | Gap assessment |
+|-------------|-------------------|-------------------|----------------|
+| dynamics.rs | 7 (free fall, hover, drag, moment signs, wind airflow, yaw, unit quaternion) | test_dynamics.py 6, including the RK4 parity oracle vs Rust `propagate` | Adequate. Strongest cross-language pin in the repo. No step-size or large-perturbation sensitivity case; acceptable for a fixed-step teaching sim. |
+| wind.rs | 6 (correlation, variance vs sigma, zero sigma, zero airspeed, reset determinism) | indirect via test_sensors/test_mavlink_sil (DrydenWind comes from `_core`) | Adequate statistical unit coverage with fixed seeds. No native-vs-wasm bit-parity test for the Dryden chain, despite the module docstring's bit-identical claim. |
+| controller.rs | 8 (hover, position error signs, roll/yaw moments, integrator reset, saturation anti-windup, closed-loop stability) | test_controller.py 11 through `_core` | Good. Anti-windup and repeatability asserted on both sides of the boundary (delegation, so one implementation). |
+| ekf.rs | 16 (Joseph update effects, gating leaves state untouched, covariance symmetry, bias handling, gravity integration, quaternion normalization, init from accel) | test_ekf.py 7 through `_core`; sim end-to-end convergence and divergence injection | Good. Gap: the divergence flag's own thresholds (`DIVERGENCE_MIN_TIME_S`, position-error clause, recovery) are only asserted end-to-end via injection (`a_corrupted_estimate_triggers_the_emergency_sequence`), never as units; the `try_inverse().expect` failure path (reviews Low) is untested by construction. |
+| guidance.rs | 16 (clips, crab, floors, altitude channel, degenerate legs, behind-A recovery, mission leg advance) | test_guidance.py 9 against the Python copy | Thin relative to risk. No `chi_d in [-pi, pi)` invariant, no case driving `chi_q + nu < -pi`, and no Rust test or fixture pins the wrap corner, which is precisely where the implementations already disagree. Cross-implementation parity unpinned. |
+| avoidance.rs | 23 geometry/law/latch/tuning plus 5 closed-loop in sim.rs | test_avoidance.py 20 (delegates to `_core`) | Strong, the best-covered new module. Documented residuals remain: zone pinned hard against a waypoint, zone wider than the detour reach, and no Python closed-loop flight (Python harness cannot fly the law at all). |
+| mission.rs | 13 (acceptance radius, chaining, completion latch, distance remaining, empty mission rejected, NaN position guard) | test_mission.py 7 against the Python copy | Rust strong. The Python non-finite guard (mission.py:98-99) has no test and its contract differs from Rust (reviews Medium); zero-radius and duplicate-position edges untested on both sides. |
+| state_machine.rs | 21 (every guard value, critical fault from all phases, log ordering, force-phase, NED-safe telemetry) | test_state_machine.py 24 against the Python copy | Strong on both sides; cross-implementation parity unpinned (the recurring D28 gap). |
+| sensors.rs | 13 (noise statistics vs configured sigmas, density over sqrt(dt), random walk, seed determinism, clock edges, specific force convention) | test_sensors.py 7 against the Python copy | Good, seeded and deterministic. Parity unpinned (D28). |
+| motors.rs | 15 (mix round trip, inverse mix, lag vs closed form, ceilings, negative clamping, dt edges) | test_motors.py 13 against the Python copy | Good. The `dt < 0` policy drift (Python raises, Rust clamps) is asserted separately on each side, which pins the divergence rather than catching it. |
+| battery.rs | 14 (endurance, droop, clamps, thresholds, dt edges) | test_battery.py 8 against the Python copy | Good; same policy-drift caveat as motors. |
+| sim.rs | 29 (closed-loop flights, avoidance on/off controls, seed reproducibility, streaming layout, delta reads, event scheduling, divergence emergency, ground clamp, outcomes) | test_integration.py 5 + test_mavlink_sil.py 21 through the Python stack; `npm run smoke:wasm` 76 checks over 5 configs | Strong closed-loop coverage. Gap: no non-finite config input test (`1e999` duration accepted today, reviews Medium); `waypoints_reached` semantics differ between Python and Rust with the Python side tested to its own rule (test_integration.py:149). |
+| scenario.rs | 10 (JSON round trip, sparse defaults, unknown fields, avoidance block, projection, validation of duration and takeoff only) | none directly (wasm tests parse scenarios) | Sign-based validation only, tested only for the sign cases. No `inf`/`NaN` case for duration, waypoints, obstacles, wind, or noise, which is the flagged security gap that Phase 8 exposes. |
+| export.rs | 10 (schema and units, phase timeline sorted, sample counts, rounding, JSON round trip, missing obstacles reads as empty) | test_export_json.py 16 against the separate Python writer | Good round-trip coverage on both sides. Gap: the Python validator's finiteness blindness is untested (no `validate_flight_json` rejects NaN test; the writer's `test_no_nan_inf` covers only export), and the `obstacles` required-vs-optional contract (D4 vs code) is pinned only incidentally by `test_required_keys`. |
+| math.rs | **0 of 7 public functions** | none (Python `wrap_angle` is its own copy) | **Critical gap.** `wrap_to_pi` wrong for `theta < -pi` and verified failing 2 of 4 pinned Python cases; `to_radians`, `to_degrees`, `clamp`, `cross2`, `norm3`, `horizontal_distance` all untested directly (some exercised indirectly through callers). |
+| rng.rs | 4 (same seed same sequence, uniform bounds, normal moments, normal3 consistency) | indirect through seeded Python tests | Adequate for a deterministic teaching sim. |
+| types.rs | 5 (DCM rotation, yaw basis, quaternion identity, phase labels, missing obstacles default) | indirectly via mission/sensors tests | Adequate; serde defaults exercised through scenario/export tests. |
+| constants.rs | 0 | Python `constants.py` (also untested for parity) | Values were compared manually in reviews.md only; no automated pin between `core/src/constants.rs` and `python/talon/constants.py`. Low risk (constants), zero tests. |
+| wasm/src/lib.rs | 12 (Session stepping, streamed layout stride, document build, summary fields, JSON scenario with the law, altitude helper, fix counters) | `npm run smoke:wasm` 76 checks | Good boundary coverage for width (`sample_stride()==36`) and semantics it happens to read (altitude, phases, clearance). Named field offsets are asserted only Rust-side (`sim.rs` `the_streamed_sample_layout_is_consistent`) and TS-side (`stream.test.ts`); no automated cross-language offset comparison, and the `u64`/`bigint` getters are untested from JavaScript (FakeSession returns numbers, reviews High). |
+| bindings/ (PyO3) | 3 (vec3/mat3 round trips, negative margin message) | the full 186-test pytest suite runs through the extension, which is the real integration coverage | Binding-level edges are thin: `vec3_from` short-input `ValueError` has no test on either side; no test asserts a Python-visible error for a wrong-typed sequence. |
+
+### Test quality assessment
+
+- Assertions vs smoke: predominantly behavior assertions with quantitative
+  thresholds, not smoke. Examples: EKF RMSE bounds in test_integration.py,
+  clearance vs margin in the sim closed-loop tests, motor lag equality against
+  the exponential closed form, wind variance against sigma, `poseAt`
+  interpolation exactness, pacing lag under one frame. The smoke-flavored
+  minority is `test_monte_carlo.py` (2, mostly isinstance checks),
+  `test_animation.py` (2, artifact existence), and `test_plotting.py` (4).
+- Determinism: no unseeded randomness anywhere. Python uses
+  `np.random.default_rng(fixed)` (2026, 11, 23), Rust uses a fixed default
+  seed (`sim.rs:114`, `20_261_012`), and same-seed reproducibility is itself
+  asserted (`the_same_seed_reproduces_the_same_flight`,
+  `test_deterministic_same_seed`). Statistical assertions are therefore
+  deterministic run to run.
+- Time dependence and sleeps: only `python/tests/test_mavlink_sil.py` runs
+  against wall clock (three `time.sleep` calls at 5 ms and 50 ms, receiver
+  timeouts of 0.5 s, thread joins up to 15 s) and binds fixed loopback UDP
+  ports (15550/15551, 15570/15571), which collides if two checkouts run in
+  parallel (reviews Low). Rust and vitest suites contain zero sleeps, zero
+  `Instant`/`Date.now`, and zero timers. The smoke paced loop is virtual-time
+  and finishes in under a second by construction.
+- Network: loopback UDP only, inside test_mavlink_sil.py. vitest stubs
+  `fetch` with `vi.stubGlobal`; no real network in any suite.
+- Shared mutable state and order dependencies: none found. Rust tests are
+  stateless per test (no `#[ignore]`, no `unsafe`, no shared fixtures),
+  pytest uses function-scoped `tmp_path` and fixtures, vitest isolates per
+  file. No test consumes another test's output. The one suite-level piece of
+  shared state is `conftest.py`'s module-level import check: without
+  `TALON_REQUIRE_CORE=1` a missing `_core` skips all 186 tests and still
+  exits green. CI sets the variable; local runs must remember it (I ran with
+  it set).
+- Golden and recorded artifacts: `public/data/live/configs.json` is consumed
+  by the app, by the smoke script (5 configs), and by two vitest drift guards
+  in `src/live/view.test.ts`. By contrast `fixtures/live_fixtures.json` and
+  `fixtures/sil_reference.json` are consumed by nothing, and the four
+  recorded replay documents (`public/data/{gps_outage,wind,emergency,obstacle_field}.json`)
+  plus `validation.json` are consumed only by the running app: no test loads
+  or validates them (the store casts them to `FlightData` unchecked). The
+  export tests round-trip through `tmp_path` rather than golden bytes, which
+  is the right call for floats.
+- Parity harness: none, as detailed in the parity section above. The one
+  genuine cross-language numerical test is the dynamics RK4 oracle.
+
+### CI analysis (.github/workflows/ci.yml)
+
+Three jobs, all gated on push and pull request:
+
+| Gate | Runs | Status today |
+|------|------|--------------|
+| `core` job | `cargo test --workspace` (225), `./bindings/build.sh`, `uv run python -c "import talon._core"`, `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` (186) | green |
+| `wasm` job | `./wasm/build.sh`, `git diff --exit-code` on the generated JS and d.ts (not the `.wasm` binary), `npm ci`, `npm run smoke:wasm` (76 checks) | green |
+| `web` job | `npm ci`, `npm test` (132), `npm run build` (tsc typecheck + vite) | green |
+
+Not gated, verified by running them: `cargo fmt --all -- --check` (red,
+exit 1) and `cargo clippy --workspace --all-targets` (red, exit 101). Also
+not gated: the validation driver `python/sims/run_all.py` (25 checks),
+any coverage measurement (no coverage tool is configured in vitest, pytest,
+or Cargo), fixture or config regeneration drift beyond the JS diff, the
+`.wasm` binary content (deliberate, documented), a DOM/browser test tier
+(which does not exist), Python lint or type checking (none configured), and
+the `permissions:` block the security review requested.
+
+What the green gates would miss if anything behind them broke, and what
+would stay green today even with all gates on:
+
+- The `wrap_to_pi` divergence (no test anywhere exercises the Rust wrap
+  corner).
+- Any tuning drift between the six duplicated Python/Rust layers (no parity
+  test).
+- Non-finite input acceptance: `"duration_s": 1e999` and NaN waypoints pass
+  every validator and every test.
+- The `bigint` vs `number` getter drift: `tsc` checks the hand-declared
+  `engine.ts`, and vitest's FakeSession returns numbers, so both gates pass
+  while the real module returns BigInt.
+- A field reordering inside the sample block that preserves stride 36: the
+  smoke script pins width plus a handful of semantic reads, `stream.test.ts`
+  pins TypeScript's own constants, and no automated check compares the
+  TypeScript offsets with the Rust `sample_field`.
+- The D4 export-compatibility claim versus `validate_flight_json` behavior
+  (asserted only in the direction the code happens to implement).
+- The day fmt and clippy are added to CI, both jobs start red (87 hunks,
+  1 deny error), which is exactly why they must be fixed in the same change
+  that gates them.
+
+### Missing high-value tests, in priority order
+
+| # | Priority | Test file to add or extend | What it must assert | Expected status today |
+|---|----------|----------------------------|---------------------|----------------------|
+| 1 | P0 | `core/src/math.rs` (new `#[cfg(test)] mod tests`) | Port the four cases from `python/tests/test_guidance.py:19-22` plus `wrap_to_pi(-4.0) == 2.283185307179586`, a `[-pi, pi)` range invariant over a sweep, and direct cases for `to_radians`/`to_degrees` round trips, `clamp` edges, `cross2` signs, `norm3`, `horizontal_distance` | FAILS now (2 of 5 wrap cases), pins the fix |
+| 2 | P0 | `python/tests/test_parity.py` plus the binding surface it needs in `bindings/src/` (or convert the six duplicated modules to re-exports like controller/ekf/avoidance) | For guidance, mission, state_machine, motors, sensors, battery: identical outputs for shared inputs between the Python module and `talon._core`, including at least one wrap or branch corner per function (the current fixtures sit only in the benign quadrant) | FAILS or is unbuildable now (guidance wrap corner diverges); this closes the D28 story with evidence |
+| 3 | P0 | `python/tests/test_fixtures_parity.py`, with `fixtures/live_fixtures.json` regenerated from the Rust side rather than from the Python modules | Every fixture vector matches the Rust-computed value; a regen diff is a real parity signal | FAILS now (fixtures are Python self-generated and unread) |
+| 4 | P1 | `core/src/scenario.rs`, `core/src/sim.rs`, `core/src/avoidance.rs` test modules | `duration_s`, `takeoff_altitude`, wind, noise, waypoint, and obstacle values reject `f64::INFINITY`/`NaN` (`1e999` JSON parses to inf); avoidance margin/buffer/lookahead reject NaN and inf | FAILS now (validators accept them), drives the security fix |
+| 5 | P1 | `python/tests/test_export_json.py` (new tests) | `validate_flight_json` rejects `NaN`/`inf` numeric leaves (reuse `_check_finite`), and the `obstacles`-missing contract is pinned one way (optional per D4 or required per code) | FAILS now for finiteness |
+| 6 | P1 | `scripts/smoke_live_wasm.mjs` (extend) | For a few sample indices, cross-check streamed block fields (`TIME`, `TRUTH_POSITION`, `EKF_POSITION`, `WIND`, `THRUST`) against the matching named arrays in `document_json()`, so a same-stride reordering cannot pass; assert `typeof` of the three `gps_*` getters is `bigint` | Would pass now, fails on the next stride-preserving reorder or on a BigInt regression |
+| 7 | P1 | `src/live/engine.contract.test.ts` (new) | Parse `public/wasm-rust/talon_core.d.ts` and assert every method and getter type against `CoreSession` in `engine.ts`, including `bigint` | FAILS now (reviews High: three getters declared `number`) |
+| 8 | P2 | `core/src/ekf.rs` or `core/src/sim.rs` (new tests) | Divergence flag trips only after `DIVERGENCE_MIN_TIME_S` and above the position-error clause, clears on recovery, and the innovation gate during a long GPS outage neither trips nor masks divergence | PASSes likely; closes the untested-threshold gap |
+| 9 | P2 | `python/tests/test_mission.py` (new) | The non-finite position guard (mission.py:98-99) raises, and the contract difference from Rust (Rust returns early) is pinned as intended behavior | Python guard is currently untested; Rust side has `a_nan_position_does_not_complete_the_mission` |
+| 10 | P2 | `core/src/sim.rs` (new closed-loop tests) | A keep-out zone pinned against a waypoint, and a zone wider than the detour reach: either the documented limitation (not claimed to work) or the actual behavior, asserted | Uncovered residual risk from reviews 9a |
+| 11 | P3 | `src/views/RunView.dom.test.tsx` (new tier; needs a jsdom or happy-dom environment entry in `vitest.config.ts`) | The wasm session is freed on completion, on reset, and on unmount; the rAF loop is cancelled; the config fetch is aborted | Uncovered; engine disposal currently rests on review only |
+| 12 | P3 | `python/tests/test_constants_parity.py` (new) | `python/talon/constants.py` values equal the `_core` exports field for field | Would pass now (values were compared manually in review), prevents silent drift |
+| 13 | P3 | `python/tests/test_export_json.py` (new) | Each committed replay document in `public/data/*.json` passes `validate_flight_json` after fix 5 lands, so the artifacts the app loads are validated by the suite | Depends on 5 |
+
+### Test-suite health verdict
+
+Verdict: GREEN AND SOUND IN ITS CORE, WITH THREE MATERIAL BLIND SPOTS.
+
+The suite is healthy where it exists: 543 deterministic unit and
+integration tests plus 76 headless smoke checks all pass with zero warnings
+in about 30 seconds of wall time total; assertions are quantitative rather
+than smoke; randomness is seeded everywhere; there are no sleeps, timers, or
+network dependencies outside one loopback UDP module; no order dependencies
+or shared mutable state; and the closed-loop coverage (sim.rs 29 tests, the
+avoidance on/off controls, the 5-config smoke) is better than typical for a
+teaching simulator. The Python integration stack and the wasm seam are both
+exercised end to end.
+
+The blind spots are structural rather than flaky: (1) `core/src/math.rs`
+has zero tests and already contains a verified cross-language defect, which
+is the exact bug a parity harness exists to catch; (2) six duplicated
+Python/Rust layers and a dead fixture pipeline mean no automated signal
+connects the two implementations the project claims are one; (3) the two
+standard Rust quality gates are red and ungated, and the input-validation
+tests the security review called for do not exist, so all green CI currently
+proves only that the happy paths still fly.
+
+Top 3 next actions:
+
+1. Wrap contract plus parity hardening: fix `wrap_to_pi`, add the
+   `core/src/math.rs` test module (row 1), and stand up the Python-vs-Rust
+   parity suite over the six duplicated layers with fixtures generated from
+   the Rust side (rows 2 and 3). This is the single change that would have
+   caught the High finding and prevents its recurrence.
+2. Tooling gates green: clear the clippy deny error at
+   `core/src/guidance.rs:52` and the 87 rustfmt hunks in 19 files, then gate
+   `cargo fmt --check` and `cargo clippy --all-targets` in
+   `.github/workflows/ci.yml` (add `permissions: contents: read` in the same
+   edit, per the security review). Both commands are verified red today.
+3. Finiteness validation with failing-first tests (rows 4 and 5) in
+   `SimConfig::validate`, `ScenarioConfig::validate`,
+   `AvoidanceConfig::validate`, and `validate_flight_json`, landed before
+   Phase 8 mission authoring or any replay-import feature feeds user JSON to
+   those parsers.
+
+Notes for other agents: the recurring failure pattern in this repository is
+"two implementations, two suites, no bridge". Any new cross-language pair
+should ship with a parity test in the same change, fixtures must include at
+least one corner case per wrap and branch (all current guidance fixtures sit
+in the benign quadrant), and sign-based numeric validation (`v > 0.0`,
+`v < 0.0`) should be replaced with an explicit `is_finite()` check plus the
+range test, in Rust and Python alike. The dead fixture pipeline
+(`fixtures/live_fixtures.json`, `fixtures/sil_reference.json`) should be
+either regenerated from the Rust side and consumed by a pytest parity suite,
+or deleted with the docstrings corrected.
+
+<!-- END FULL TEST AUDIT 2026-10-18 -->
