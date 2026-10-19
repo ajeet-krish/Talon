@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::avoidance::AvoidanceConfig;
 use crate::constants::MAX_DURATION_S;
+use crate::faults::{FaultSpec, MAX_FAULTS};
 use crate::sim::{SimConfig, SimError};
 use crate::types::{Arr3, Obstacle, Waypoint};
 
@@ -120,6 +121,12 @@ pub struct ScenarioConfig {
     #[serde(default)]
     #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub auto_arm: bool,
+    /// Authored faults scheduled at absolute sim times, each applied once in
+    /// list order when the clock reaches it. Empty by default, so every
+    /// existing scenario runs exactly as before.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
+    pub faults: Vec<FaultSpec>,
 }
 
 fn default_start_position() -> Arr3 {
@@ -147,6 +154,7 @@ impl Default for ScenarioConfig {
             cruise_hold_s: default_cruise_hold_s(),
             seed: default_seed(),
             auto_arm: false,
+            faults: Vec::new(),
         }
     }
 }
@@ -186,6 +194,21 @@ impl ScenarioConfig {
                 max: MAX_DURATION_S,
             });
         }
+        // Authored faults are checked against this scenario's own duration:
+        // the fire window ends at the run's last step clock,
+        // `(duration_s / DT).round() - 1) * DT`, inclusive: a fault scheduled
+        // there still fires on the final step, and anything later would
+        // validate and never fire.
+        if self.faults.len() > MAX_FAULTS {
+            return Err(SimError::TooManyItems {
+                name: "faults",
+                count: self.faults.len(),
+                max: MAX_FAULTS,
+            });
+        }
+        for fault in &self.faults {
+            fault.validate(self.duration_s)?;
+        }
         self.to_sim_config().validate()
     }
 
@@ -204,6 +227,7 @@ impl ScenarioConfig {
             cruise_hold_s: self.cruise_hold_s,
             obstacles: self.obstacles.clone(),
             avoidance: self.avoidance,
+            faults: self.faults.clone(),
             seed: self.seed,
         }
     }
@@ -317,6 +341,8 @@ mod tests {
         assert!(cfg.obstacles.is_empty());
         // Avoidance is off unless a scenario asks for it.
         assert!(!cfg.avoidance.enabled);
+        // Faults are authored, never defaulted in.
+        assert!(cfg.faults.is_empty());
     }
 
     #[test]
@@ -345,6 +371,71 @@ mod tests {
         // older bundle.
         let json = r#"{"id":"x","something_new":42}"#;
         assert!(ScenarioConfig::from_json(json).is_ok());
+    }
+
+    #[test]
+    fn authored_faults_are_validated_against_the_scenario_duration() {
+        // A fault scheduled at the run's end has no steps left to disturb, so
+        // the fire window fails first, before the outage's own parameters.
+        let cfg = ScenarioConfig {
+            duration_s: 60.0,
+            faults: vec![crate::faults::FaultSpec::GpsOutage {
+                at_s: 60.0,
+                duration_s: 3.0,
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            cfg.validate(),
+            Err(SimError::OutOfRangeParameter {
+                name: "fault at_s",
+                ..
+            })
+        ));
+        // Move it inside the window: the same spec is accepted, and the
+        // projection carries it through to the runner.
+        let cfg = ScenarioConfig {
+            faults: vec![crate::faults::FaultSpec::GpsOutage {
+                at_s: 5.0,
+                duration_s: 3.0,
+            }],
+            ..cfg
+        };
+        cfg.validate().expect("a fault inside the window is valid");
+        assert_eq!(cfg.to_sim_config().faults, cfg.faults);
+
+        // The authored JSON shape round-trips through the config.
+        let json = r#"{
+            "id": "faulted",
+            "duration_s": 30.0,
+            "faults": [
+                {"kind": "gps_outage", "at_s": 5.0, "duration_s": 2.0},
+                {"kind": "ekf_divergence", "at_s": 10.0, "mode": "corrupt_bias"},
+                {"kind": "battery_soc", "at_s": 12.0, "soc": 0.4},
+                {"kind": "motor_fault", "at_s": 15.0},
+                {"kind": "emergency", "at_s": 20.0},
+                {"kind": "rtl", "at_s": 25.0}
+            ]
+        }"#;
+        let cfg = ScenarioConfig::from_json(json).expect("the tagged faults parse");
+        cfg.validate().expect("all six kinds validate");
+        assert_eq!(cfg.faults.len(), 6);
+        assert_eq!(cfg.to_sim_config().faults.len(), 6);
+
+        // A fault at or past the duration never fires, so it is rejected with
+        // the field named rather than silently dropped from the run.
+        let beyond = ScenarioConfig {
+            duration_s: 30.0,
+            faults: vec![crate::faults::FaultSpec::Emergency { at_s: 30.0 }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            beyond.validate(),
+            Err(SimError::OutOfRangeParameter {
+                name: "fault at_s",
+                ..
+            })
+        ));
     }
 
     #[test]

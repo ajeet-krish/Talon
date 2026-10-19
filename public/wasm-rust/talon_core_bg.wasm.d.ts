@@ -34,6 +34,7 @@ export const session_time: (a: number) => number;
 export const session_total_steps: (a: number) => number;
 export const session_truth_position: (a: number) => [number, number];
 export const session_truth_velocity: (a: number) => [number, number];
+export const validate_scenario_json: (a: number, b: number) => [number, number];
 export const __wbindgen_externrefs: WebAssembly.Table;
 export const __wbindgen_free: (a: number, b: number, c: number) => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;

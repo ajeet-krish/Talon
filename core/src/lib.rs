@@ -14,6 +14,7 @@ pub mod controller;
 pub mod dynamics;
 pub mod ekf;
 pub mod export;
+pub mod faults;
 pub mod guidance;
 pub mod math;
 pub mod mission;

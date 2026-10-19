@@ -30,6 +30,8 @@
 use std::collections::VecDeque;
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::avoidance::{
     min_surface_clearance, AvoidanceConfig, AvoidanceError, MissionLeg, ReactiveAvoidance,
 };
@@ -42,6 +44,7 @@ use crate::constants::{
 use crate::controller::CascadedController;
 use crate::dynamics::propagate;
 use crate::ekf::{Ekf, EkfConfig};
+use crate::faults::{FaultSpec, MAX_FAULTS};
 use crate::guidance::{NlglConfig, NlglGuidance};
 use crate::math;
 use crate::mission::{MissionError, WaypointMission};
@@ -97,6 +100,9 @@ pub struct SimConfig {
     /// Reactive avoidance tuning. Disabled by default, so adding zones to a
     /// scenario is inert until the scenario asks for the law.
     pub avoidance: AvoidanceConfig,
+    /// Authored faults, each scheduled at its absolute sim time. Empty by
+    /// default, so a scenario without faults runs exactly as before.
+    pub faults: Vec<FaultSpec>,
     pub seed: u64,
 }
 
@@ -115,6 +121,7 @@ impl Default for SimConfig {
             cruise_hold_s: 2.0,
             obstacles: Vec::new(),
             avoidance: AvoidanceConfig::default(),
+            faults: Vec::new(),
             seed: 20_261_012,
         }
     }
@@ -228,6 +235,21 @@ impl SimConfig {
             check_range("obstacle radius_m", obstacle.radius_m, 0.0, MAX_RADIUS_M)?;
         }
 
+        if self.faults.len() > MAX_FAULTS {
+            return Err(SimError::TooManyItems {
+                name: "faults",
+                count: self.faults.len(),
+                max: MAX_FAULTS,
+            });
+        }
+        for fault in &self.faults {
+            // No run duration here: SimConfig is duration-agnostic (the
+            // scenario carries it), so only finiteness and the parameter
+            // ranges apply; the exact last-step window is enforced by
+            // ScenarioConfig::validate, which knows the duration.
+            fault.validate_fields()?;
+        }
+
         self.avoidance.validate()?;
         Ok(())
     }
@@ -238,7 +260,12 @@ impl SimConfig {
 /// Finiteness is checked first so `+inf` is reported as non-finite rather
 /// than mislabeled as merely out of range, and so NaN (which fails every
 /// comparison, so both range tests would wave it through) cannot slip past.
-fn check_range(name: &'static str, value: f64, min: f64, max: f64) -> Result<(), SimError> {
+pub(crate) fn check_range(
+    name: &'static str,
+    value: f64,
+    min: f64,
+    max: f64,
+) -> Result<(), SimError> {
     if !value.is_finite() {
         return Err(SimError::NonFiniteParameter { name, value });
     }
@@ -286,6 +313,10 @@ pub enum SimError {
         /// Largest accepted value, inclusive.
         max: f64,
     },
+    /// A run too short to schedule any fault into: with at most one plant
+    /// step, no fault time could fire, so every fault is rejected rather
+    /// than silently never applied.
+    NoFaultWindow(f64),
     /// A list parameter carried more items than the cap allows.
     TooManyItems {
         /// The offending list, e.g. `"waypoints"`.
@@ -329,6 +360,10 @@ impl fmt::Display for SimError {
             Self::TooManyItems { name, count, max } => {
                 write!(f, "{name} has {count} items, at most {max} allowed")
             }
+            Self::NoFaultWindow(v) => write!(
+                f,
+                "duration_s {v} leaves no fault window: a run must span at least two plant steps ({DT} s each) for a fault to fire"
+            ),
             Self::Battery(e) => write!(f, "battery: {e}"),
             Self::Motor(e) => write!(f, "motor: {e}"),
             Self::Mission(e) => write!(f, "mission: {e}"),
@@ -367,7 +402,12 @@ impl From<AvoidanceError> for SimError {
 }
 
 /// The estimator divergence injections the RTL and FDIR scenarios use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serialized `snake_case`, so the authored JSON spells the modes
+/// `corrupt_bias`, `suppress_updates` and `adversarial_gps`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 pub enum DivergenceMode {
     /// One-shot +25 m offset on the nominal north position. The innovation gate
     /// then rejects every subsequent fix, so the corruption persists and
@@ -495,6 +535,14 @@ pub struct SimRunner {
     state_machine: FlightPhaseMachine,
     armed: bool,
     emergency_descent_active: bool,
+    /// Raised by an authored MotorFault (and by any future actuator model
+    /// that reports a failed motor). The rising edge in `handle_events` turns
+    /// it into one `critical_fault` request; `build_telemetry` carries it so
+    /// the guard can read it.
+    motor_fault: bool,
+    /// The flag's previous-step value, for that rising edge: one response per
+    /// fault, the same edge discipline divergence uses.
+    motor_fault_prev: bool,
 
     gps_outage_start: f64,
     gps_outage_end: f64,
@@ -639,7 +687,7 @@ impl SimRunner {
 
         let state_machine = FlightPhaseMachine::new(config.takeoff_altitude)?;
 
-        Ok(Self {
+        let mut runner = Self {
             reference: config.start_position_ned,
             wind_steady: config.wind_steady_ned,
             config,
@@ -661,6 +709,8 @@ impl SimRunner {
             state_machine,
             armed: false,
             emergency_descent_active: false,
+            motor_fault: false,
+            motor_fault_prev: false,
             gps_outage_start: f64::NEG_INFINITY,
             gps_outage_end: f64::NEG_INFINITY,
             fault_suppress_updates: false,
@@ -704,7 +754,25 @@ impl SimRunner {
             history_quat: Vec::new(),
             history_omega: Vec::new(),
             phase_timeline: vec![(0.0, FlightPhase::Idle)],
-        })
+        };
+
+        // Authored faults ride the existing schedule: each spec becomes a
+        // one-shot action pushed in list order, so equal fire times apply in
+        // scenario order, and `fire_scheduled` applies each exactly once at
+        // the first step whose clock reaches `at_s`, before the step's
+        // sensors and events. Nothing can fire during the convergence
+        // pre-roll: validation keeps `at_s >= 0`, and the pre-roll runs on a
+        // negative clock without draining the schedule.
+        for spec in runner.config.faults.clone() {
+            let at_s = spec.at_s();
+            runner.schedule(
+                at_s,
+                Box::new(move |runner| {
+                    let _ = runner.apply_fault(&spec);
+                }),
+            );
+        }
+        Ok(runner)
     }
 
     /// Samples recorded so far, at the control rate (100 Hz).
@@ -855,6 +923,48 @@ impl SimRunner {
             }
             DivergenceMode::AdversarialGps => {
                 self.adversarial_gps_offset = Some([50.0, 0.0, 0.0]);
+            }
+        }
+    }
+
+    /// Apply one authored fault now, mapping it onto the injection machinery.
+    ///
+    /// [`SimRunner::new`] schedules every scenario fault against this, so the
+    /// per-step `fire_scheduled` runs it exactly once when the clock reaches
+    /// its `at_s`, before the step's sensors and events. Validation at config
+    /// time makes the error branch unreachable for authored faults, but a
+    /// direct call (say, an operator command over the same API) still gets
+    /// the injection's own rejection, such as a non-positive outage length.
+    pub fn apply_fault(&mut self, spec: &FaultSpec) -> Result<(), SimError> {
+        match spec {
+            FaultSpec::GpsOutage { duration_s, .. } => self.inject_gps_outage(*duration_s),
+            FaultSpec::EkfDivergence { mode, .. } => {
+                self.inject_ekf_divergence(*mode);
+                Ok(())
+            }
+            FaultSpec::BatterySoc { soc, .. } => {
+                self.inject_battery_soc(*soc);
+                Ok(())
+            }
+            FaultSpec::MotorFault { .. } => {
+                // The flag rides telemetry; the rising edge in handle_events
+                // turns it into one `critical_fault` on that same step's
+                // event pass, so EMERGENCY is reached through the same path
+                // a diverged estimate takes.
+                self.motor_fault = true;
+                Ok(())
+            }
+            FaultSpec::Emergency { .. } => {
+                self.state_machine
+                    .force_phase(FlightPhase::Emergency, self.time, "authored fault");
+                self.note_phase_change();
+                Ok(())
+            }
+            FaultSpec::Rtl { .. } => {
+                let telemetry = self.build_telemetry();
+                self.state_machine.request("rtl", &telemetry, self.time);
+                self.note_phase_change();
+                Ok(())
             }
         }
     }
@@ -1118,7 +1228,7 @@ impl SimRunner {
             motors_armed: self.armed,
             home_position_ned: self.home,
             emergency_descent_active: self.emergency_descent_active,
-            motor_fault: false,
+            motor_fault: self.motor_fault,
         }
     }
 
@@ -1132,17 +1242,23 @@ impl SimRunner {
             }
         }
 
-        // Automatic critical_fault fires on the RISING EDGE of divergence: one
-        // response per fault episode. A diverged estimate that never recovers
-        // never re-fires, so the emergency sequence owns the vehicle until
-        // landed; when the estimate recovers the trigger re-arms.
-        if self.ekf_diverged && !self.ekf_diverged_prev {
+        // Automatic critical_fault fires on the RISING EDGE of divergence or
+        // of an authored motor fault: one response per fault episode. A
+        // diverged estimate that never recovers never re-fires, so the
+        // emergency sequence owns the vehicle until landed; when the estimate
+        // recovers the trigger re-arms. The motor-fault flag is sticky, so its
+        // own edge keeps the log from repeating `critical_fault` every step
+        // and the idempotent emergency latch from looping after landing.
+        let critical_fault_edge = (self.ekf_diverged && !self.ekf_diverged_prev)
+            || (self.motor_fault && !self.motor_fault_prev);
+        if critical_fault_edge {
             let telemetry = self.build_telemetry();
             let t = self.time;
             self.state_machine.request("critical_fault", &telemetry, t);
             self.note_phase_change();
         }
         self.ekf_diverged_prev = self.ekf_diverged;
+        self.motor_fault_prev = self.motor_fault;
 
         let mut telemetry = self.build_telemetry();
 
@@ -2703,5 +2819,357 @@ mod tests {
             r.inject_gps_outage(0.0),
             Err(SimError::NonPositiveGpsOutage(_))
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // Authored faults: one end-to-end run per kind, plus the schedule
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn an_authored_gps_outage_skips_fixes() {
+        let cfg = SimConfig {
+            faults: vec![FaultSpec::GpsOutage {
+                at_s: 1.0,
+                duration_s: 2.0,
+            }],
+            ..Default::default()
+        };
+        let result = fly(cfg, 6.0);
+        // 2 s of outage at 10 Hz is 20 fixes; the band catches a single
+        // dropped fix as surely as none at all.
+        assert!(
+            result.gps_skipped >= 15 && result.gps_skipped <= 25,
+            "a 2 s outage at 10 Hz should skip about 20 fixes, got {}",
+            result.gps_skipped
+        );
+    }
+
+    #[test]
+    fn an_authored_corrupt_bias_divergence_reaches_emergency() {
+        let cfg = SimConfig {
+            waypoints: vec![waypoint(40.0, 0.0, -10.0, 3.0)],
+            faults: vec![FaultSpec::EkfDivergence {
+                at_s: 6.0,
+                mode: DivergenceMode::CorruptBias,
+            }],
+            ..Default::default()
+        };
+        let result = fly(cfg, 20.0);
+        let visited = result.phases_visited();
+        assert!(
+            visited.contains(&FlightPhase::Emergency),
+            "an authored corruption should reach EMERGENCY, timeline {:?}",
+            result.phase_timeline
+        );
+        assert!(result.ekf_diverged);
+    }
+
+    #[test]
+    fn an_authored_suppress_updates_divergence_dead_reckons_without_emergency() {
+        let cfg = SimConfig {
+            waypoints: vec![waypoint(20.0, 0.0, -10.0, 3.0)],
+            faults: vec![FaultSpec::EkfDivergence {
+                at_s: 8.0,
+                mode: DivergenceMode::SuppressUpdates,
+            }],
+            ..Default::default()
+        };
+        // The run is deliberately modest: the mission completes into RTL
+        // well before organic IMU drift could reach the 20 m divergence
+        // clause, so any flag here would be the mode misbehaving, not the
+        // test's patience running out.
+        let result = fly(cfg, 25.0);
+        // GPS updates stop being fed from the fault on: every due fix after
+        // it is skipped, and the filter dead-reckons on IMU only.
+        assert!(
+            result.gps_skipped >= 100,
+            "the suppressed filter should skip every later fix, got {}",
+            result.gps_skipped
+        );
+        // Dead reckoning drifts slowly, so neither divergence clause trips:
+        // no flag, and therefore no rising-edge critical fault.
+        assert!(
+            !result.ekf_diverged,
+            "a suppressed filter must not be called diverged"
+        );
+        assert!(
+            !result.phases_visited().contains(&FlightPhase::Emergency),
+            "no emergency from a suppressed filter, timeline {:?}",
+            result.phase_timeline
+        );
+        // And the mission runs its normal course into RTL.
+        assert!(
+            result.phases_visited().contains(&FlightPhase::Rtl),
+            "the mission should complete into RTL, timeline {:?}",
+            result.phase_timeline
+        );
+    }
+
+    #[test]
+    fn an_authored_adversarial_gps_divergence_reaches_emergency() {
+        let cfg = SimConfig {
+            waypoints: vec![waypoint(40.0, 0.0, -10.0, 3.0)],
+            faults: vec![FaultSpec::EkfDivergence {
+                at_s: 6.0,
+                mode: DivergenceMode::AdversarialGps,
+            }],
+            ..Default::default()
+        };
+        let result = fly(cfg, 20.0);
+        // The +50 m offset makes the converged filter gate every later fix,
+        // the gated-streak clause trips divergence, and the rising edge
+        // raises exactly one critical_fault into EMERGENCY.
+        assert!(result.gps_gated > 0, "the offset should gate fixes");
+        assert!(result.ekf_diverged, "the gated streak should diverge");
+        let critical: Vec<_> = result
+            .event_log
+            .iter()
+            .filter(|e| e.event == "critical_fault")
+            .collect();
+        assert_eq!(
+            critical.len(),
+            1,
+            "one rising-edge response, log {:?}",
+            result.event_log
+        );
+        assert!(critical[0].guard_ok);
+        assert!(
+            result.phases_visited().contains(&FlightPhase::Emergency),
+            "an adversarial offset should reach EMERGENCY, timeline {:?}",
+            result.phase_timeline
+        );
+    }
+
+    #[test]
+    fn an_authored_battery_soc_drop_triggers_rtl() {
+        let cfg = SimConfig {
+            // A far waypoint, so the mission is still in progress when the
+            // pack is forced down, exactly like the low-battery scenario.
+            waypoints: vec![waypoint(200.0, 0.0, -10.0, 3.0)],
+            faults: vec![FaultSpec::BatterySoc {
+                at_s: 12.0,
+                soc: 0.1,
+            }],
+            ..Default::default()
+        };
+        let result = fly(cfg, 30.0);
+        let visited = result.phases_visited();
+        assert!(
+            visited.contains(&FlightPhase::Waypoint),
+            "the mission should have started first, timeline {:?}",
+            result.phase_timeline
+        );
+        assert!(
+            visited.contains(&FlightPhase::Rtl),
+            "soc 0.1 should have triggered RTL, timeline {:?}",
+            result.phase_timeline
+        );
+    }
+
+    #[test]
+    fn an_authored_motor_fault_reaches_emergency() {
+        let cfg = SimConfig {
+            faults: vec![FaultSpec::MotorFault { at_s: 4.0 }],
+            ..Default::default()
+        };
+        // Run well past the emergency landing, so the sticky flag has every
+        // chance to re-trip if the edge discipline ever broke.
+        let result = fly(cfg, 25.0);
+        let visited = result.phases_visited();
+        assert!(
+            visited.contains(&FlightPhase::Emergency),
+            "a raised motor-fault flag should reach EMERGENCY, timeline {:?}",
+            result.phase_timeline
+        );
+        // One response per flag lifetime: exactly one critical_fault, on the
+        // flag's rising edge, even though the run then lands and settles.
+        let critical: Vec<_> = result
+            .event_log
+            .iter()
+            .filter(|e| e.event == "critical_fault")
+            .collect();
+        assert_eq!(
+            critical.len(),
+            1,
+            "one critical_fault per flag lifetime, log {:?}",
+            result.event_log
+        );
+        assert!(critical[0].guard_ok);
+        assert_eq!(critical[0].to_phase, FlightPhase::Emergency);
+        assert!(
+            (critical[0].time - 4.0).abs() < DT,
+            "tripped at {}",
+            critical[0].time
+        );
+        // The absence of a second trip is only meaningful if the run really
+        // did land and settle while the flag stayed raised.
+        assert!(
+            visited.contains(&FlightPhase::Land),
+            "the emergency descent should land, timeline {:?}",
+            result.phase_timeline
+        );
+        assert!(
+            matches!(result.final_phase(), FlightPhase::Idle | FlightPhase::Land),
+            "the vehicle settles after landing, final {:?}",
+            result.final_phase()
+        );
+    }
+
+    #[test]
+    fn an_authored_emergency_reaches_emergency() {
+        let cfg = SimConfig {
+            faults: vec![FaultSpec::Emergency { at_s: 4.0 }],
+            ..Default::default()
+        };
+        let result = fly(cfg, 15.0);
+        assert!(
+            result.phases_visited().contains(&FlightPhase::Emergency),
+            "the forced jump should be on the timeline, timeline {:?}",
+            result.phase_timeline
+        );
+        let forced = result
+            .event_log
+            .iter()
+            .find(|e| e.event == "force:authored fault")
+            .expect("the forced jump is logged for post-analysis");
+        assert!(forced.guard_ok);
+        assert_eq!(forced.to_phase, FlightPhase::Emergency);
+        assert!((forced.time - 4.0).abs() < DT, "forced at {}", forced.time);
+    }
+
+    #[test]
+    fn an_authored_rtl_reaches_rtl() {
+        let cfg = SimConfig {
+            faults: vec![FaultSpec::Rtl { at_s: 6.0 }],
+            ..Default::default()
+        };
+        let result = fly(cfg, 15.0);
+        assert!(
+            result.phases_visited().contains(&FlightPhase::Rtl),
+            "an authored operator RTL should be accepted, timeline {:?}",
+            result.phase_timeline
+        );
+    }
+
+    #[test]
+    fn an_authored_fault_fires_once_at_its_time_and_not_before() {
+        let cfg = SimConfig {
+            faults: vec![FaultSpec::Rtl { at_s: 10.0 }],
+            ..Default::default()
+        };
+        let mut r = SimRunner::new(cfg).unwrap();
+        r.request_event("arm", None);
+        r.request_event("takeoff", None);
+        let rtl_requests = |r: &SimRunner| {
+            r.state_machine()
+                .event_log()
+                .iter()
+                .filter(|e| e.event == "rtl")
+                .count()
+        };
+
+        // The pre-roll runs on a negative clock and drains no schedule, so
+        // nothing has fired yet.
+        r.preroll();
+        assert_eq!(rtl_requests(&r), 0, "the pre-roll must not fire faults");
+
+        // Step while the clock is still below `at_s`: the fault stays queued.
+        let mut i = 0;
+        while r.time() < 10.0 {
+            r.step_once(i);
+            i += 1;
+            assert_eq!(rtl_requests(&r), 0, "fired early at t = {}", r.time());
+        }
+
+        // The first step that starts at or past `at_s` fires it, once.
+        r.step_once(i);
+        assert_eq!(rtl_requests(&r), 1, "fires at at_s = 10");
+
+        // And it never fires again for the rest of the run.
+        for j in (i + 1)..(i + 1000) {
+            r.step_once(j);
+        }
+        assert_eq!(rtl_requests(&r), 1, "fires exactly once");
+    }
+
+    #[test]
+    fn a_fault_at_the_last_step_time_fires_exactly_once() {
+        // The window's top is the run's own last step clock, inclusive:
+        // 60 s is 12000 steps, the last step starts at 59.995, and a fault
+        // exactly there fires on that final step. The RTL request is the
+        // counter: every application logs exactly one `rtl` entry, accepted
+        // or rejected.
+        let duration_s = 60.0;
+        let at_s = 59.995;
+        let cfg = SimConfig {
+            faults: vec![FaultSpec::Rtl { at_s }],
+            ..Default::default()
+        };
+        let mut r = SimRunner::new(cfg).unwrap();
+        r.request_event("arm", None);
+        r.request_event("takeoff", None);
+        let result = r.run(duration_s).unwrap();
+        let requests: Vec<_> = result
+            .event_log
+            .iter()
+            .filter(|e| e.event == "rtl")
+            .collect();
+        assert_eq!(
+            requests.len(),
+            1,
+            "fires exactly once on the last step, log {:?}",
+            result.event_log
+        );
+        // The logged clock is the last step's own, within one step of the
+        // bound, and the run ended right after it.
+        assert!(
+            (requests[0].time - at_s).abs() <= DT,
+            "fires on the last step, got {}",
+            requests[0].time
+        );
+        assert!(requests[0].time < duration_s, "before the run's end");
+    }
+
+    #[test]
+    fn equal_fire_times_apply_in_scenario_order() {
+        // Two faults at the same instant: the event log records their
+        // application order, and it must follow the list order both ways.
+        let order = |faults: Vec<FaultSpec>| {
+            let cfg = SimConfig {
+                faults,
+                ..Default::default()
+            };
+            let mut r = SimRunner::new(cfg).unwrap();
+            let result = r.run(7.0).unwrap();
+            let rtl = result
+                .event_log
+                .iter()
+                .position(|e| e.event == "rtl")
+                .expect("the rtl fault logs its request");
+            let forced = result
+                .event_log
+                .iter()
+                .position(|e| e.event.starts_with("force:"))
+                .expect("the emergency fault logs its jump");
+            (rtl, forced)
+        };
+
+        let (rtl_first, forced_first) = order(vec![
+            FaultSpec::Rtl { at_s: 5.0 },
+            FaultSpec::Emergency { at_s: 5.0 },
+        ]);
+        assert!(
+            rtl_first < forced_first,
+            "list order: rtl at {rtl_first} before force at {forced_first}"
+        );
+
+        let (rtl_second, forced_second) = order(vec![
+            FaultSpec::Emergency { at_s: 5.0 },
+            FaultSpec::Rtl { at_s: 5.0 },
+        ]);
+        assert!(
+            forced_second < rtl_second,
+            "list order reversed: force at {forced_second} before rtl at {rtl_second}"
+        );
     }
 }

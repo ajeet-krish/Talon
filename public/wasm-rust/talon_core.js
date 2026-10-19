@@ -398,6 +398,24 @@ export function sample_stride() {
     const ret = wasm.sample_stride();
     return ret >>> 0;
 }
+
+/**
+ * Validate a scenario JSON document without creating a run.
+ *
+ * The mission editor's dry check: parse plus full validation, including the
+ * authored fault windows and the fault count cap, before a `Session` is ever
+ * built. An invalid document comes back as a string that names the offending
+ * field, the same message the core's `Display` produces.
+ * @param {string} config_json
+ */
+export function validate_scenario_json(config_json) {
+    const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validate_scenario_json(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,

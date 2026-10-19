@@ -315,6 +315,28 @@ pub fn run_scenario(config_json: &str, generated_utc: &str) -> Result<String, Js
     session.document_json(generated_utc)
 }
 
+/// Parse and validate a scenario JSON document, as a message.
+///
+/// The shared body of [`validate_scenario_json`]. It returns the message
+/// instead of a `JsValue` so native tests can assert on it: `JsValue` is only
+/// constructible on wasm32, so the error path of the binding itself cannot run
+/// under `cargo test -p talon-wasm`.
+fn validate_scenario_text(config_json: &str) -> Result<(), String> {
+    let config = ScenarioConfig::from_json(config_json).map_err(|e| e.to_string())?;
+    config.validate().map_err(|e| e.to_string())
+}
+
+/// Validate a scenario JSON document without creating a run.
+///
+/// The mission editor's dry check: parse plus full validation, including the
+/// authored fault windows and the fault count cap, before a `Session` is ever
+/// built. An invalid document comes back as a string that names the offending
+/// field, the same message the core's `Display` produces.
+#[wasm_bindgen]
+pub fn validate_scenario_json(config_json: &str) -> Result<(), JsValue> {
+    validate_scenario_text(config_json).map_err(js_err)
+}
+
 /// Core version, for the UI to display alongside the run.
 #[wasm_bindgen]
 pub fn core_version() -> String {
@@ -677,5 +699,65 @@ mod tests {
             .expect_err("an overflowing literal must not parse")
             .to_string();
         assert!(err.contains("number out of range"), "{err}");
+    }
+
+    #[test]
+    fn a_valid_scenario_json_passes_the_exported_validation() {
+        // The Ok path never touches a JsValue, so it runs natively.
+        assert!(validate_scenario_json(r#"{"id":"valid","auto_arm":true}"#).is_ok());
+        // And a scenario whose authored faults all sit inside the window is
+        // valid across every fault kind.
+        let with_faults = r#"{
+            "id": "faulted",
+            "duration_s": 30.0,
+            "faults": [
+                {"kind": "gps_outage", "at_s": 5.0, "duration_s": 2.0},
+                {"kind": "ekf_divergence", "at_s": 8.0, "mode": "adversarial_gps"},
+                {"kind": "battery_soc", "at_s": 12.0, "soc": 0.4},
+                {"kind": "motor_fault", "at_s": 15.0},
+                {"kind": "emergency", "at_s": 20.0},
+                {"kind": "rtl", "at_s": 25.0}
+            ]
+        }"#;
+        assert!(validate_scenario_json(with_faults).is_ok());
+    }
+
+    #[test]
+    fn scenario_validation_names_the_offending_fault_field() {
+        // The Err path builds a JsValue, which panics off wasm32, so the
+        // error cases run through the shared text helper; the binding maps
+        // the very same message through `js_err`.
+        let expect_field = |json: &str, field: &str| {
+            let err = validate_scenario_text(json)
+                .expect_err("the fault should be rejected")
+                .to_string();
+            assert!(err.contains(field), "message {err:?} should name {field}");
+            err
+        };
+
+        // A fault at (and one beyond) the run's end names `fault at_s`.
+        for at_s in ["60.0", "61.0"] {
+            let json = format!(
+                r#"{{"id":"x","duration_s":60.0,"faults":[{{"kind":"emergency","at_s":{at_s}}}]}}"#
+            );
+            expect_field(&json, "fault at_s");
+        }
+        // A negative fire time lands in the pre-roll; rejected the same way.
+        expect_field(
+            r#"{"id":"x","duration_s":60.0,"faults":[{"kind":"rtl","at_s":-1.0}]}"#,
+            "fault at_s",
+        );
+        // An out-of-range pack state names `fault soc`.
+        expect_field(
+            r#"{"id":"x","duration_s":60.0,"faults":[{"kind":"battery_soc","at_s":5.0,"soc":1.5}]}"#,
+            "fault soc",
+        );
+        // Seventeen faults exceed MAX_FAULTS and name the list itself.
+        let list = (0..17)
+            .map(|i| format!(r#"{{"kind":"emergency","at_s":{i}.0}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let err = expect_field(&format!(r#"{{"id":"x","faults":[{list}]}}"#), "faults");
+        assert!(err.contains("16"), "message should cite the cap: {err}");
     }
 }

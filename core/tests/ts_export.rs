@@ -25,7 +25,9 @@ use std::path::PathBuf;
 use ts_rs::{Config, TS};
 
 use talon_core::avoidance::AvoidanceConfig;
+use talon_core::faults::{FaultKind, FaultSpec};
 use talon_core::scenario::ScenarioConfig;
+use talon_core::sim::DivergenceMode;
 use talon_core::types::{
     EventLogEntry, FlightData, FlightMeta, FlightPhase, Obstacle, RunSummary, Waypoint,
 };
@@ -62,6 +64,12 @@ fn declarations() -> Vec<String> {
         exported::<FlightData>(),
         exported::<RunSummary>(),
         exported::<AvoidanceConfig>(),
+        // The authored fault model: the kind tag, the divergence modes the
+        // fault can carry, the tagged fault union, then the config that
+        // references it. TypeScript hoists, so order is for stable diffs.
+        exported::<FaultKind>(),
+        exported::<DivergenceMode>(),
+        exported::<FaultSpec>(),
         exported::<ScenarioConfig>(),
     ]
 }

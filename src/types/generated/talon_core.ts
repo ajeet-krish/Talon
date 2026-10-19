@@ -73,6 +73,48 @@ lookahead_s?: number,
  */
 detour_buffer_m?: number, };
 
+export type FaultKind = "gps_outage" | "ekf_divergence" | "battery_soc" | "motor_fault" | "emergency" | "rtl";
+
+export type DivergenceMode = "corrupt_bias" | "suppress_updates" | "adversarial_gps";
+
+export type FaultSpec = { "kind": "gps_outage", 
+/**
+ * Sim time the outage starts (s): finite, at or before the run's last step clock.
+ */
+at_s: number, 
+/**
+ * Outage length (s): finite and strictly positive.
+ */
+duration_s: number, } | { "kind": "ekf_divergence", 
+/**
+ * Sim time of the corruption (s): finite, at or before the run's last step clock.
+ */
+at_s: number, 
+/**
+ * Which corruption to apply.
+ */
+mode: DivergenceMode, } | { "kind": "battery_soc", 
+/**
+ * Sim time of the force (s): finite, at or before the run's last step clock.
+ */
+at_s: number, 
+/**
+ * Forced state of charge: finite, in `[0, 1]`.
+ */
+soc: number, } | { "kind": "motor_fault", 
+/**
+ * Sim time the flag is raised (s): finite, at or before the run's last step clock.
+ */
+at_s: number, } | { "kind": "emergency", 
+/**
+ * Sim time of the forced jump (s): finite, at or before the run's last step clock.
+ */
+at_s: number, } | { "kind": "rtl", 
+/**
+ * Sim time of the command (s): finite, at or before the run's last step clock.
+ */
+at_s: number, };
+
 export type ScenarioConfig = { 
 /**
  * Stable id, also written to `meta.scenario`.
@@ -90,7 +132,13 @@ avoidance?: AvoidanceConfig, wind_sigma?: [number, number, number], wind_steady_
 /**
  * Queue arm and takeoff at t = 0. Every FlightLab scenario does.
  */
-auto_arm?: boolean, };
+auto_arm?: boolean, 
+/**
+ * Authored faults scheduled at absolute sim times, each applied once in
+ * list order when the clock reaches it. Empty by default, so every
+ * existing scenario runs exactly as before.
+ */
+faults?: Array<FaultSpec>, };
 
 export const SCENARIO_DEFAULTS: ScenarioConfig = {
   "id": "scenario",
@@ -127,5 +175,6 @@ export const SCENARIO_DEFAULTS: ScenarioConfig = {
   "gps_velocity_noise": 0.05,
   "cruise_hold_s": 2.0,
   "seed": 20261012,
-  "auto_arm": false
+  "auto_arm": false,
+  "faults": []
 };

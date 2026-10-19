@@ -171,6 +171,16 @@ export function run_scenario(config_json: string, generated_utc: string): string
  */
 export function sample_stride(): number;
 
+/**
+ * Validate a scenario JSON document without creating a run.
+ *
+ * The mission editor's dry check: parse plus full validation, including the
+ * authored fault windows and the fault count cap, before a `Session` is ever
+ * built. An invalid document comes back as a string that names the offending
+ * field, the same message the core's `Display` produces.
+ */
+export function validate_scenario_json(config_json: string): void;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -208,6 +218,7 @@ export interface InitOutput {
     readonly session_total_steps: (a: number) => number;
     readonly session_truth_position: (a: number) => [number, number];
     readonly session_truth_velocity: (a: number) => [number, number];
+    readonly validate_scenario_json: (a: number, b: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
