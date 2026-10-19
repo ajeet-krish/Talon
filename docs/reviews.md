@@ -883,3 +883,53 @@ Revised tallies: no Critical; 4 High (`wrap_to_pi`, clippy deny-level error,
 rustfmt non-compliance, wasm `bigint` getter drift); 11 Medium; roughly 30 Low
 (mostly hygiene and documentation). Overall verdict unchanged: PASS for the
 stated purpose, with the four High items as the gate before Phase 8.
+
+### Phase 1 review (2026-10-18)
+
+Scope: `core/src/math.rs` only. The change fixes `wrap_to_pi` for inputs below
+`-pi` (from `fmod(theta + PI, TAU) - PI` to `(theta + PI).rem_euclid(TAU) - PI`)
+and adds the file's first test module, ten tests. This closes the High
+`wrap_to_pi` finding from the full codebase review above.
+
+Verdict: PASS. The new formula is bit-identical to Python `wrap_angle`
+(guidance.py:110-112), the tests fail on the old implementation, and no other
+file changed.
+
+- PASS: correctness and parity. `rem_euclid` and CPython float `%` run the same
+  fmod-then-adjust algorithm, so the two are bit-identical across 8020 sampled
+  inputs (the four pinned cases from test_guidance.py:19-22, large magnitudes
+  such as 1e300, signed zero, NaN, and both infinities, which yield NaN on both
+  sides). Exact boundaries verified bit for bit: `wrap_to_pi(PI) == -PI` and
+  `wrap_to_pi(-PI) == -PI` (math.rs:127-131); NaN propagates (math.rs:133-136).
+- PASS: the doc comment makes only true claims now. The stale TypeScript parity
+  claim is removed, and the remaining claims (one-to-one Python match, half-open
+  upper bound, NaN yields NaN) all hold.
+- PASS: test quality. Three of the ten tests fail on the old form:
+  `wrap_matches_python_pinned_cases` (2 of its 4 asserts),
+  `wrap_recovers_large_negative_input`, and `sweep_stays_in_half_open_interval`
+  (943 of 2514 grid points violate `[-pi, pi)` against the old `fmod` form). The
+  sweep asserts the range invariant instead of restating the formula, the pinned
+  values come from the Python tests, and the 1e-12 absolute tolerance is
+  appropriate for exact fmod arithmetic.
+- PASS: regression safety. `git status` shows `core/src/math.rs` as the only
+  modified file (one unrelated untracked `eagle-shield.svg` aside). The only
+  consumer is `chi_d` (guidance.rs:209), which feeds `v_des` through `cos` and
+  `sin` (guidance.rs:215-216); those are 2*pi-periodic and the old and new forms
+  differ by exactly `TAU` wherever both are finite, so flight output is
+  unchanged and only the diagnostics value becomes correct. `cargo test -p
+  talon-core` is 220 passed, 0 failed, which is the prior 210 plus the 10 new
+  tests.
+- PASS: conventions. rustfmt reports no diff for `core/src/math.rs` (the 78
+  pre-existing fmt diffs across 15 other files are untouched); no em dashes or
+  dash equivalents; 4-space indent and the shared `#[cfg(test)] mod tests` style
+  with `use super::*;`.
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | core/src/math.rs:50 | For the single input `nextafter(-pi, -inf)` the negative adjustment rounds to exactly `TAU`, so the result is `+pi`, just outside `[-pi, pi)`. Python `wrap_angle` returns the same `+pi`, so parity holds; it is a shared IEEE rounding artifact of the floored-mod algorithm and unreachable from guidance (`chi_q + nu` stays well inside one revolution). | Accept as shared documented behavior, or map `w == PI` to `-PI` if the strict contract is ever needed |
+| Low | core/src/math.rs:45-47 | "guidance output is identical in Rust and Python" is exact for the wrap itself, but downstream `atan2`/`sin`/`cos` come from different libms (Rust vendors `libm`, Python uses the platform one), so ULP-level differences in `chi_q` remain possible. | Soften to "the wrap is identical" or note the ULP caveat |
+
+Recurring pattern: parity fixtures must keep at least one case in each
+function's wrap and branch corner, per the Python harness deep dive above; the
+Rust side of the wrap corner is now pinned by `wrap_matches_python_pinned_cases`
+and `sweep_stays_in_half_open_interval`.

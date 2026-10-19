@@ -707,3 +707,42 @@ either regenerated from the Rust side and consumed by a pytest parity suite,
 or deleted with the docstrings corrected.
 
 <!-- END FULL TEST AUDIT 2026-10-18 -->
+
+### Phase 1 test gate (2026-10-18)
+
+Scope: `core/src/math.rs` only (`wrap_to_pi` now `(theta + PI).rem_euclid(TAU)
+- PI`, plus the new 10-test module). Test-gate run by the Tester subagent.
+
+Counts:
+- `cargo test -p talon-core`: 220 passed, 0 failed (prior 210 + the 10 new
+  math.rs tests).
+- `cargo test -p talon-wasm`: 12 passed, 0 failed (bindings undisturbed).
+- `cargo test -p talon-py`: 3 passed, 0 failed (bindings undisturbed).
+
+Old-form evidence (out-of-tree scratch crate in the approved temp dir; no
+tracked file touched): the same 10 tests run against the OLD
+`fmod(theta + PI, TAU) - PI` form fail exactly 3 of them:
+- `wrap_matches_python_pinned_cases` (FAIL; -3.241592653589793 from
+  wrap_to_pi(-PI - 0.1), expected PI - 0.1)
+- `wrap_recovers_large_negative_input` (FAIL; wrap_to_pi(-4.0) = -4, expected
+  2.283185307179586)
+- `sweep_stays_in_half_open_interval` (FAIL; wrap_to_pi(-4*pi) = -6.283... is
+  below -pi, i.e. outside [-pi, pi))
+The 7 non-wrap tests plus `exact_boundaries_wrap_to_negative_pi` and
+`nan_input_propagates_nan` pass under both forms. The new tests do catch the
+old bug.
+
+Python parity (out-of-tree probe binary + script, `python/talon/guidance.py:
+110-112` wrap_angle): 1305 finite points compared (the 4 pinned cases from
+test_guidance.py:19-22, a linear sweep over [-40*pi, 40*pi], large-magnitude
+positives/negatives up to ~9851, negatives just below -2*pi*k, plus NaN/inf/
+-inf specials). Max absolute difference 6.939e-18 (about 1 ULP) at theta=-201.0;
+0 NaN mismatches, 0 mismatches above 1e-15. The four pinned cases are
+bit-identical (diff 0.0). The single 1-ULP case is a genuine consequence of
+rem_euclid (fmod-then-floor) vs CPython `%` ordering, not a formatting artifact.
+
+Git status caveat: `git diff --stat` shows core/src/math.rs (124 insertions,
+3 deletions) AND docs/reviews.md (the code-reviewer Phase 1 write-up) as
+modified, plus the untracked eagle-shield.svg. The math.rs change is the
+subject under test; the reviews.md edit is a separate, pre-existing agent
+write-up, not produced by this gate. No source file was modified by the Tester.
