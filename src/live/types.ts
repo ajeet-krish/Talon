@@ -1,46 +1,52 @@
 /**
  * Types for the in-browser live run (FlightLab Phase 4).
  *
- * Mirrors the Python dataclasses the SIL loop consumes: talon.types.Waypoint
- * and talon.mavlink_sil.SILConfig (the browser-facing subset). One
- * LiveConfig is exported per runnable scenario so the browser config never
- * drifts from the Python scenario definitions.
+ * Two shapes sit on top of the ts-rs generated mirrors (Phase 5c):
+ *
+ * - `ScenarioDraft` is the sparse authored scenario, exactly as the Rust core
+ *   serializes it: every knob optional because serde fills the default.
+ * - `LiveConfig` is that shape normalized into the run contract the browser
+ *   needs, so the fields the SIL loop reads are required here even though the
+ *   wire shape leaves them optional. One LiveConfig is exported per runnable
+ *   scenario so the browser config never drifts from the Rust scenario
+ *   definitions.
  */
 
-import type { FlightData, FlightPhase, Obstacle, Vec3 } from '@/types/flight'
+import type { FlightData, Obstacle, Vec3 } from '@/types/flight'
+import type {
+  AvoidanceConfig as SparseAvoidanceConfig,
+  RunSummary,
+  ScenarioConfig,
+  Waypoint,
+} from '@/types/generated/talon_core'
 
 /** One mission waypoint (talon.types.Waypoint). */
-export interface Waypoint {
-  /** NED position [m]. */
-  position: Vec3
-  /** Leg cruise speed [m/s]. */
-  speed: number
-  /** Desired heading [rad]; the NLGL law derives yaw from the track. */
-  heading: number
-  /** Horizontal acceptance radius [m]. */
-  radius: number
-}
+export type { Waypoint }
+
+/**
+ * The authored scenario shape as `talon_core::ScenarioConfig` serializes it,
+ * most fields optional (serde defaults them). Phase 8 mission authoring writes
+ * this shape.
+ */
+export type ScenarioDraft = ScenarioConfig
+
+/**
+ * Reactive avoidance tuning (talon-core `AvoidanceConfig`). Absent means the
+ * law is off; anything absent inside the block takes the core's default, so a
+ * scenario can turn it on with `{"enabled": true}` alone. The run contract
+ * keeps the master switch itself required; the sparse authored block stays
+ * reachable as `ScenarioConfig['avoidance']`.
+ */
+export type AvoidanceConfig = SparseAvoidanceConfig & { enabled: boolean }
 
 /**
  * Everything the browser needs to run one SIL scenario. Field names are
  * snake_case to match the exported JSON (SILConfig) one-to-one.
+ *
+ * The generated `ScenarioConfig` is intersected with the required run fields:
+ * the wire shape is sparse, the contract the app consumes is not.
  */
-/**
- * Reactive avoidance tuning (talon-core `AvoidanceConfig`). Absent means the
- * law is off; anything absent inside the block takes the core's default, so a
- * scenario can turn it on with `{"enabled": true}` alone.
- */
-export interface AvoidanceConfig {
-  enabled: boolean
-  /** Surface clearance the law plans to keep (m). */
-  clearance_margin_m?: number
-  /** Lookahead ahead of the vehicle at its ground speed (s). */
-  lookahead_s?: number
-  /** Standoff beyond radius + margin for a bypass point (m). */
-  detour_buffer_m?: number
-}
-
-export interface LiveConfig {
+export type LiveConfig = ScenarioConfig & {
   id: string
   label: string
   blurb: string
@@ -62,19 +68,12 @@ export interface LiveConfig {
   auto_arm: boolean
 }
 
-/** Headline numbers for the Run view (derived from the generated run). */
-export interface LiveRunSummary {
-  duration_s: number
-  waypoint_count: number
-  waypoints_reached: number
-  mission_complete: boolean
-  gps_accepted: number
-  gps_gated: number
-  final_position_error_m: number
-  ekf_position_rmse_m: number
-  min_clearance_m: number | null
-  phases: FlightPhase[]
-}
+/**
+ * Headline numbers for the Run view: the Rust core's own run summary
+ * (talon-core `RunSummary`), parsed from `summary_json()` as-is. The page
+ * displays it; it does not recompute any of it from the document arrays.
+ */
+export type LiveRunSummary = RunSummary
 
 /** One completed live run: the flight document plus its summary. */
 export interface LiveRunResult {

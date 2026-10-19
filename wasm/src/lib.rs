@@ -19,7 +19,6 @@
 //! their shape is unit tested natively with `cargo test -p talon-wasm`; only the
 //! thin `#[wasm_bindgen]` methods below need a browser.
 
-use serde_json::{json, Value};
 use talon_core::constants::DT;
 use talon_core::export;
 use talon_core::scenario::ScenarioConfig;
@@ -53,39 +52,19 @@ fn document_json(
 
 /// Headline run numbers that the flight document does not carry.
 ///
-/// The page derives the estimator error and the obstacle clearance from the
-/// document's own arrays; what it cannot derive is the mission outcome and the
-/// fix accounting, so those are reported here straight from the runner.
+/// The mission outcome, the fix accounting, the estimator flags, and the error
+/// metrics come straight from [`export::run_summary`], the same builder the
+/// batch harness uses, so the browser summary can never drift from a recorded
+/// run. The serialization error branch is impossible (every field is a plain
+/// number, bool, string, or list), but a session must still hand the page a
+/// parseable string rather than panic.
 ///
 /// `duration_s` is the last sample time, matching `meta.duration_s` in the
 /// document, and is rounded the same way: the runner's clock accumulates a
 /// little float drift over a long run, and nothing should show `119.9999999`.
 fn summary_json(result: &SimResult, steps_done: usize, total_steps: usize) -> String {
-    let raw_duration = result.time_s.last().copied().unwrap_or(0.0);
-    let scale = 10f64.powi(export::DEFAULT_ROUND_DECIMALS as i32);
-    let duration_s = (raw_duration * scale).round() / scale;
-    json!({
-        "duration_s": duration_s,
-        "waypoint_count": result.mission_waypoint_count,
-        "waypoints_reached": result.mission_waypoints_reached,
-        "mission_complete": result.mission_complete,
-        "gps_accepted": result.gps_accepted,
-        "gps_gated": result.gps_gated,
-        "gps_skipped": result.gps_skipped,
-        "final_phase": result.final_phase().as_str(),
-        "final_truth_altitude_m": result.final_truth_altitude_m(),
-        "ekf_converged": result.ekf_converged,
-        "ekf_diverged": result.ekf_diverged,
-        "min_obstacle_clearance_m": if result.min_obstacle_clearance_m.is_finite() {
-            json!(result.min_obstacle_clearance_m)
-        } else {
-            Value::Null
-        },
-        "avoidance_activations": result.avoidance_activations,
-        "steps_done": steps_done,
-        "total_steps": total_steps,
-    })
-    .to_string()
+    let summary = export::run_summary(result, steps_done, total_steps);
+    serde_json::to_string(&summary).unwrap_or_else(|_| "{}".to_string())
 }
 
 /// One steppable mission run.
@@ -484,6 +463,58 @@ mod tests {
         // the law never took a bypass.
         assert!(value["min_obstacle_clearance_m"].is_null());
         assert_eq!(value["avoidance_activations"], 0);
+    }
+
+    #[test]
+    fn the_summary_carries_the_run_summary_metrics() {
+        // The typed RunSummary replaced the hand-built JSON object; the added
+        // keys and the phase list must round-trip with the same semantics.
+        let json = r#"{
+            "id": "avoidance",
+            "duration_s": 45.0,
+            "auto_arm": true,
+            "waypoints": [
+                {"position": [40.0, 0.0, -10.0], "speed": 5.0, "heading": 0.0, "radius": 3.0},
+                {"position": [40.0, 30.0, -10.0], "speed": 5.0, "heading": 0.0, "radius": 3.0}
+            ],
+            "obstacles": [
+                {"id": "obs_north", "center_ned": [20.0, 3.0, -10.0], "radius_m": 4.0}
+            ],
+            "avoidance": {"enabled": true}
+        }"#;
+        let config = ScenarioConfig::from_json(json).unwrap();
+        let mut runner = prepared_runner(&config);
+        let steps = (config.duration_s / DT).round() as usize;
+        for i in 0..steps {
+            runner.step_once(i);
+        }
+        let result = runner.snapshot(runner.time());
+        let value: serde_json::Value =
+            serde_json::from_str(&summary_json(&result, steps, steps)).unwrap();
+
+        // The additive keys the page's summary now reads from the core.
+        assert!(value["ekf_position_rmse_m"].as_f64().is_some(), "{value}");
+        assert!(
+            value["final_position_error_m"].as_f64().is_some(),
+            "{value}"
+        );
+        assert!(value["min_obstacle_clearance_m"].is_number(), "{value}");
+
+        // `phases` is the timeline with consecutive duplicates collapsed, in
+        // order, exactly as the page's phasesVisited computes it.
+        let phases = value["phases"].as_array().expect("phases is an array");
+        let mut expected: Vec<String> = Vec::new();
+        for (_, phase) in runner.phase_timeline() {
+            if expected.last().map(String::as_str) != Some(phase.as_str()) {
+                expected.push(phase.as_str().to_string());
+            }
+        }
+        assert!(!expected.is_empty());
+        let got: Vec<String> = phases
+            .iter()
+            .map(|p| p.as_str().expect("phase labels are strings").to_string())
+            .collect();
+        assert_eq!(got, expected, "summary: {value}");
     }
 
     #[test]

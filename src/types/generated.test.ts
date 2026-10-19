@@ -5,9 +5,10 @@
  * source of truth (`core/src/`) via `./scripts/gen_types.sh`. This test reads
  * it from disk and pins the properties the facades and the app depend on: the
  * banner, the shape of `FlightPhase`, the `phase_timeline` tuple, the
- * `number`-not-`bigint` treatment of the integer fields, the optionality of the
- * serde-defaulted `ScenarioConfig` fields, and the parsed `SCENARIO_DEFAULTS`
- * literal.
+ * `number`-not-`bigint` treatment of the integer fields, the fixed-tuple NED
+ * triple fields, the `RunSummary` field list with its number counters and
+ * nullable clearance, the optionality of the serde-defaulted
+ * `ScenarioConfig` fields, and the parsed `SCENARIO_DEFAULTS` literal.
  *
  * It is a text check, not a TypeScript parser: it only has to hold for the
  * output ts-rs actually emits.
@@ -104,6 +105,71 @@ describe('generated talon-core mirrors', () => {
     ]) {
       expect(cfg, `${field} should be optional`).toContain(`${field}?:`)
     }
+  })
+
+  it('declares the NED triple fields as fixed-length tuples, not open arrays', () => {
+    // ts-rs renders `[f64; 3]` as the tuple `[number, number, number]`; a
+    // serde `Vec<f64>` would instead render `Array<number>`. The scene and
+    // mission code index these as fixed triples, so pin the tuple form.
+    const obstacle = declBody('export type Obstacle =')
+    expect(obstacle).toContain('center_ned: [number, number, number]')
+    expect(obstacle).not.toMatch(/center_ned: Array<number>/)
+    expect(obstacle).not.toMatch(/center_ned: number\[\]/)
+
+    const data = declBody('export type FlightData =')
+    expect(data).toContain('home_ned: [number, number, number]')
+    expect(data).not.toMatch(/home_ned: Array<number>/)
+    expect(data).not.toMatch(/home_ned: number\[\]/)
+
+    const cfg = declBody('export type ScenarioConfig =')
+    expect(cfg).toContain('start_position_ned?: [number, number, number]')
+    expect(cfg).not.toMatch(/start_position_ned\?: Array<number>/)
+    expect(cfg).not.toMatch(/start_position_ned\?: number\[\]/)
+  })
+
+  it('emits RunSummary with number counters and a nullable clearance', () => {
+    const summary = declBody('export type RunSummary =')
+    // Every field the run report reads must be declared on the type, so a
+    // schema drop in core shows up here instead of at the read site.
+    for (const field of [
+      'duration_s',
+      'waypoint_count',
+      'waypoints_reached',
+      'mission_complete',
+      'gps_accepted',
+      'gps_gated',
+      'gps_skipped',
+      'final_phase',
+      'final_truth_altitude_m',
+      'ekf_converged',
+      'ekf_diverged',
+      'min_obstacle_clearance_m',
+      'avoidance_activations',
+      'steps_done',
+      'total_steps',
+      'ekf_position_rmse_m',
+      'final_position_error_m',
+      'phases',
+    ]) {
+      expect(summary, `${field} should be declared`).toContain(`${field}:`)
+    }
+    // The u64/usize counters are plain JSON numbers on the wire.
+    expect(summary).toMatch(/waypoint_count: number/)
+    expect(summary).toMatch(/waypoints_reached: number/)
+    expect(summary).toMatch(/gps_accepted: number/)
+    expect(summary).toMatch(/gps_gated: number/)
+    expect(summary).toMatch(/gps_skipped: number/)
+    expect(summary).toMatch(/avoidance_activations: number/)
+    expect(summary).toMatch(/steps_done: number/)
+    expect(summary).toMatch(/total_steps: number/)
+    // No counter is declared as bigint (the doc comment may mention the word).
+    expect(summary).not.toMatch(/: bigint/)
+    // The clearance is nullable: null when the scenario had no zones.
+    expect(summary).toMatch(/min_obstacle_clearance_m: number \| null/)
+    // The estimator metrics and the phase list.
+    expect(summary).toMatch(/ekf_position_rmse_m: number/)
+    expect(summary).toMatch(/final_position_error_m: number/)
+    expect(summary).toContain('phases: Array<FlightPhase>')
   })
 
   it('emits SCENARIO_DEFAULTS that parses as an object with the required id', () => {

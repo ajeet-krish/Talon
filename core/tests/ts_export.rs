@@ -26,7 +26,9 @@ use ts_rs::{Config, TS};
 
 use talon_core::avoidance::AvoidanceConfig;
 use talon_core::scenario::ScenarioConfig;
-use talon_core::types::{EventLogEntry, FlightData, FlightMeta, FlightPhase, Obstacle, Waypoint};
+use talon_core::types::{
+    EventLogEntry, FlightData, FlightMeta, FlightPhase, Obstacle, RunSummary, Waypoint,
+};
 
 /// The generated banner; `src/types/generated.test.ts` asserts this exact line.
 const BANNER: &str = "// GENERATED FILE. DO NOT EDIT. Run ./scripts/gen_types.sh.";
@@ -58,6 +60,7 @@ fn declarations() -> Vec<String> {
         exported::<FlightMeta>(),
         exported::<EventLogEntry>(),
         exported::<FlightData>(),
+        exported::<RunSummary>(),
         exported::<AvoidanceConfig>(),
         exported::<ScenarioConfig>(),
     ]

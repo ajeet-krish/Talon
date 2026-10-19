@@ -497,9 +497,9 @@ export function RunView() {
               {
                 label: 'MIN CLEARANCE',
                 value:
-                  summary.min_clearance_m === null
+                  summary.min_obstacle_clearance_m === null
                     ? 'n/a'
-                    : `${fmt(summary.min_clearance_m, 2)} m`,
+                    : `${fmt(summary.min_obstacle_clearance_m, 2)} m`,
               },
               {
                 label: 'GPS FIXES',

@@ -155,7 +155,7 @@ function maxOf(values: readonly number[]): number {
   return max
 }
 
-export interface RunSummary {
+export interface TelemetryRunSummary {
   durationS: number
   sampleCount: number
   rateHz: number
@@ -175,7 +175,7 @@ export interface RunSummary {
  * Headline numbers for the Metrics view, computed from the recorded samples
  * so the web report is derived from the same telemetry the charts draw.
  */
-export function summarizeRun(data: FlightData): RunSummary {
+export function summarizeRun(data: FlightData): TelemetryRunSummary {
   const n = data.time_s.length
   let sumSqEkf = 0
   let maxEkf = 0

@@ -313,6 +313,49 @@ impl FlightData {
     }
 }
 
+/// Headline run numbers that the flight document does not carry.
+///
+/// The mission outcome, the GPS fix accounting, the estimator health flags,
+/// and the truth-versus-estimate error metrics, assembled once in
+/// [`crate::export::run_summary`] so the wasm binding, the batch harness, and
+/// the page all read the same shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+pub struct RunSummary {
+    /// Last sample time (s), rounded like `meta.duration_s`.
+    pub duration_s: f64,
+    /// JSON number, not bigint: the counts are plain display numbers on the wire.
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub waypoint_count: usize,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub waypoints_reached: usize,
+    pub mission_complete: bool,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub gps_accepted: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub gps_gated: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub gps_skipped: u64,
+    pub final_phase: FlightPhase,
+    pub final_truth_altitude_m: f64,
+    pub ekf_converged: bool,
+    pub ekf_diverged: bool,
+    /// Closest surface clearance (m), null when the scenario had no zones.
+    pub min_obstacle_clearance_m: Option<f64>,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub avoidance_activations: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub steps_done: usize,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
+    pub total_steps: usize,
+    /// Root-mean-square 3D distance between the truth and the estimate.
+    pub ekf_position_rmse_m: f64,
+    /// 3D distance between the last paired truth and estimate samples (m).
+    pub final_position_error_m: f64,
+    /// The phase timeline with consecutive duplicates collapsed, in order.
+    pub phases: Vec<FlightPhase>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

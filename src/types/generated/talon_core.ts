@@ -28,6 +28,32 @@ export type FlightData = { meta: FlightMeta, time_s: Array<number>, truth_positi
  */
 obstacles: Array<Obstacle>, phase_timeline: Array<[number, FlightPhase]>, event_log: Array<EventLogEntry>, };
 
+export type RunSummary = { 
+/**
+ * Last sample time (s), rounded like `meta.duration_s`.
+ */
+duration_s: number, 
+/**
+ * JSON number, not bigint: the counts are plain display numbers on the wire.
+ */
+waypoint_count: number, waypoints_reached: number, mission_complete: boolean, gps_accepted: number, gps_gated: number, gps_skipped: number, final_phase: FlightPhase, final_truth_altitude_m: number, ekf_converged: boolean, ekf_diverged: boolean, 
+/**
+ * Closest surface clearance (m), null when the scenario had no zones.
+ */
+min_obstacle_clearance_m: number | null, avoidance_activations: number, steps_done: number, total_steps: number, 
+/**
+ * Root-mean-square 3D distance between the truth and the estimate.
+ */
+ekf_position_rmse_m: number, 
+/**
+ * 3D distance between the last paired truth and estimate samples (m).
+ */
+final_position_error_m: number, 
+/**
+ * The phase timeline with consecutive duplicates collapsed, in order.
+ */
+phases: Array<FlightPhase>, };
+
 export type AvoidanceConfig = { 
 /**
  * Master switch. Off (the default) means the law is never consulted, so a

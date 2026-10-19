@@ -21,7 +21,9 @@
 use std::collections::BTreeMap;
 
 use crate::sim::SimResult;
-use crate::types::{Arr3, FlightData, FlightMeta, Obstacle, PhaseEvent, SCHEMA_VERSION};
+use crate::types::{
+    Arr3, FlightData, FlightMeta, FlightPhase, Obstacle, PhaseEvent, RunSummary, SCHEMA_VERSION,
+};
 
 /// Sampling period of the exported histories (s), the control rate.
 pub const SAMPLE_DT_S: f64 = 0.01;
@@ -136,6 +138,81 @@ pub fn flight_data(
         obstacles,
         phase_timeline,
         event_log,
+    }
+}
+
+/// Headline run numbers for a finished or partial run.
+///
+/// `duration_s` is the last sample time rounded to `DEFAULT_ROUND_DECIMALS`,
+/// exactly like `meta.duration_s` in the document. The error metrics pair the
+/// truth and estimate histories index by index and skip a sample when either
+/// side is missing, so a partial read-out never fabricates an error.
+///
+/// `phases` is the phase timeline with consecutive duplicates collapsed, in
+/// order; a phase that appears again after another one is kept, which is what
+/// the page's "phases visited" strip shows. [`SimResult::phases_visited`] is
+/// stricter and would drop those repeats, so it is deliberately not used here.
+pub fn run_summary(result: &SimResult, steps_done: usize, total_steps: usize) -> RunSummary {
+    let duration_s = result
+        .time_s
+        .last()
+        .map(|t| round_to(*t, Some(DEFAULT_ROUND_DECIMALS)))
+        .unwrap_or(0.0);
+
+    // RMSE and final error over the paired truth/estimate samples.
+    let mut sum_sq = 0.0;
+    let mut final_error = 0.0;
+    let mut paired = 0usize;
+    for (truth, estimate) in result.truth_position.iter().zip(result.ekf_position.iter()) {
+        let dx = truth[0] - estimate[0];
+        let dy = truth[1] - estimate[1];
+        let dz = truth[2] - estimate[2];
+        let d2 = dx * dx + dy * dy + dz * dz;
+        sum_sq += d2;
+        final_error = d2.sqrt();
+        paired += 1;
+    }
+    let ekf_position_rmse_m = if paired == 0 {
+        0.0
+    } else {
+        (sum_sq / paired as f64).sqrt()
+    };
+
+    // The timeline with consecutive duplicates collapsed, repeats across a
+    // different phase preserved.
+    let mut phases: Vec<FlightPhase> = Vec::with_capacity(result.phase_timeline.len());
+    for (_, phase) in &result.phase_timeline {
+        if phases.last() != Some(phase) {
+            phases.push(*phase);
+        }
+    }
+
+    // No zones means the clearance is infinity on the runner; the wire form is
+    // null, matching the page's `Number.isFinite` check.
+    let min_obstacle_clearance_m = result
+        .min_obstacle_clearance_m
+        .is_finite()
+        .then_some(result.min_obstacle_clearance_m);
+
+    RunSummary {
+        duration_s,
+        waypoint_count: result.mission_waypoint_count,
+        waypoints_reached: result.mission_waypoints_reached,
+        mission_complete: result.mission_complete,
+        gps_accepted: result.gps_accepted,
+        gps_gated: result.gps_gated,
+        gps_skipped: result.gps_skipped,
+        final_phase: result.final_phase(),
+        final_truth_altitude_m: result.final_truth_altitude_m(),
+        ekf_converged: result.ekf_converged,
+        ekf_diverged: result.ekf_diverged,
+        min_obstacle_clearance_m,
+        avoidance_activations: result.avoidance_activations,
+        steps_done,
+        total_steps,
+        ekf_position_rmse_m,
+        final_position_error_m: final_error,
+        phases,
     }
 }
 
@@ -368,5 +445,104 @@ mod tests {
         assert_eq!(parsed.waypoints_ned[0], [30.0, 20.0, -10.0]);
         assert_eq!(parsed.home_ned, [0.0, 0.0, 0.0]);
         assert!(parsed.event_log.iter().any(|e| e.event == "takeoff"));
+    }
+
+    /// Build a small hand-made result with known truth/estimate distances.
+    ///
+    /// Distances per paired sample are 3, 0, then 4 m, so the RMSE is
+    /// `sqrt((9 + 0 + 16) / 3)` and the final error is the last one, 4 m.
+    fn hand_built_result() -> SimResult {
+        SimResult {
+            time_s: vec![0.0, 1.0, 2.0],
+            truth_position: vec![[0.0, 0.0, -5.0], [0.0, 0.0, -10.0], [0.0, 0.0, -12.0]],
+            ekf_position: vec![[3.0, 0.0, -5.0], [0.0, 0.0, -10.0], [0.0, 4.0, -12.0]],
+            phase_timeline: vec![
+                (0.0, FlightPhase::Idle),
+                (0.2, FlightPhase::Arm),
+                (0.4, FlightPhase::Takeoff),
+                (0.5, FlightPhase::Takeoff),
+                (0.6, FlightPhase::Cruise),
+                (1.5, FlightPhase::Idle),
+            ],
+            mission_waypoint_count: 2,
+            mission_waypoints_reached: 1,
+            mission_complete: false,
+            gps_accepted: 17,
+            gps_gated: 2,
+            gps_skipped: 1,
+            ekf_converged: true,
+            ekf_diverged: false,
+            min_obstacle_clearance_m: 3.5,
+            avoidance_activations: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_run_summary_reports_errors_and_the_deduped_phase_list() {
+        let mut result = hand_built_result();
+        // The extra ekf sample is unpaired and must be ignored.
+        result.ekf_position.push([9.0, 9.0, 9.0]);
+        let summary = run_summary(&result, 40, 200);
+
+        assert!((summary.duration_s - 2.0).abs() < 1e-12);
+        assert_eq!(summary.waypoint_count, 2);
+        assert_eq!(summary.waypoints_reached, 1);
+        assert!(!summary.mission_complete);
+        assert_eq!(summary.gps_accepted, 17);
+        assert_eq!(summary.gps_gated, 2);
+        assert_eq!(summary.gps_skipped, 1);
+        assert_eq!(summary.final_phase, FlightPhase::Idle);
+        assert!(summary.ekf_converged);
+        assert!(!summary.ekf_diverged);
+        assert_eq!(summary.avoidance_activations, 1);
+        assert_eq!(summary.steps_done, 40);
+        assert_eq!(summary.total_steps, 200);
+
+        let expected_rmse = (25.0f64 / 3.0).sqrt();
+        assert!(
+            (summary.ekf_position_rmse_m - expected_rmse).abs() < 1e-12,
+            "rmse {}",
+            summary.ekf_position_rmse_m
+        );
+        assert!((summary.final_position_error_m - 4.0).abs() < 1e-12);
+
+        // Consecutive Takeoff entries collapse; the second Idle after Cruise
+        // is a non-consecutive repeat and stays.
+        assert_eq!(
+            summary.phases,
+            vec![
+                FlightPhase::Idle,
+                FlightPhase::Arm,
+                FlightPhase::Takeoff,
+                FlightPhase::Cruise,
+                FlightPhase::Idle,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_run_summary_maps_clearance_finite_to_some_and_infinite_to_null() {
+        let mut result = hand_built_result();
+        result.min_obstacle_clearance_m = f64::INFINITY;
+        let summary = run_summary(&result, 0, 0);
+        assert_eq!(summary.min_obstacle_clearance_m, None);
+
+        let mut result = hand_built_result();
+        result.min_obstacle_clearance_m = 2.25;
+        let summary = run_summary(&result, 0, 0);
+        assert_eq!(summary.min_obstacle_clearance_m, Some(2.25));
+    }
+
+    #[test]
+    fn the_run_summary_of_an_empty_result_has_zero_errors() {
+        let summary = run_summary(&SimResult::default(), 0, 100);
+        assert_eq!(summary.duration_s, 0.0);
+        assert_eq!(summary.ekf_position_rmse_m, 0.0);
+        assert_eq!(summary.final_position_error_m, 0.0);
+        assert!(summary.phases.is_empty());
+        assert_eq!(summary.final_phase, FlightPhase::Idle);
+        assert_eq!(summary.steps_done, 0);
+        assert_eq!(summary.total_steps, 100);
     }
 }

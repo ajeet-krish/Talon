@@ -229,11 +229,10 @@ function validateConfig(value: unknown, path: string): LiveConfig {
   }
   if (avoidance !== undefined) cfg.avoidance = avoidance
   if (c.battery_initial_soc !== undefined) {
-    // The browser subset of SILConfig does not declare the battery knob yet
-    // (docs/reviews.md), but a config that carries it must obey the same
-    // [0, 1] range the Rust core enforces; keep the validated value on the
-    // object so it survives the round trip through the loader.
-    Object.assign(cfg, { battery_initial_soc: asUnitRange(c.battery_initial_soc, `${path}.battery_initial_soc`) })
+    // A config that carries the battery knob must obey the same [0, 1] range
+    // the Rust core enforces. Absent means the core's default, so the key
+    // stays off the object rather than landing as undefined.
+    cfg.battery_initial_soc = asUnitRange(c.battery_initial_soc, `${path}.battery_initial_soc`)
   }
   return cfg
 }

@@ -4,8 +4,14 @@
  * The autopilot itself is no longer in TypeScript, so these tests do not fly
  * anything: they cover the seam. A scripted fake session stands in for the Rust
  * core and the tests assert what LiveSim does with it, which is exactly the part
- * that can break without the native tests noticing: the summary assembly, the
- * clearance computation, the phase list, and the delegation of stepping.
+ * that can break without the native tests noticing: the summary passthrough, the
+ * document parse, and the delegation of stepping. The core summary is parsed
+ * as-is, so the tests pin that the page never recomputes RMSE, final error,
+ * clearance, or the phase list from the document arrays.
+ *
+ * The one page-side adjustment is defensive rather than computational: a
+ * summary whose `phases` list is absent or null is normalized to `[]`, because
+ * the Run view maps over that list, and everything else is left untouched.
  *
  * The native side has its own tests (`cargo test -p talon-core` and
  * `cargo test -p talon-wasm`), including that stepping in chunks matches a bulk
@@ -16,6 +22,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { LiveSim } from './sim'
 import type { CoreSession } from './engine'
 import type { FlightData, FlightPhase } from '@/types/flight'
+import type { RunSummary } from '@/types/generated/talon_core'
 import type { LiveConfig } from './types'
 
 const CONFIG: LiveConfig = {
@@ -113,7 +120,14 @@ const DOCUMENT: FlightData = {
   event_log: [],
 }
 
-const SUMMARY = {
+/**
+ * A complete core summary, in the generated `RunSummary` shape.
+ *
+ * The distinctive values (RMSE 1.25, clearance 1.75, the phase list) are
+ * deliberately not what the DOCUMENT arrays would imply, so a test asserting
+ * them proves the page passes the core's numbers through untouched.
+ */
+const SUMMARY: RunSummary = {
   duration_s: 9.99,
   waypoint_count: 1,
   waypoints_reached: 1,
@@ -121,12 +135,17 @@ const SUMMARY = {
   gps_accepted: 90,
   gps_gated: 2,
   gps_skipped: 0,
-  final_phase: 'idle',
+  final_phase: 'land',
   final_truth_altitude_m: 0,
   ekf_converged: true,
   ekf_diverged: false,
+  min_obstacle_clearance_m: 1.75,
+  avoidance_activations: 2,
   steps_done: 2000,
   total_steps: 2000,
+  ekf_position_rmse_m: 1.25,
+  final_position_error_m: 0.42,
+  phases: ['idle', 'arm', 'takeoff', 'cruise', 'waypoint', 'rtl', 'land'],
 }
 
 /** A scripted stand-in for the native session. */
@@ -288,49 +307,83 @@ describe('LiveSim', () => {
     expect(summary.mission_complete).toBe(true)
     expect(summary.gps_accepted).toBe(90)
     expect(summary.gps_gated).toBe(2)
+    expect(summary.avoidance_activations).toBe(2)
+    expect(summary.final_phase).toBe('land')
+    expect(summary.ekf_converged).toBe(true)
+    expect(summary.steps_done).toBe(2000)
   })
 
-  it('computes the estimator error from the document arrays', () => {
+  it('returns the core RMSE and final error untouched, not recomputed', () => {
     const { sim } = run()
     const { summary } = sim.finish()
-    // The first sample is off by a 3-4-5 triangle, so 5 m: RMSE over three
-    // samples with one such error is sqrt(25/3).
-    expect(summary.ekf_position_rmse_m).toBeCloseTo(Math.sqrt(25 / 3), 12)
-    // The final error is the error at the last sample, which has converged.
-    expect(summary.final_position_error_m).toBe(0)
+    // The DOCUMENT arrays imply an RMSE of sqrt(25/3) and a final error of 0,
+    // but the core summary says 1.25 and 0.42. The page must return the core's
+    // numbers, proving the estimator math no longer lives here.
+    expect(summary.ekf_position_rmse_m).toBe(1.25)
+    expect(summary.final_position_error_m).toBe(0.42)
   })
 
-  it('reports the terminal error at the last sample, not the worst one', () => {
-    const { sim } = run({
-      ekf_position: [
-        [0, 0, 0],
-        [1, 0, -10],
-        [5, 4, -10],
-      ],
-    })
-    const { summary } = sim.finish()
-    expect(summary.final_position_error_m).toBeCloseTo(5, 12)
-  })
-
-  it('reports the phases in order without repeats', () => {
+  it('returns the core phase list untouched, not the document timeline', () => {
     const { sim } = run()
     const { summary } = sim.finish()
-    expect(summary.phases).toEqual(['idle', 'arm', 'takeoff', 'cruise'])
+    // The DOCUMENT timeline visits idle, arm, takeoff, cruise; the core
+    // summary lists a longer flight. The page must show the core's list.
+    expect(summary.phases).toEqual([
+      'idle',
+      'arm',
+      'takeoff',
+      'cruise',
+      'waypoint',
+      'rtl',
+      'land',
+    ])
   })
 
-  it('reports no clearance when the scenario has no obstacles', () => {
+  it('returns the core clearance untouched, including null for no zones', () => {
     const { sim } = run()
-    expect(sim.finish().summary.min_clearance_m).toBeNull()
+    const { summary } = sim.finish()
+    // The DOCUMENT declares no obstacles, so a page-side computation would say
+    // null; the core summary says 1.75 m and the page must trust it.
+    expect(summary.min_obstacle_clearance_m).toBe(1.75)
+
+    const noZones = run(undefined, { min_obstacle_clearance_m: null })
+    expect(noZones.sim.finish().summary.min_obstacle_clearance_m).toBeNull()
   })
 
-  it('measures clearance to the nearest obstacle surface', () => {
-    const obstacles = [{ id: 'obs', center_ned: [2, 0, -10] as [number, number, number], radius_m: 1 }]
-    const { sim } = run({ obstacles })
-    // Samples sit at 0 m, 1 m, and 0 m from the center, so at 3 m, 1 m, 3 m
-    // respectively, which is a clearance of -1 m at the closest sample.
-    const clearance = sim.finish().summary.min_clearance_m
-    expect(clearance).not.toBeNull()
-    expect(clearance as number).toBeCloseTo(-1, 12)
+  it('fills an absent phase list with an empty one instead of throwing', () => {
+    // The wasm fallback for an impossible serialization error is `{}`, which
+    // carries no `phases` at all. RunView maps over the list, so finish() has
+    // to hand it an array rather than undefined.
+    const session = new FakeSession(JSON.stringify(CONFIG))
+    const withoutPhases: Record<string, unknown> = { ...SUMMARY }
+    delete withoutPhases['phases']
+    session.summary_json = () => JSON.stringify(withoutPhases)
+
+    const { summary } = new LiveSim(session).finish()
+    expect(summary.phases).toEqual([])
+    // Only the list is touched: the rest still reads straight from the core.
+    expect(summary.duration_s).toBe(SUMMARY.duration_s)
+    expect(summary.ekf_position_rmse_m).toBe(1.25)
+    expect(summary.final_phase).toBe('land')
+  })
+
+  it('fills a null phase list the same way', () => {
+    const session = new FakeSession(JSON.stringify(CONFIG))
+    session.summary_json = () => JSON.stringify({ ...SUMMARY, phases: null })
+
+    const { summary } = new LiveSim(session).finish()
+    expect(summary.phases).toEqual([])
+    expect(summary.waypoints_reached).toBe(1)
+  })
+
+  it('keeps a distinctive core value even when the document implies another', () => {
+    // Obstacles close enough that a page-side pass over the samples would
+    // disagree with the core's 1.75 m; the summary must still read 1.75 m.
+    const obstacles = [{ id: 'obs', center_ned: [1, 0, -10] as [number, number, number], radius_m: 0.5 }]
+    const { sim } = run({ obstacles }, { ekf_position_rmse_m: 3 })
+    const { summary } = sim.finish()
+    expect(summary.ekf_position_rmse_m).toBe(3)
+    expect(summary.min_obstacle_clearance_m).toBe(1.75)
   })
 
   it('parses the document once and returns the same result afterwards', () => {

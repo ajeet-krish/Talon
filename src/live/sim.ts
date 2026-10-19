@@ -11,8 +11,13 @@
  *
  * 1. hands the scenario JSON to a native session,
  * 2. advances that session inside a frame budget so the page stays responsive,
- * 3. turns the finished session into the flight document and the run summary
- *    the replay, telemetry, and metrics views already consume.
+ * 3. turns the finished session into the flight document, alongside the run
+ *    summary the core itself produced, which the replay, telemetry, and
+ *    metrics views already consume.
+ *
+ * The summary is a passthrough: the core computes RMSE, final error, obstacle
+ * clearance, and the phase list, and this file parses that without changing it,
+ * apart from normalizing a missing phase list to an empty one.
  *
  * Because the native core owns the loop, the browser run and a batch run of the
  * same scenario are the same flight. The one deliberate difference is the sensor
@@ -20,7 +25,7 @@
  * run is statistically equivalent to a recorded one, not bit-identical.
  */
 
-import type { FlightData, FlightPhase, Obstacle, PhaseEvent, Vec3 } from '@/types/flight'
+import type { FlightData, FlightPhase, PhaseEvent, Vec3 } from '@/types/flight'
 import type { CoreSession } from './engine'
 import type { LiveConfig, LiveRunResult, LiveRunSummary } from './types'
 
@@ -37,23 +42,6 @@ const KNOWN_PHASES: readonly FlightPhase[] = [
 
 function isPhase(value: string): value is FlightPhase {
   return (KNOWN_PHASES as readonly string[]).includes(value)
-}
-
-/** The subset of the native summary that the flight document does not carry. */
-interface CoreSummary {
-  duration_s: number
-  waypoint_count: number
-  waypoints_reached: number
-  mission_complete: boolean
-  gps_accepted: number
-  gps_gated: number
-  gps_skipped: number
-  final_phase: string
-  final_truth_altitude_m: number
-  ekf_converged: boolean
-  ekf_diverged: boolean
-  steps_done: number
-  total_steps: number
 }
 
 /**
@@ -187,36 +175,28 @@ export class LiveSim {
     return [this.session.ekf_converged, this.session.ekf_diverged]
   }
 
-  /** The flight document and the summary for the run so far. */
+  /**
+   * The flight document and the core's run summary for the run so far.
+   *
+   * The summary is whatever `talon_core::sim` wrote, parsed once as the
+   * generated `RunSummary`. Nothing here recomputes RMSE, final error,
+   * clearance, or the phase list: the core owns those numbers. The single
+   * adjustment is defensive: an absent or non-array `phases` becomes `[]`
+   * so the Run view never maps over undefined.
+   */
   finish(): LiveRunResult {
     if (this.result !== null) return this.result
 
     const data = JSON.parse(this.session.document_json(new Date().toISOString())) as FlightData
-    const core = JSON.parse(this.session.summary_json()) as CoreSummary
+    const parsed = JSON.parse(this.session.summary_json()) as LiveRunSummary
 
-    const n = data.truth_position.length
-    let sumSq = 0
-    let finalError = 0
-    for (let i = 0; i < n; i += 1) {
-      const truth = data.truth_position[i]
-      const estimate = data.ekf_position[i]
-      if (truth === undefined || estimate === undefined) continue
-      const d2 = (truth[0] - estimate[0]) ** 2 + (truth[1] - estimate[1]) ** 2 + (truth[2] - estimate[2]) ** 2
-      sumSq += d2
-      finalError = Math.sqrt(d2)
-    }
-
+    // The wasm fallback for an impossible serialization error is `{}`, and the
+    // Run view maps over `summary.phases`, so an absent (or null) list must not
+    // throw. Only the list is touched: it becomes `[]` unless it already is an
+    // array, and every other field stays exactly as the core wrote it.
     const summary: LiveRunSummary = {
-      duration_s: core.duration_s,
-      waypoint_count: core.waypoint_count,
-      waypoints_reached: core.waypoints_reached,
-      mission_complete: core.mission_complete,
-      gps_accepted: core.gps_accepted,
-      gps_gated: core.gps_gated,
-      final_position_error_m: finalError,
-      ekf_position_rmse_m: n === 0 ? 0 : Math.sqrt(sumSq / n),
-      min_clearance_m: minClearance(data.truth_position, data.obstacles),
-      phases: phasesVisited(data.phase_timeline),
+      ...parsed,
+      phases: Array.isArray(parsed?.phases) ? parsed.phases : [],
     }
 
     this.result = { data, summary }
@@ -227,34 +207,4 @@ export class LiveSim {
   dispose(): void {
     this.session.free()
   }
-}
-
-/**
- * Smallest distance from any truth sample to any obstacle surface (m), or null
- * when the scenario declares no keep-out zones. Negative means a penetration.
- */
-function minClearance(truth: Vec3[], obstacles: Obstacle[]): number | null {
-  if (obstacles.length === 0) return null
-  let best = Number.POSITIVE_INFINITY
-  for (const p of truth) {
-    for (const o of obstacles) {
-      const d = Math.sqrt(
-        (p[0] - o.center_ned[0]) ** 2 +
-          (p[1] - o.center_ned[1]) ** 2 +
-          (p[2] - o.center_ned[2]) ** 2,
-      )
-      best = Math.min(best, d - o.radius_m)
-    }
-  }
-  return Number.isFinite(best) ? best : null
-}
-
-/** The phases a run passed through, in order, without repeats. */
-function phasesVisited(timeline: [number, FlightPhase][]): FlightPhase[] {
-  const out: FlightPhase[] = []
-  for (const entry of timeline) {
-    const phase = entry[1]
-    if (out[out.length - 1] !== phase) out.push(phase)
-  }
-  return out
 }
