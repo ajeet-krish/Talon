@@ -34,7 +34,11 @@ use crate::avoidance::{
     min_surface_clearance, AvoidanceConfig, AvoidanceError, MissionLeg, ReactiveAvoidance,
 };
 use crate::battery::{BatteryConfig, BatteryError, BatteryModel, BatteryState};
-use crate::constants::{DT, DT_CONTROL, DT_GPS};
+use crate::constants::{
+    DT, DT_CONTROL, DT_GPS, MAX_COORDINATE_M, MAX_CRUISE_HOLD_S, MAX_DURATION_S,
+    MAX_GPS_POSITION_NOISE_M, MAX_GPS_VELOCITY_NOISE_MPS, MAX_OBSTACLES, MAX_RADIUS_M,
+    MAX_TAKEOFF_ALTITUDE_M, MAX_WAYPOINTS, MAX_WAYPOINT_SPEED_MPS, MAX_WIND_COMPONENT_MPS,
+};
 use crate::controller::CascadedController;
 use crate::dynamics::propagate;
 use crate::ekf::{Ekf, EkfConfig};
@@ -118,15 +122,140 @@ impl Default for SimConfig {
 
 impl SimConfig {
     /// Validate the scenario parameters.
+    ///
+    /// Every scalar is checked for finiteness before it is range-checked:
+    /// JSON `1e999` parses to `inf`, which a bare `> 0.0` test waves through
+    /// (and would saturate the runner's step count to `usize::MAX`), while
+    /// NaN defeats every comparison because all of them are false. Nothing is
+    /// clamped; a bad value is rejected with the offending field named.
     pub fn validate(&self) -> Result<(), SimError> {
-        // NaN is rejected on purpose: !(NaN > 0.0) was true, so a NaN
-        // takeoff altitude must fail validation just like a non-positive one.
-        if self.takeoff_altitude <= 0.0 || self.takeoff_altitude.is_nan() {
-            return Err(SimError::NonPositiveTakeoffAltitude(self.takeoff_altitude));
+        // Takeoff altitude: NaN and non-positive keep the original rejection
+        // (the phase machine would chase an undefined altitude); the cap then
+        // catches the JSON `1e999` -> inf path that positivity alone misses.
+        let takeoff = self.takeoff_altitude;
+        if takeoff <= 0.0 || takeoff.is_nan() {
+            return Err(SimError::NonPositiveTakeoffAltitude(takeoff));
         }
+        if !takeoff.is_finite() {
+            return Err(SimError::NonFiniteParameter {
+                name: "takeoff_altitude",
+                value: takeoff,
+            });
+        }
+        if takeoff > MAX_TAKEOFF_ALTITUDE_M {
+            return Err(SimError::OutOfRangeParameter {
+                name: "takeoff_altitude",
+                value: takeoff,
+                min: 0.0,
+                max: MAX_TAKEOFF_ALTITUDE_M,
+            });
+        }
+
+        for component in self.start_position_ned {
+            check_coordinate("start_position_ned", component)?;
+        }
+        for sigma in self.wind_sigma {
+            check_range("wind_sigma", sigma, 0.0, MAX_WIND_COMPONENT_MPS)?;
+        }
+        for component in self.wind_steady_ned {
+            check_range(
+                "wind_steady_ned",
+                component,
+                -MAX_WIND_COMPONENT_MPS,
+                MAX_WIND_COMPONENT_MPS,
+            )?;
+        }
+        check_range("battery_initial_soc", self.battery_initial_soc, 0.0, 1.0)?;
+        check_range(
+            "gps_position_noise",
+            self.gps_position_noise,
+            0.0,
+            MAX_GPS_POSITION_NOISE_M,
+        )?;
+        check_range(
+            "gps_position_noise_vertical",
+            self.gps_position_noise_vertical,
+            0.0,
+            MAX_GPS_POSITION_NOISE_M,
+        )?;
+        check_range(
+            "gps_velocity_noise",
+            self.gps_velocity_noise,
+            0.0,
+            MAX_GPS_VELOCITY_NOISE_MPS,
+        )?;
+        check_range("cruise_hold_s", self.cruise_hold_s, 0.0, MAX_CRUISE_HOLD_S)?;
+
+        if self.waypoints.len() > MAX_WAYPOINTS {
+            return Err(SimError::TooManyItems {
+                name: "waypoints",
+                count: self.waypoints.len(),
+                max: MAX_WAYPOINTS,
+            });
+        }
+        for waypoint in &self.waypoints {
+            for component in waypoint.position {
+                check_coordinate("waypoint position", component)?;
+            }
+            check_range(
+                "waypoint speed",
+                waypoint.speed,
+                0.0,
+                MAX_WAYPOINT_SPEED_MPS,
+            )?;
+            // Heading is finite-only on purpose: guidance wraps angles, so any
+            // finite heading names a real direction and needs no ceiling.
+            if !waypoint.heading.is_finite() {
+                return Err(SimError::NonFiniteParameter {
+                    name: "waypoint heading",
+                    value: waypoint.heading,
+                });
+            }
+            check_range("waypoint radius", waypoint.radius, 0.0, MAX_RADIUS_M)?;
+        }
+
+        if self.obstacles.len() > MAX_OBSTACLES {
+            return Err(SimError::TooManyItems {
+                name: "obstacles",
+                count: self.obstacles.len(),
+                max: MAX_OBSTACLES,
+            });
+        }
+        for obstacle in &self.obstacles {
+            for component in obstacle.center_ned {
+                check_coordinate("obstacle center_ned", component)?;
+            }
+            check_range("obstacle radius_m", obstacle.radius_m, 0.0, MAX_RADIUS_M)?;
+        }
+
         self.avoidance.validate()?;
         Ok(())
     }
+}
+
+/// Reject a scalar that must be finite and lie in `[min, max]`.
+///
+/// Finiteness is checked first so `+inf` is reported as non-finite rather
+/// than mislabeled as merely out of range, and so NaN (which fails every
+/// comparison, so both range tests would wave it through) cannot slip past.
+fn check_range(name: &'static str, value: f64, min: f64, max: f64) -> Result<(), SimError> {
+    if !value.is_finite() {
+        return Err(SimError::NonFiniteParameter { name, value });
+    }
+    if value < min || value > max {
+        return Err(SimError::OutOfRangeParameter {
+            name,
+            value,
+            min,
+            max,
+        });
+    }
+    Ok(())
+}
+
+/// Reject a NED coordinate that must be finite and within `MAX_COORDINATE_M`.
+fn check_coordinate(name: &'static str, value: f64) -> Result<(), SimError> {
+    check_range(name, value, -MAX_COORDINATE_M, MAX_COORDINATE_M)
 }
 
 /// Why a run could not be constructed or started.
@@ -138,6 +267,34 @@ pub enum SimError {
     NonPositiveTakeoffAltitude(f64),
     /// A GPS outage must last a strictly positive time.
     NonPositiveGpsOutage(f64),
+    /// A parameter arrived as NaN or infinity, which JSON can produce from
+    /// `NaN` literals or `1e999` and no physics quantity may hold.
+    NonFiniteParameter {
+        /// The offending field, e.g. `"duration_s"`.
+        name: &'static str,
+        /// The rejected value.
+        value: f64,
+    },
+    /// A finite parameter fell outside its accepted range.
+    OutOfRangeParameter {
+        /// The offending field, e.g. `"takeoff_altitude"`.
+        name: &'static str,
+        /// The rejected value.
+        value: f64,
+        /// Smallest accepted value, inclusive.
+        min: f64,
+        /// Largest accepted value, inclusive.
+        max: f64,
+    },
+    /// A list parameter carried more items than the cap allows.
+    TooManyItems {
+        /// The offending list, e.g. `"waypoints"`.
+        name: &'static str,
+        /// How many items arrived.
+        count: usize,
+        /// The cap that was exceeded.
+        max: usize,
+    },
     /// The battery configuration was invalid.
     Battery(BatteryError),
     /// The motor configuration was invalid.
@@ -159,6 +316,18 @@ impl fmt::Display for SimError {
             }
             Self::NonPositiveGpsOutage(v) => {
                 write!(f, "gps outage duration must be positive, got {v}")
+            }
+            Self::NonFiniteParameter { name, value } => {
+                write!(f, "{name} must be finite, got {value}")
+            }
+            Self::OutOfRangeParameter {
+                name,
+                value,
+                min,
+                max,
+            } => write!(f, "{name} must be in [{min}, {max}], got {value}"),
+            Self::TooManyItems { name, count, max } => {
+                write!(f, "{name} has {count} items, at most {max} allowed")
             }
             Self::Battery(e) => write!(f, "battery: {e}"),
             Self::Motor(e) => write!(f, "motor: {e}"),
@@ -645,8 +814,16 @@ impl SimRunner {
     /// Black out GPS for `duration_s` sim seconds from now.
     ///
     /// During the outage no fix is generated or fed to the filter, so the filter
-    /// dead-reckons on IMU only. Repeated calls extend the outage.
+    /// dead-reckons on IMU only. Repeated calls extend the outage. A
+    /// non-finite duration is rejected: `inf` would black out GPS forever and
+    /// NaN would corrupt the outage window arithmetic.
     pub fn inject_gps_outage(&mut self, duration_s: f64) -> Result<(), SimError> {
+        if !duration_s.is_finite() {
+            return Err(SimError::NonFiniteParameter {
+                name: "gps_outage_duration",
+                value: duration_s,
+            });
+        }
         if duration_s <= 0.0 {
             return Err(SimError::NonPositiveGpsOutage(duration_s));
         }
@@ -684,10 +861,27 @@ impl SimRunner {
 
     /// Run the convergence pre-roll, then `duration_s` sim seconds.
     ///
-    /// A runner is intended for one run: histories accumulate.
+    /// A runner is intended for one run: histories accumulate. The duration
+    /// is validated before any step is computed: `inf` would otherwise
+    /// saturate the step count to `usize::MAX`, and NaN would silently run
+    /// zero steps.
     pub fn run(&mut self, duration_s: f64) -> Result<SimResult, SimError> {
+        if !duration_s.is_finite() {
+            return Err(SimError::NonFiniteParameter {
+                name: "duration_s",
+                value: duration_s,
+            });
+        }
         if duration_s <= 0.0 {
             return Err(SimError::NonPositiveDuration(duration_s));
+        }
+        if duration_s > MAX_DURATION_S {
+            return Err(SimError::OutOfRangeParameter {
+                name: "duration_s",
+                value: duration_s,
+                min: 0.0,
+                max: MAX_DURATION_S,
+            });
         }
         self.preroll();
         let steps = (duration_s / DT).round() as usize;
@@ -1940,6 +2134,574 @@ mod tests {
             Err(SimError::Avoidance(
                 AvoidanceError::NegativeClearanceMargin(_)
             ))
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Input hardening: finiteness and magnitude at every seam
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn an_infinite_takeoff_altitude_is_rejected_as_non_finite() {
+        // Regression: JSON `1e999` parses to `inf`, which the positivity test
+        // waves through; the phase machine must never chase an undefined
+        // climb target. NaN keeps its original rejection (pinned above), and
+        // negative infinity is caught by the positivity guard.
+        let cfg = SimConfig {
+            takeoff_altitude: f64::INFINITY,
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::NonFiniteParameter {
+                name: "takeoff_altitude",
+                ..
+            })
+        ));
+        let cfg = SimConfig {
+            takeoff_altitude: f64::NEG_INFINITY,
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::NonPositiveTakeoffAltitude(_))
+        ));
+    }
+
+    #[test]
+    fn a_takeoff_altitude_above_the_cap_is_rejected_as_out_of_range() {
+        let cfg = SimConfig {
+            takeoff_altitude: MAX_TAKEOFF_ALTITUDE_M + 1.0,
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::OutOfRangeParameter {
+                name: "takeoff_altitude",
+                value,
+                max,
+                ..
+            }) if value == MAX_TAKEOFF_ALTITUDE_M + 1.0 && max == MAX_TAKEOFF_ALTITUDE_M
+        ));
+        // The cap itself is accepted.
+        SimRunner::new(SimConfig {
+            takeoff_altitude: MAX_TAKEOFF_ALTITUDE_M,
+            ..Default::default()
+        })
+        .expect("the cap itself is in range");
+    }
+
+    #[test]
+    fn a_non_finite_start_position_is_rejected() {
+        for component in 0..3 {
+            let mut start = [0.0; 3];
+            start[component] = f64::NAN;
+            assert!(
+                matches!(
+                    SimRunner::new(SimConfig {
+                        start_position_ned: start,
+                        ..Default::default()
+                    }),
+                    Err(SimError::NonFiniteParameter {
+                        name: "start_position_ned",
+                        ..
+                    })
+                ),
+                "NaN component {component} should be rejected"
+            );
+        }
+        let cfg = SimConfig {
+            start_position_ned: [0.0, f64::INFINITY, 0.0],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::NonFiniteParameter {
+                name: "start_position_ned",
+                ..
+            })
+        ));
+        // Finite but absurd: out of range, not non-finite.
+        let cfg = SimConfig {
+            start_position_ned: [MAX_COORDINATE_M + 1.0, 0.0, 0.0],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::OutOfRangeParameter {
+                name: "start_position_ned",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_non_finite_or_over_cap_wind_component_is_rejected() {
+        for component in 0..3 {
+            let mut sigma = [0.0; 3];
+            sigma[component] = f64::INFINITY;
+            assert!(
+                matches!(
+                    SimRunner::new(SimConfig {
+                        wind_sigma: sigma,
+                        ..Default::default()
+                    }),
+                    Err(SimError::NonFiniteParameter {
+                        name: "wind_sigma",
+                        ..
+                    })
+                ),
+                "infinite sigma {component} should be rejected"
+            );
+        }
+        let cfg = SimConfig {
+            wind_steady_ned: [f64::NAN, 0.0, 0.0],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::NonFiniteParameter {
+                name: "wind_steady_ned",
+                ..
+            })
+        ));
+        let cfg = SimConfig {
+            wind_sigma: [MAX_WIND_COMPONENT_MPS + 1.0, 0.0, 0.0],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::OutOfRangeParameter {
+                name: "wind_sigma",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_non_finite_or_over_cap_gps_noise_is_rejected() {
+        for bad in [f64::NAN, f64::INFINITY] {
+            let cfg = SimConfig {
+                gps_position_noise: bad,
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    SimRunner::new(cfg),
+                    Err(SimError::NonFiniteParameter {
+                        name: "gps_position_noise",
+                        ..
+                    })
+                ),
+                "gps_position_noise {bad} should be rejected"
+            );
+            let cfg = SimConfig {
+                gps_position_noise_vertical: bad,
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    SimRunner::new(cfg),
+                    Err(SimError::NonFiniteParameter {
+                        name: "gps_position_noise_vertical",
+                        ..
+                    })
+                ),
+                "gps_position_noise_vertical {bad} should be rejected"
+            );
+            let cfg = SimConfig {
+                gps_velocity_noise: bad,
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    SimRunner::new(cfg),
+                    Err(SimError::NonFiniteParameter {
+                        name: "gps_velocity_noise",
+                        ..
+                    })
+                ),
+                "gps_velocity_noise {bad} should be rejected"
+            );
+        }
+        let cfg = SimConfig {
+            gps_velocity_noise: MAX_GPS_VELOCITY_NOISE_MPS + 1.0,
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::OutOfRangeParameter {
+                name: "gps_velocity_noise",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn battery_initial_soc_must_be_finite_and_in_range() {
+        // NaN would otherwise reach the battery model, which clamps but never
+        // validates, and 1.5 would be silently clamped to 1.0.
+        for bad in [f64::NAN, f64::INFINITY] {
+            let cfg = SimConfig {
+                battery_initial_soc: bad,
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    SimRunner::new(cfg),
+                    Err(SimError::NonFiniteParameter {
+                        name: "battery_initial_soc",
+                        ..
+                    })
+                ),
+                "soc {bad} should be rejected"
+            );
+        }
+        let cfg = SimConfig {
+            battery_initial_soc: 1.5,
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::OutOfRangeParameter {
+                name: "battery_initial_soc",
+                max,
+                ..
+            }) if max == 1.0
+        ));
+        // The closed interval's endpoints are accepted.
+        SimRunner::new(SimConfig {
+            battery_initial_soc: 0.0,
+            ..Default::default()
+        })
+        .expect("soc 0 is in range");
+    }
+
+    #[test]
+    fn a_mission_over_the_waypoint_cap_is_rejected() {
+        let cfg = SimConfig {
+            waypoints: vec![Waypoint::default(); MAX_WAYPOINTS + 1],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::TooManyItems {
+                name: "waypoints",
+                count,
+                max,
+            }) if count == MAX_WAYPOINTS + 1 && max == MAX_WAYPOINTS
+        ));
+    }
+
+    #[test]
+    fn a_non_finite_or_negative_waypoint_field_is_rejected() {
+        let cfg = SimConfig {
+            waypoints: vec![Waypoint::new([f64::NAN, 0.0, -10.0], 5.0, 0.0, 2.0)],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::NonFiniteParameter {
+                name: "waypoint position",
+                ..
+            })
+        ));
+        let cfg = SimConfig {
+            waypoints: vec![Waypoint::new([0.0, f64::INFINITY, -10.0], 5.0, 0.0, 2.0)],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::NonFiniteParameter {
+                name: "waypoint position",
+                ..
+            })
+        ));
+        let cfg = SimConfig {
+            waypoints: vec![Waypoint::new([0.0, 0.0, -10.0], f64::NAN, 0.0, 2.0)],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::NonFiniteParameter {
+                name: "waypoint speed",
+                ..
+            })
+        ));
+        let cfg = SimConfig {
+            waypoints: vec![Waypoint::new([0.0, 0.0, -10.0], -1.0, 0.0, 2.0)],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::OutOfRangeParameter {
+                name: "waypoint speed",
+                ..
+            })
+        ));
+        let cfg = SimConfig {
+            waypoints: vec![Waypoint::new([0.0, 0.0, -10.0], 5.0, f64::INFINITY, 2.0)],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::NonFiniteParameter {
+                name: "waypoint heading",
+                ..
+            })
+        ));
+        let cfg = SimConfig {
+            waypoints: vec![Waypoint::new([0.0, 0.0, -10.0], 5.0, 0.0, f64::NAN)],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::NonFiniteParameter {
+                name: "waypoint radius",
+                ..
+            })
+        ));
+        let cfg = SimConfig {
+            waypoints: vec![Waypoint::new([0.0, 0.0, -10.0], 5.0, 0.0, -1.0)],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::OutOfRangeParameter {
+                name: "waypoint radius",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_non_finite_or_negative_obstacle_is_rejected() {
+        let cfg = SimConfig {
+            obstacles: vec![Obstacle {
+                id: "zone".to_string(),
+                center_ned: [0.0, 0.0, -10.0],
+                radius_m: f64::NAN,
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::NonFiniteParameter {
+                name: "obstacle radius_m",
+                ..
+            })
+        ));
+        let cfg = SimConfig {
+            obstacles: vec![Obstacle {
+                id: "zone".to_string(),
+                center_ned: [f64::INFINITY, 0.0, -10.0],
+                radius_m: 2.0,
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::NonFiniteParameter {
+                name: "obstacle center_ned",
+                ..
+            })
+        ));
+        let cfg = SimConfig {
+            obstacles: vec![Obstacle {
+                id: "zone".to_string(),
+                center_ned: [0.0, 0.0, -10.0],
+                radius_m: -1.0,
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::OutOfRangeParameter {
+                name: "obstacle radius_m",
+                ..
+            })
+        ));
+        let cfg = SimConfig {
+            obstacles: vec![
+                Obstacle {
+                    id: "zone".to_string(),
+                    center_ned: [0.0, 0.0, -10.0],
+                    radius_m: 2.0,
+                };
+                MAX_OBSTACLES + 1
+            ],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::TooManyItems {
+                name: "obstacles",
+                count,
+                max,
+            }) if count == MAX_OBSTACLES + 1 && max == MAX_OBSTACLES
+        ));
+    }
+
+    #[test]
+    fn waypoint_speed_and_radii_are_capped_but_heading_is_finite_only() {
+        // Speed past any plausible flight: 201 m/s is a typo, not a mission.
+        let cfg = SimConfig {
+            waypoints: vec![Waypoint::new(
+                [0.0, 0.0, -10.0],
+                MAX_WAYPOINT_SPEED_MPS + 1.0,
+                0.0,
+                2.0,
+            )],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::OutOfRangeParameter {
+                name: "waypoint speed",
+                max,
+                ..
+            }) if max == MAX_WAYPOINT_SPEED_MPS
+        ));
+
+        // Radii are bounded at the coordinate scale, still non-negative.
+        let cfg = SimConfig {
+            waypoints: vec![Waypoint::new(
+                [0.0, 0.0, -10.0],
+                5.0,
+                0.0,
+                MAX_RADIUS_M + 1.0,
+            )],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::OutOfRangeParameter {
+                name: "waypoint radius",
+                max,
+                ..
+            }) if max == MAX_RADIUS_M
+        ));
+        let cfg = SimConfig {
+            obstacles: vec![Obstacle {
+                id: "zone".to_string(),
+                center_ned: [0.0, 0.0, -10.0],
+                radius_m: MAX_RADIUS_M + 1.0,
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::OutOfRangeParameter {
+                name: "obstacle radius_m",
+                max,
+                ..
+            }) if max == MAX_RADIUS_M
+        ));
+
+        // Heading stays finite-only: guidance wraps angles, so a very large
+        // (still finite) heading names a real direction and is accepted.
+        SimRunner::new(SimConfig {
+            waypoints: vec![Waypoint::new([0.0, 0.0, -10.0], 5.0, 1.0e6, 2.0)],
+            ..Default::default()
+        })
+        .expect("a large finite heading is legal, angles wrap");
+    }
+
+    #[test]
+    fn non_finite_avoidance_tuning_is_rejected_at_construction() {
+        // The NaN bypass the caps close: NaN failed every `< 0.0` comparison
+        // in the old guard, so a NaN margin reached the law unchallenged.
+        for (avoidance, name) in [
+            (
+                AvoidanceConfig {
+                    enabled: true,
+                    clearance_margin_m: f64::NAN,
+                    ..Default::default()
+                },
+                "clearance_margin_m",
+            ),
+            (
+                AvoidanceConfig {
+                    enabled: true,
+                    detour_buffer_m: f64::INFINITY,
+                    ..Default::default()
+                },
+                "detour_buffer_m",
+            ),
+            (
+                AvoidanceConfig {
+                    enabled: true,
+                    lookahead_s: f64::INFINITY,
+                    ..Default::default()
+                },
+                "lookahead_s",
+            ),
+        ] {
+            let cfg = SimConfig {
+                avoidance,
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    SimRunner::new(cfg),
+                    Err(SimError::Avoidance(
+                        AvoidanceError::NonFiniteParameter { name: matched, .. }
+                    )) if matched == name
+                ),
+                "{name} should be rejected as non-finite"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unbounded_run_duration_cannot_saturate_the_step_count() {
+        // Regression for the verified failure: `run(inf)` computed
+        // `(inf / DT).round() as usize`, which saturates to `usize::MAX`.
+        let mut r = SimRunner::new(SimConfig::default()).unwrap();
+        for bad in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            assert!(
+                matches!(
+                    r.run(bad),
+                    Err(SimError::NonFiniteParameter {
+                        name: "duration_s",
+                        ..
+                    })
+                ),
+                "run({bad}) should be rejected as non-finite"
+            );
+        }
+        assert!(matches!(
+            r.run(MAX_DURATION_S + 0.1),
+            Err(SimError::OutOfRangeParameter {
+                name: "duration_s",
+                ..
+            })
+        ));
+        assert!(matches!(r.run(-1.0), Err(SimError::NonPositiveDuration(_))));
+        assert_eq!(
+            r.run(f64::INFINITY).unwrap_err().to_string(),
+            "duration_s must be finite, got inf"
+        );
+    }
+
+    #[test]
+    fn a_non_finite_gps_outage_is_rejected() {
+        let mut r = SimRunner::new(SimConfig::default()).unwrap();
+        for bad in [f64::INFINITY, f64::NAN] {
+            assert!(
+                matches!(
+                    r.inject_gps_outage(bad),
+                    Err(SimError::NonFiniteParameter {
+                        name: "gps_outage_duration",
+                        ..
+                    })
+                ),
+                "outage {bad} should be rejected as non-finite"
+            );
+        }
+        assert!(matches!(
+            r.inject_gps_outage(0.0),
+            Err(SimError::NonPositiveGpsOutage(_))
         ));
     }
 }

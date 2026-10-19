@@ -25,6 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::constants::{MAX_AVOIDANCE_BUFFER_M, MAX_AVOIDANCE_LOOKAHEAD_S, MAX_AVOIDANCE_MARGIN_M};
 use crate::math;
 use crate::types::{Arr3, Obstacle, Waypoint};
 
@@ -51,7 +52,7 @@ pub const LATCH_HYSTERESIS_M: f64 = 2.0;
 /// Leg-length epsilon (m), matching guidance's own.
 const LEG_EPS: f64 = 1.0e-6;
 
-/// A negative tuning value.
+/// A rejected tuning value.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AvoidanceError {
     /// The clearance margin was negative.
@@ -60,6 +61,26 @@ pub enum AvoidanceError {
     NegativeDetourBuffer(f64),
     /// The lookahead time was negative.
     NegativeLookahead(f64),
+    /// A tuning value was NaN or infinite, which no distance or time may be.
+    /// Kept separate from the `Negative*` variants so `+inf` is never
+    /// mislabeled as a negative value.
+    NonFiniteParameter {
+        /// The offending field, e.g. `"clearance_margin_m"`.
+        name: &'static str,
+        /// The rejected value.
+        value: f64,
+    },
+    /// A finite tuning value exceeded its documented cap.
+    OutOfRangeParameter {
+        /// The offending field, e.g. `"lookahead_s"`.
+        name: &'static str,
+        /// The rejected value.
+        value: f64,
+        /// Smallest accepted value, inclusive.
+        min: f64,
+        /// Largest accepted value, inclusive.
+        max: f64,
+    },
 }
 
 impl std::fmt::Display for AvoidanceError {
@@ -72,6 +93,15 @@ impl std::fmt::Display for AvoidanceError {
                 write!(f, "detour_buffer_m must be non-negative, got {v}")
             }
             Self::NegativeLookahead(v) => write!(f, "lookahead_s must be non-negative, got {v}"),
+            Self::NonFiniteParameter { name, value } => {
+                write!(f, "{name} must be finite, got {value}")
+            }
+            Self::OutOfRangeParameter {
+                name,
+                value,
+                min,
+                max,
+            } => write!(f, "{name} must be in [{min}, {max}], got {value}"),
         }
     }
 }
@@ -108,18 +138,67 @@ impl Default for AvoidanceConfig {
 }
 
 impl AvoidanceConfig {
-    /// Reject negative tuning.
+    /// Reject negative, non-finite, and over-cap tuning.
+    ///
+    /// Finiteness is checked first: NaN fails every comparison, so a NaN
+    /// margin would otherwise pass the negativity tests untouched, and `+inf`
+    /// must be reported as non-finite rather than mislabeled as negative.
+    /// Values above the documented caps are out of range, not negative.
     pub fn validate(&self) -> Result<(), AvoidanceError> {
+        if !self.clearance_margin_m.is_finite() {
+            return Err(AvoidanceError::NonFiniteParameter {
+                name: "clearance_margin_m",
+                value: self.clearance_margin_m,
+            });
+        }
         if self.clearance_margin_m < 0.0 {
             return Err(AvoidanceError::NegativeClearanceMargin(
                 self.clearance_margin_m,
             ));
         }
+        if self.clearance_margin_m > MAX_AVOIDANCE_MARGIN_M {
+            return Err(AvoidanceError::OutOfRangeParameter {
+                name: "clearance_margin_m",
+                value: self.clearance_margin_m,
+                min: 0.0,
+                max: MAX_AVOIDANCE_MARGIN_M,
+            });
+        }
+
+        if !self.detour_buffer_m.is_finite() {
+            return Err(AvoidanceError::NonFiniteParameter {
+                name: "detour_buffer_m",
+                value: self.detour_buffer_m,
+            });
+        }
         if self.detour_buffer_m < 0.0 {
             return Err(AvoidanceError::NegativeDetourBuffer(self.detour_buffer_m));
         }
+        if self.detour_buffer_m > MAX_AVOIDANCE_BUFFER_M {
+            return Err(AvoidanceError::OutOfRangeParameter {
+                name: "detour_buffer_m",
+                value: self.detour_buffer_m,
+                min: 0.0,
+                max: MAX_AVOIDANCE_BUFFER_M,
+            });
+        }
+
+        if !self.lookahead_s.is_finite() {
+            return Err(AvoidanceError::NonFiniteParameter {
+                name: "lookahead_s",
+                value: self.lookahead_s,
+            });
+        }
         if self.lookahead_s < 0.0 {
             return Err(AvoidanceError::NegativeLookahead(self.lookahead_s));
+        }
+        if self.lookahead_s > MAX_AVOIDANCE_LOOKAHEAD_S {
+            return Err(AvoidanceError::OutOfRangeParameter {
+                name: "lookahead_s",
+                value: self.lookahead_s,
+                min: 0.0,
+                max: MAX_AVOIDANCE_LOOKAHEAD_S,
+            });
         }
         Ok(())
     }
@@ -701,6 +780,112 @@ mod tests {
             config.validate(),
             Err(AvoidanceError::NegativeLookahead(_))
         ));
+    }
+
+    #[test]
+    fn config_validation_rejects_non_finite_tuning_as_non_finite_not_negative() {
+        // The NaN bypass: NaN fails every `< 0.0` comparison, so the old
+        // guard waved it through, and `+inf` must not read as "negative".
+        let mut config = AvoidanceConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            config.clearance_margin_m = bad;
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(AvoidanceError::NonFiniteParameter {
+                        name: "clearance_margin_m",
+                        ..
+                    })
+                ),
+                "margin {bad} should be non-finite, not negative"
+            );
+            config.clearance_margin_m = 2.0;
+
+            config.detour_buffer_m = bad;
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(AvoidanceError::NonFiniteParameter {
+                        name: "detour_buffer_m",
+                        ..
+                    })
+                ),
+                "buffer {bad} should be non-finite, not negative"
+            );
+            config.detour_buffer_m = DETOUR_BUFFER_M;
+
+            config.lookahead_s = bad;
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(AvoidanceError::NonFiniteParameter {
+                        name: "lookahead_s",
+                        ..
+                    })
+                ),
+                "lookahead {bad} should be non-finite, not negative"
+            );
+            config.lookahead_s = 3.0;
+        }
+        config.validate().expect("restored tuning validates again");
+        // The message names the field and the value, and does not say
+        // "non-negative" about a value that is not negative.
+        config.clearance_margin_m = f64::INFINITY;
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "clearance_margin_m must be finite, got inf"
+        );
+    }
+
+    #[test]
+    fn config_validation_rejects_tuning_above_the_caps() {
+        let mut config = AvoidanceConfig {
+            enabled: true,
+            ..Default::default()
+        };
+
+        config.clearance_margin_m = MAX_AVOIDANCE_MARGIN_M + 1.0;
+        assert!(matches!(
+            config.validate(),
+            Err(AvoidanceError::OutOfRangeParameter {
+                name: "clearance_margin_m",
+                max,
+                ..
+            }) if max == MAX_AVOIDANCE_MARGIN_M
+        ));
+        config.clearance_margin_m = MAX_AVOIDANCE_MARGIN_M;
+
+        config.detour_buffer_m = MAX_AVOIDANCE_BUFFER_M + 1.0;
+        assert!(matches!(
+            config.validate(),
+            Err(AvoidanceError::OutOfRangeParameter {
+                name: "detour_buffer_m",
+                max,
+                ..
+            }) if max == MAX_AVOIDANCE_BUFFER_M
+        ));
+        config.detour_buffer_m = MAX_AVOIDANCE_BUFFER_M;
+
+        config.lookahead_s = MAX_AVOIDANCE_LOOKAHEAD_S + 1.0;
+        assert!(matches!(
+            config.validate(),
+            Err(AvoidanceError::OutOfRangeParameter {
+                name: "lookahead_s",
+                max,
+                ..
+            }) if max == MAX_AVOIDANCE_LOOKAHEAD_S
+        ));
+        assert_eq!(
+            config.validate().unwrap_err().to_string(),
+            "lookahead_s must be in [0, 60], got 61"
+        );
+
+        // Every cap at its exact value is still accepted.
+        config.lookahead_s = MAX_AVOIDANCE_LOOKAHEAD_S;
+        config.validate().expect("the caps themselves are in range");
     }
 
     #[test]

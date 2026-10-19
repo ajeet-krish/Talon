@@ -19,6 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::avoidance::AvoidanceConfig;
+use crate::constants::MAX_DURATION_S;
 use crate::sim::{SimConfig, SimError};
 use crate::types::{Arr3, Obstacle, Waypoint};
 
@@ -137,12 +138,31 @@ impl ScenarioConfig {
     /// Validate the scenario before a run.
     ///
     /// Checks the duration, which the runner needs, on top of everything
-    /// [`SimConfig::validate`] already covers.
+    /// [`SimConfig::validate`] already covers. The duration guards are
+    /// ordered so the original rejection semantics hold: NaN and non-positive
+    /// values still fail as non-positive, JSON `1e999` (which serde parses to
+    /// `inf`) fails as non-finite instead of saturating the runner's step
+    /// count to `usize::MAX`, and anything above [`MAX_DURATION_S`] fails as
+    /// out of range.
     pub fn validate(&self) -> Result<(), SimError> {
         // NaN is rejected on purpose: !(NaN > 0.0) was true, so the run
         // duration guard must fail for NaN as well as for zero or negatives.
         if self.duration_s <= 0.0 || self.duration_s.is_nan() {
             return Err(SimError::NonPositiveDuration(self.duration_s));
+        }
+        if !self.duration_s.is_finite() {
+            return Err(SimError::NonFiniteParameter {
+                name: "duration_s",
+                value: self.duration_s,
+            });
+        }
+        if self.duration_s > MAX_DURATION_S {
+            return Err(SimError::OutOfRangeParameter {
+                name: "duration_s",
+                value: self.duration_s,
+                min: 0.0,
+                max: MAX_DURATION_S,
+            });
         }
         self.to_sim_config().validate()
     }
@@ -338,6 +358,104 @@ mod tests {
         };
         cfg.validate()
             .expect("a normal positive duration is accepted");
+    }
+
+    #[test]
+    fn validation_rejects_a_non_finite_or_over_cap_duration_with_a_named_error() {
+        // Regression: JSON `1e999` parses to `inf`, which `duration_s <= 0.0`
+        // waves through and `(inf / DT).round() as usize` then saturates to
+        // `usize::MAX`. The three bad classes each fail with their own error,
+        // and each names the field.
+        let infinite = ScenarioConfig {
+            duration_s: f64::INFINITY,
+            ..Default::default()
+        };
+        assert!(matches!(
+            infinite.validate(),
+            Err(SimError::NonFiniteParameter {
+                name: "duration_s",
+                ..
+            })
+        ));
+        // The Display message is what the wasm and PyO3 boundaries surface.
+        assert_eq!(
+            infinite.validate().unwrap_err().to_string(),
+            "duration_s must be finite, got inf"
+        );
+
+        let not_a_number = ScenarioConfig {
+            duration_s: f64::NAN,
+            ..Default::default()
+        };
+        assert!(matches!(
+            not_a_number.validate(),
+            Err(SimError::NonPositiveDuration(_))
+        ));
+
+        let over_cap = ScenarioConfig {
+            duration_s: MAX_DURATION_S + 0.1,
+            ..Default::default()
+        };
+        assert!(matches!(
+            over_cap.validate(),
+            Err(SimError::OutOfRangeParameter {
+                name: "duration_s",
+                value,
+                max,
+                ..
+            }) if value == MAX_DURATION_S + 0.1 && max == MAX_DURATION_S
+        ));
+        assert_eq!(
+            over_cap.validate().unwrap_err().to_string(),
+            "duration_s must be in [0, 900], got 900.1"
+        );
+
+        // The cap itself is accepted.
+        ScenarioConfig {
+            duration_s: MAX_DURATION_S,
+            ..Default::default()
+        }
+        .validate()
+        .expect("the cap itself is in range");
+    }
+
+    #[test]
+    fn validation_rejects_a_non_finite_scenario_scalar_with_a_named_error() {
+        // The delegated half: a scenario that survives the duration check can
+        // still carry JSON `1e999` in any other knob.
+        let cfg = ScenarioConfig {
+            takeoff_altitude: f64::INFINITY,
+            ..Default::default()
+        };
+        assert!(matches!(
+            cfg.validate(),
+            Err(SimError::NonFiniteParameter {
+                name: "takeoff_altitude",
+                ..
+            })
+        ));
+        let cfg = ScenarioConfig {
+            gps_velocity_noise: f64::NAN,
+            ..Default::default()
+        };
+        assert!(matches!(
+            cfg.validate(),
+            Err(SimError::NonFiniteParameter {
+                name: "gps_velocity_noise",
+                ..
+            })
+        ));
+        let cfg = ScenarioConfig {
+            wind_steady_ned: [f64::INFINITY, 0.0, 0.0],
+            ..Default::default()
+        };
+        assert!(matches!(
+            cfg.validate(),
+            Err(SimError::NonFiniteParameter {
+                name: "wind_steady_ned",
+                ..
+            })
+        ));
     }
 
     #[test]

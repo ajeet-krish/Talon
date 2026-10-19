@@ -61,11 +61,18 @@ fn optional_f64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<f64>> {
     }
 }
 
-/// The message for a negative margin, or `None` when the margin is acceptable.
+/// The message for an unacceptable margin, or `None` when the margin is acceptable.
 ///
 /// Kept pure so the message the Python tests match on is testable without an
-/// initialized interpreter.
+/// initialized interpreter. Finiteness is checked first: NaN fails `< 0.0`,
+/// so without it a NaN margin would reach the geometry unchallenged, and
+/// `+inf` must be reported as non-finite rather than mislabeled as negative.
 fn margin_error(clearance_margin: f64) -> Option<String> {
+    if !clearance_margin.is_finite() {
+        return Some(format!(
+            "clearance_margin must be finite, got {clearance_margin}"
+        ));
+    }
     (clearance_margin < 0.0)
         .then(|| format!("clearance_margin must be non-negative, got {clearance_margin}"))
 }
@@ -196,5 +203,16 @@ mod tests {
         let message = margin_error(-1.0).expect("a negative margin is an error");
         assert!(message.contains("non-negative"), "{message}");
         assert!(message.contains("-1"), "{message}");
+    }
+
+    #[test]
+    fn a_non_finite_margin_is_rejected_as_non_finite() {
+        // NaN fails `< 0.0`, so the negativity check alone would wave it
+        // through into the geometry; `+inf` must not read as negative either.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let message = margin_error(bad).expect("a non-finite margin is an error");
+            assert!(message.contains("finite"), "{message}");
+            assert!(!message.contains("non-negative"), "{message}");
+        }
     }
 }

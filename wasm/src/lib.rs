@@ -622,4 +622,29 @@ mod tests {
         let parsed = ScenarioConfig::from_json(r#"{"id":"x","duration_s":0.0}"#).unwrap();
         assert!(parsed.validate().is_err());
     }
+
+    #[test]
+    fn a_json_run_duration_cannot_saturate_the_step_count() {
+        // Regression for the verified failure: a duration far above the cap
+        // parses to a finite f64 (`1e308` is inside f64 range) and the old
+        // `duration_s <= 0.0` guard waved it through, while `Session::new`
+        // computed `(duration / DT).round() as usize`, saturating
+        // `total_steps` to `usize::MAX`. The boundary message is the Display
+        // string the page shows.
+        let parsed = ScenarioConfig::from_json(r#"{"id":"x","duration_s":1e308}"#).unwrap();
+        assert_eq!(parsed.duration_s, 1e308);
+        assert!(matches!(
+            parsed.validate(),
+            Err(talon_core::sim::SimError::OutOfRangeParameter {
+                name: "duration_s",
+                ..
+            })
+        ));
+        // The literal `1e999` overflows f64, and serde refuses it outright,
+        // before any config or step count exists.
+        let err = ScenarioConfig::from_json(r#"{"id":"x","duration_s":1e999}"#)
+            .expect_err("an overflowing literal must not parse")
+            .to_string();
+        assert!(err.contains("number out of range"), "{err}");
+    }
 }
