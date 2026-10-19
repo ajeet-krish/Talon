@@ -157,7 +157,12 @@ impl Default for VehicleParams {
 // ---------------------------------------------------------------------------
 
 /// High-level autopilot mission phase.
+///
+/// The `ts-export` derive (D23, Phase 5c) mirrors this into
+/// `src/types/generated/talon_core.ts`; serde's lowercase rename is what the
+/// generated string union carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum FlightPhase {
     Idle,
@@ -192,6 +197,7 @@ impl FlightPhase {
 /// vehicle is within `radius` of `position` in the north-east plane. Altitude is
 /// handled by the guidance channel, not the acceptance test.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 pub struct Waypoint {
     pub position: Arr3,
     pub speed: f64,
@@ -224,6 +230,7 @@ impl Default for Waypoint {
 
 /// Spherical keep-out zone (schema 1.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 pub struct Obstacle {
     pub id: String,
     pub center_ned: Arr3,
@@ -236,11 +243,16 @@ pub struct Obstacle {
 
 /// Per-document metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 pub struct FlightMeta {
     pub scenario: String,
+    /// JSON number, not bigint: seeds are ordinary doubles in the schema.
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub seed: u64,
     pub schema_version: String,
     pub generated_utc: String,
+    /// JSON number, not bigint: the count is a plain sample total on the wire.
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub sample_count: usize,
     pub duration_s: f64,
     pub dt: f64,
@@ -252,6 +264,7 @@ pub type PhaseEvent = (f64, FlightPhase);
 
 /// One discrete autopilot event with its guard outcome.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 pub struct EventLogEntry {
     pub time: f64,
     pub event: String,
@@ -263,6 +276,7 @@ pub struct EventLogEntry {
 /// One full flight document. Arrays are per sample at the uniform rate in
 /// `meta.dt` unless noted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 pub struct FlightData {
     pub meta: FlightMeta,
     pub time_s: Vec<f64>,

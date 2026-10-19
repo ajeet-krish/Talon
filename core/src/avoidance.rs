@@ -113,16 +113,21 @@ impl std::error::Error for AvoidanceError {}
 /// Serializable, and every field has a default, so a scenario can turn the law
 /// on with `"avoidance": {"enabled": true}` and inherit the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct AvoidanceConfig {
     /// Master switch. Off (the default) means the law is never consulted, so a
     /// run with zones and the switch off is identical to one without zones.
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub enabled: bool,
     /// Surface clearance the law plans to keep from a zone (m).
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub clearance_margin_m: f64,
     /// Lookahead time ahead of the vehicle at its ground speed (s).
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub lookahead_s: f64,
     /// Standoff beyond radius + margin for a bypass point (m).
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub detour_buffer_m: f64,
 }
 

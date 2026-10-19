@@ -56,47 +56,69 @@ fn default_battery_soc() -> f64 {
 }
 
 /// One runnable scenario.
+///
+/// Every field but `id` carries a serde default, so each is emitted as an
+/// optional TypeScript field via `ts(as = "Option<_>", optional)` (ts-rs 12
+/// requires an `Option` to mark a field optional; `_` is the field's own type).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 pub struct ScenarioConfig {
     /// Stable id, also written to `meta.scenario`.
     pub id: String,
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub label: String,
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub blurb: String,
     /// Sim seconds of main-loop time, excluding the convergence pre-roll.
     #[serde(default = "default_duration")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub duration_s: f64,
     #[serde(default = "default_takeoff_altitude")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub takeoff_altitude: f64,
     #[serde(default = "default_start_position")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub start_position_ned: Arr3,
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub waypoints: Vec<Waypoint>,
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub obstacles: Vec<Obstacle>,
     /// Reactive avoidance tuning. Off unless a scenario asks for it, so zones
     /// alone do not change how a planned path is flown.
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub avoidance: AvoidanceConfig,
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub wind_sigma: [f64; 3],
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub wind_steady_ned: Arr3,
     #[serde(default = "default_battery_soc")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub battery_initial_soc: f64,
     #[serde(default = "default_gps_position_noise")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub gps_position_noise: f64,
     #[serde(default = "default_gps_position_noise_vertical")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub gps_position_noise_vertical: f64,
     #[serde(default = "default_gps_velocity_noise")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub gps_velocity_noise: f64,
     #[serde(default = "default_cruise_hold_s")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub cruise_hold_s: f64,
     #[serde(default = "default_seed")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub seed: u64,
     /// Queue arm and takeoff at t = 0. Every FlightLab scenario does.
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<_>", optional))]
     pub auto_arm: bool,
 }
 

@@ -61,6 +61,14 @@ jobs:
         # The wasm binding tests run natively; no wasm target needed here.
         run: cargo test --workspace
 
+      - name: TypeScript mirrors are current
+        # Regenerate src/types/generated/talon_core.ts from the Rust types and
+        # fail on a diff, so the committed mirror can never drift from the
+        # schema source of truth (D23, Phase 5c).
+        run: |
+          ./scripts/gen_types.sh
+          git diff --exit-code -- src/types/generated
+
       - name: Build the talon._core extension
         run: ./bindings/build.sh
 
