@@ -2,6 +2,102 @@
 
 Last updated: 2026-10-18
 
+## Reactive avoidance, native (Phase 9a, 2026-10-18)
+
+Scope: `core/src/avoidance.rs` (new: geometry, the reactive law, 23 unit
+tests), `core/src/lib.rs` (module registration), `core/src/sim.rs` (`SimConfig`
+gains `obstacles` and `avoidance`, the WAYPOINT arm substitutes the guidance
+target, the result gains the two validation numbers, five closed-loop tests),
+`core/src/scenario.rs` (`avoidance` block, projection, two tests),
+`wasm/src/lib.rs` (summary fields, one JSON-scenario test), and the rebuilt
+`public/wasm-rust/talon_core_bg.wasm`.
+
+Verdict: PASS. The law is exercised closed loop, and the idle path is proved
+bit-identical rather than argued.
+
+### Correctness
+
+- PASS: geometry parity. The ported functions are pinned by the same cases as
+  `python/tests/test_avoidance.py`: centre on the leg, off it, clamped to both
+  endpoints, a degenerate leg, clear against penetrating, and the near-miss
+  that a 1 m margin catches (1.5 m lateral against a 1 m sphere). The
+  detour point is asserted to sit `radius + margin + buffer` from the centre
+  and to hold the leg's altitude, and the on-leg case is asserted to step
+  perpendicular.
+- PASS: `plan_avoidance_mission` inserts exactly one detour per threatened
+  leg, none on a clear leg, and returns a copy for a single waypoint, matching
+  the Python contract it replaces in 9b.
+- PASS: the lookahead scales with ground speed and is floored (0 m/s gives
+  2 m, 5 m/s gives 15 m at the default 3 s), so a hover still reacts.
+- PASS: the law is stateful in one thing only, the latch, and the directive is
+  otherwise a pure function of state, leg, and zones, so a run is reproducible.
+  `the_same_seed_reproduces_the_same_flight` still passes.
+- PASS: the latch cannot chatter. Latching requires the zone to be more than
+  2 m ahead and releasing requires the vehicle level with the zone or at its
+  bypass inside that band, so the two sets are disjoint in distance. A test
+  that walks a two-zone leg asserts exactly two activations, none spurious.
+- PASS: the law never releases inside the margin. The release is gated on the
+  measured clearance, and the case of a position 2 m from the centre of a 4 m
+  zone (clearance minus 2 m) is asserted to stay latched.
+- PASS: a latch cannot outlive its leg. A new active waypoint index retires it,
+  and so does a phase that is not WAYPOINT, both asserted.
+- PASS: closed loop, a mission that cuts straight across a 4 m zone with the
+  law on reaches every waypoint, lands, takes one bypass, and holds 3.24 m of
+  clearance against the 2 m margin while the same mission with the law off
+  breaches the zone (clearance minus 1.04 m). The control matters: it shows
+  the clearance is the law's doing and not a property of the path.
+- PASS: validity. A negative margin, buffer, or lookahead is rejected at
+  construction with a typed error rather than silently clamped, and the
+  scenario path rejects it before the run starts.
+
+### Regression safety
+
+- PASS: `zones_alone_do_not_change_the_flown_path` compares truth position
+  histories sample for sample between a run with zones and a run without them,
+  both with the law off, and asserts they are identical. The frozen recordings
+  and the four shipped live configs cannot move because this phase exists.
+- PASS: `cargo test --workspace` is 210 core, 12 wasm, 2 binding tests, up from
+  181, 11, 2. The 29 new tests are the 23 in `avoidance.rs`, 5 closed-loop in
+  `sim.rs`, and 1 in `scenario.rs`, plus the extended summary test.
+- PASS: the Python suite is untouched at 186 pass, run against the rebuilt
+  extension, since the binding surface did not change. The Python planner still
+  owns the offline detour for now (9b collapses it).
+- PASS: only `public/wasm-rust/talon_core_bg.wasm` changed when the bundle was
+  rebuilt; `talon_core.js` and the `.d.ts` files are byte-identical, so the
+  exported surface is unchanged and the page's hand-declared interface still
+  matches (the typecheck confirms it).
+- PASS: the field offsets in `SAMPLE_STRIDE` are untouched. The new numbers
+  are reported on the summary and the result, not in the streamed sample
+  block, so `src/live/stream.ts` and the stride assertion are unaffected.
+
+### Conventions
+
+- PASS: no em dashes, double hyphens, or dash equivalents in any new source,
+  test, or doc.
+- PASS: Rust conventions held: snake_case functions, PascalCase types,
+  SCREAMING_SNAKE constants, doc comments on every public item, and every
+  transcendental call routed through `math` (`hypot`) rather than the platform
+  library, so native and wasm agree bit for bit.
+- PASS: no autopilot logic outside `core/`: the loop only calls the law and
+  substitutes the target; the wasm crate only reports what the core computed.
+
+### Safety and physical limits
+
+- PASS: the law works on the estimated state, the same state the rest of the
+  loop flies on, and the reported clearance is measured on the truth
+  trajectory, so a good-looking number cannot be bought with a wishful
+  estimate.
+- PASS: the bypass standoff includes a 0.5 m buffer beyond `radius + margin`,
+  which covers the acceptance radius and ordinary tracking error, and the
+  closed-loop run shows the achieved clearance landing above the margin rather
+  than on it.
+- RESIDUAL RISK: the release radius and the standoff buffer are heuristics
+  (half the standoff, floored at 2 m). They are documented in the module and
+  covered by two closed-loop scenarios, but a mission that pins a zone hard
+  against a waypoint, or a zone wider than the detour reach, is not covered by
+  a test and is not claimed to work. Multiple zones abreast of each other are
+  handled sequentially, not by a single pre-planned detour.
+
 ## Altitude legibility in the live scene (Phase 7, 2026-10-18)
 
 Scope: `src/live/view.ts` (new `AltitudeTick`, `niceStep`, `missionAltitudes`,

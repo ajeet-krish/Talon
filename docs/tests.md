@@ -2,6 +2,81 @@
 
 Last updated: 2026-10-18
 
+## Reactive avoidance, native (Phase 9a, 2026-10-18)
+
+| Suite | Command | Result |
+|-------|---------|--------|
+| Rust core (cargo) | `cargo test -p talon-core` | 210 pass (was 181) |
+| Wasm binding (cargo) | `cargo test -p talon-wasm` | 12 pass (was 11) |
+| PyO3 binding (cargo) | `cargo test -p talon-py` | 2 pass |
+| Python harness (pytest) | `uv run pytest python/tests/ -q` | 186 pass |
+| Web unit tests (vitest) | `npm test` | 131 pass (10 files) |
+| Typecheck + production build | `npm run build` | clean |
+| Live wasm smoke test | `npm run smoke:wasm` | all checks pass, 4 of 4 configs |
+| Wasm bundle rebuild | `./wasm/build.sh` | only `talon_core_bg.wasm` changed |
+
+The 29 new tests are 23 in `core/src/avoidance.rs`, 5 closed-loop in
+`core/src/sim.rs`, and 1 in `core/src/scenario.rs`. The Python suite and vitest
+counts are unchanged: the binding surface and the TypeScript layers were not
+touched, and the rebuilt wasm glue is byte-identical apart from the binary.
+
+### New core tests: geometry and the law (`core/src/avoidance.rs`, 23)
+
+- Geometry (11): the leg-to-zone distance for a centre on the leg, off it, and
+  clamped to each endpoint, plus the degenerate leg; the intersection test
+  clear, penetrating, and for the near miss a margin catches; the detour point
+  clear of the zone by exactly `radius + margin + buffer` and at the leg's
+  altitude; the on-leg case stepping perpendicular; `plan_avoidance_mission`
+  inserting one detour on a threatened leg, none on a clear one, and copying a
+  single waypoint; the minimum surface clearance over a trajectory, including
+  the empty-input cases; the signed surface clearance inside and outside.
+- Tuning (2): negative margin, buffer, and lookahead each rejected with their
+  own error; the lookahead floored at 2 m and scaling with ground speed.
+- The law (10): disabled never takes over; no zones means no law; a zone beyond
+  the lookahead is left alone and taken when it closes; a zone abreast of the
+  leg origin or past its end is not on the leg; a zone behind the vehicle is not
+  re-engaged; the latch holds on approach and releases beside the zone and
+  clear; the latch does not release inside the margin; a new waypoint retires
+  the latch; leaving the WAYPOINT phase clears it; several zones on one leg are
+  taken one after another, asserting exactly two activations.
+
+### New closed-loop tests (`core/src/sim.rs`, 5)
+
+- `zones_alone_do_not_change_the_flown_path`: truth histories with and without
+  zones are identical, sample for sample, with the law off. The frozen artifacts
+  are safe by construction.
+- `the_same_mission_without_the_law_flies_through_the_zone`: the planned path
+  breaches the zone (minimum clearance minus 1.04 m), so the next test's result
+  is attributable to the law.
+- `the_law_flies_around_the_zone_and_completes_the_mission`: one bypass taken,
+  the mission completes and lands, and the minimum truth clearance is 3.24 m
+  against the 2 m margin.
+- `the_law_clears_a_zone_on_a_later_leg`: the same, for a zone sitting on the
+  second leg rather than the first.
+- `negative_avoidance_tuning_is_rejected_at_construction`: typed error from
+  `SimRunner::new`.
+
+### New scenario and wasm tests
+
+- `core/src/scenario.rs`: the `avoidance` block absent yields the documented
+  disabled defaults; a partial block (`{"enabled": true}`) keeps the rest of
+  the defaults; and the projection carries the tuning and the zones through to
+  the runner.
+- `wasm/src/lib.rs`: a scenario JSON string with a straight-through mission and
+  the law on runs through `Session` and reports one or more activations, a
+  finite clearance of at least 2 m, and a completed mission. The existing
+  summary test now also asserts the no-zones case reports `null` clearance and
+  zero activations.
+
+### Bundle and boundary checks
+
+- The stride and the streamed sample layout are untouched, so the hand-mirrored
+  TypeScript decoder needed no change and the run view's stride assertion still
+  passes.
+- `./wasm/build.sh` reproduced the committed bundle with only
+  `talon_core_bg.wasm` differing, which is the expected consequence of a core
+  change with an unchanged exported surface.
+
 ## Altitude legibility in the live scene (Phase 7, 2026-10-18)
 
 | Suite | Command | Result |

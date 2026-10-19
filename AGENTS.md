@@ -1,6 +1,6 @@
 # Talon FlightLab
 
-Drone autopilot simulator: a Rust GNC core (RK4 dynamics, Dryden wind, cascaded PD, 15-state MEKF, NLGL guidance, waypoint mission, phase state machine, sensors, motors, and the SIL runner) that runs natively and in the browser through wasm-bindgen, with Python simulation and analysis tooling, and a React 19 + react-three-fiber web tool that replays, inspects, and flies live runs. The autopilot lives in `core/` and nowhere else: the browser (`wasm/`) and Python (`bindings/`, a PyO3 extension) are thin wrappers over it. The web app owns the repository root; the Python package, simulations, and tests live in `python/`.
+Drone autopilot simulator: a Rust GNC core (RK4 dynamics, Dryden wind, cascaded PD, 15-state MEKF, NLGL guidance, reactive obstacle avoidance, waypoint mission, phase state machine, sensors, motors, and the SIL runner) that runs natively and in the browser through wasm-bindgen, with Python simulation and analysis tooling, and a React 19 + react-three-fiber web tool that replays, inspects, and flies live runs. The autopilot lives in `core/` and nowhere else: the browser (`wasm/`) and Python (`bindings/`, a PyO3 extension) are thin wrappers over it. The web app owns the repository root; the Python package, simulations, and tests live in `python/`.
 
 ## Quick Commands
 
@@ -39,7 +39,7 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 ## Project Map
 
 - `src/`: web app source. `views/` (Replay, Telemetry, Metrics, Videos, Run), `components/` (scene, live, charts, ui), `live/` (engine loader, sample recorder, pacer, display geometry, thin LiveSim seam), `utils/` (pure), `store/` (Zustand), `data/` (scenario + recording + live-run metadata), `hooks/`.
-- `core/src/`: the Rust autopilot, `talon-core`. `sim.rs` (SIL runner), `scenario.rs` (browser config), `export.rs` (schema 1.1 document), `dynamics.rs`, `wind.rs`, `controller.rs`, `ekf.rs`, `guidance.rs`, `mission.rs`, `state_machine.rs`, `sensors.rs`, `motors.rs`, `battery.rs`, `rng.rs`, `math.rs`, `types.rs`, `constants.rs`.
+- `core/src/`: the Rust autopilot, `talon-core`. `sim.rs` (SIL runner), `scenario.rs` (browser config), `export.rs` (schema 1.1 document), `dynamics.rs`, `wind.rs`, `controller.rs`, `ekf.rs`, `guidance.rs`, `avoidance.rs` (keep-out zones, reactive law), `mission.rs`, `state_machine.rs`, `sensors.rs`, `motors.rs`, `battery.rs`, `rng.rs`, `math.rs`, `types.rs`, `constants.rs`.
 - `wasm/`: wasm-bindgen crate exposing the stepping `Session` to the browser (`src/lib.rs`), built by `build.sh` into `public/wasm-rust/`.
 - `bindings/`: PyO3 crate `talon-py` publishing the `talon._core` extension module over `talon-core`, built by `build.sh` into `python/talon/`.
 - `fixtures/`: Python-generated parity fixtures for the live-run tests (committed).
@@ -64,7 +64,8 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 | Phase 6 | GCS shell with live telemetry and teaching captions | Complete |
 | Phase 7 | Altitude legibility in the scene | Complete |
 | Phase 8 | Mission authoring (waypoints, wind, faults) | Not started |
-| Phase 9 | Reactive avoidance in Rust, with validation | Not started |
+| Phase 9a | Reactive avoidance in Rust: geometry, the law, loop wiring, tests | Complete |
+| Phase 9b | One implementation (Python delegates to `_core`) + a browser demo config | Not started |
 
 ## Deep Docs
 

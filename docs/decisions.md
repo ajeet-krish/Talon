@@ -674,10 +674,87 @@ automated; they were reasoned about from the mission scale and the default
 frame distance, and a human still has to look at the page. This is recorded as
 a residual risk rather than papered over.
 
+## Reactive avoidance, native (Phase 9a, 2026-10-18)
+
+### D33: Avoidance is a core layer, and the offline planner becomes mission planning
+
+**Decision.** `core/src/avoidance.rs` holds the avoidance arithmetic:
+`leg_obstacle_distance`, `leg_intersects_obstacle`, `compute_detour_point`,
+`plan_avoidance_mission`, `min_surface_clearance`, and the reactive law
+`ReactiveAvoidance`. The loop consults the law during the WAYPOINT phase only,
+and the directive it returns replaces the guidance target for that control
+tick; the mission's waypoint bookkeeping, acceptance radius, and the phase
+machine are untouched. `SimConfig` gained `obstacles` and `avoidance`, fed from
+the scenario's existing `obstacles` list plus a new optional `avoidance` block,
+and the law is off by default. The run result and the live summary report
+`min_obstacle_clearance_m`, measured on the truth trajectory rather than on the
+estimate the law steers with, and `avoidance_activations`.
+
+**Rationale.** The standing requirement is that the autopilot, guidance, and
+avoidance be primarily native. Until this phase the core carried an `Obstacle`
+type that nothing in the loop read: the only avoidance in the tree was an
+offline Python planner, run before the flight, whose detoured waypoints the
+exporter bakes into the browser configs. The vehicle therefore flew a
+pre-computed path and never avoided anything itself. Putting the law beside
+guidance also means it acts on the same state estimate as the rest of the loop,
+so its behaviour under estimator error and wind is the behaviour of the real
+system rather than a re-simulation.
+
+Off by default is what protects the frozen artifacts: the four shipped live
+configs and every recorded run keep their paths bit for bit, which
+`zones_alone_do_not_change_the_flown_path` asserts by comparing truth histories
+with the zones present and absent while the law is off.
+
+**Trade-off.** Two implementations coexist for one phase: the Python planner
+still owns the offline detour that the recorded obstacle-field run used. The
+next sub-phase collapses them by making the Python module delegate to `_core`.
+The law is also deliberately narrower than a general planner: one latched
+bypass at a time, horizontal decisions at the leg's altitude, no vertical
+escape. Zones abreast of each other on one leg are taken sequentially rather
+than with a single pre-planned detour, which is more than the offline planner's
+v1 manages, but a zone wider than the detour reach, or a corridor of zones, is
+not solved and is not claimed to be.
+
+### D34: The law latches one bypass, releases on an along-track band, and never releases inside the margin
+
+**Decision.** The law steers a threatened leg by substituting a bypass point
+for the waypoint. A zone counts as a threat when its horizontal keep-out shell
+(`radius + clearance_margin`) covers the leg, its abreast point lies inside the
+leg, and it sits between 2 m and the lookahead ahead of the vehicle, where the
+lookahead is the lookahead time times the ground speed with a 2 m floor. The
+bypass is the closest-approach point stepped radially away from the zone by
+`radius + margin + 0.5 m`, at the leg's altitude. The latch is given up when
+the clearance has recovered to the margin and either the vehicle has drawn
+level with the zone or it is within a release radius of its bypass. A new
+active waypoint index retires the latch, and so does leaving the WAYPOINT
+phase.
+
+**Rationale.** The lookahead has to grow with ground speed or the law commits
+too late at cruise and the deviation reads as a swerve; the floor keeps it
+working at a hover. The release needed the hygiene. "Passed the zone" and
+"reached the bypass" each fail alone: a vehicle flying to a bypass arrives at
+the same along-track coordinate as the closest approach and cannot pass it
+while it is still being steered at, while a release that only checks
+"past the zone" lets the vehicle turn back into a zone it has not cleared. The
+along-track band makes latching and releasing disjoint in distance, so the law
+cannot chatter, and the clearance gate makes it impossible to let go while
+inside the margin. Flown closed loop on a straight-through mission against a
+4 m zone with a 2 m margin, the law took one bypass and held 3.24 m of
+clearance while still reaching every waypoint.
+
+**Trade-off.** The bypass stands off by a fixed buffer rather than a
+time-optimal path, so the detour is slightly wider than it strictly needs to
+be, and the release radius is a heuristic (half the standoff, floored at 2 m)
+chosen so that a bypass guidance smooths early still clears. Both are stated in
+the module rather than tuned silently, and the closed-loop tests are what keep
+them honest.
+
 ## Open decisions (resolved at Phase 4)
 
-- Acceptance metrics for v2 reactive avoidance: still open (no live
-  reactive avoidance in v2; the detour planner remains pre-flight).
+- Acceptance metrics for v2 reactive avoidance: resolved by D33 and D34 (the
+  law is native, in the loop, and reports the clearance it achieved against the
+  margin it was given). The offline detour planner remains as mission planning
+  and delegates to the same geometry in 9b.
 - WASM boundary: resolved by D17 (kernel in WASM, glue in TypeScript).
 - FlightDataSource reuse: resolved by keeping the recorded whole-history
   `FlightData` path and having the live run emit the same `FlightData`

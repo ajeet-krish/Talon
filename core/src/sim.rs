@@ -30,6 +30,9 @@
 use std::collections::VecDeque;
 use std::fmt;
 
+use crate::avoidance::{
+    min_surface_clearance, AvoidanceConfig, AvoidanceError, MissionLeg, ReactiveAvoidance,
+};
 use crate::battery::{BatteryConfig, BatteryError, BatteryModel, BatteryState};
 use crate::constants::{DT, DT_CONTROL, DT_GPS};
 use crate::controller::CascadedController;
@@ -44,7 +47,7 @@ use crate::sensors::{
 };
 use crate::state_machine::{FlightPhaseMachine, PhaseError, Telemetry};
 use crate::types::{
-    to_arr3, to_vec3, Arr3, EventLogEntry, FlightPhase, State, VehicleParams, Waypoint,
+    to_arr3, to_vec3, Arr3, EventLogEntry, FlightPhase, Obstacle, State, VehicleParams, Waypoint,
 };
 use crate::wind::DrydenWind;
 
@@ -84,6 +87,12 @@ pub struct SimConfig {
     pub gps_velocity_noise: f64,
     /// Hold time in CRUISE before releasing the mission (s).
     pub cruise_hold_s: f64,
+    /// Spherical keep-out zones (schema 1.1). Empty means the law has nothing
+    /// to avoid and the run is identical to one flown without zones.
+    pub obstacles: Vec<Obstacle>,
+    /// Reactive avoidance tuning. Disabled by default, so adding zones to a
+    /// scenario is inert until the scenario asks for the law.
+    pub avoidance: AvoidanceConfig,
     pub seed: u64,
 }
 
@@ -100,6 +109,8 @@ impl Default for SimConfig {
             gps_position_noise_vertical: 0.5,
             gps_velocity_noise: 0.05,
             cruise_hold_s: 2.0,
+            obstacles: Vec::new(),
+            avoidance: AvoidanceConfig::default(),
             seed: 20_261_012,
         }
     }
@@ -111,6 +122,7 @@ impl SimConfig {
         if !(self.takeoff_altitude > 0.0) {
             return Err(SimError::NonPositiveTakeoffAltitude(self.takeoff_altitude));
         }
+        self.avoidance.validate()?;
         Ok(())
     }
 }
@@ -132,6 +144,8 @@ pub enum SimError {
     Mission(MissionError),
     /// The takeoff altitude was rejected by the phase machine.
     Phase(PhaseError),
+    /// The avoidance tuning was invalid.
+    Avoidance(AvoidanceError),
 }
 
 impl fmt::Display for SimError {
@@ -148,6 +162,7 @@ impl fmt::Display for SimError {
             Self::Motor(e) => write!(f, "motor: {e}"),
             Self::Mission(e) => write!(f, "mission: {e}"),
             Self::Phase(e) => write!(f, "phase: {e}"),
+            Self::Avoidance(e) => write!(f, "avoidance: {e}"),
         }
     }
 }
@@ -172,6 +187,11 @@ impl From<MissionError> for SimError {
 impl From<PhaseError> for SimError {
     fn from(e: PhaseError) -> Self {
         Self::Phase(e)
+    }
+}
+impl From<AvoidanceError> for SimError {
+    fn from(e: AvoidanceError) -> Self {
+        Self::Avoidance(e)
     }
 }
 
@@ -232,6 +252,14 @@ pub struct SimResult {
     pub ekf_converged: bool,
     pub ekf_diverged: bool,
     pub duration_s: f64,
+    /// Closest surface clearance (m) the truth trajectory came to any keep-out
+    /// zone, or `f64::INFINITY` when the scenario had none. This is the
+    /// validation number: it is measured on the truth state, not the estimate
+    /// the law steers with.
+    pub min_obstacle_clearance_m: f64,
+    /// How many bypasses the reactive law took. Zero means it never left the
+    /// planned path.
+    pub avoidance_activations: u64,
 }
 
 impl SimResult {
@@ -273,6 +301,7 @@ pub struct SimRunner {
     params: VehicleParams,
     controller: CascadedController,
     guidance: NlglGuidance,
+    avoidance: ReactiveAvoidance,
     mission: Option<WaypointMission>,
     rtl_mission: Option<WaypointMission>,
 
@@ -386,6 +415,7 @@ impl SimRunner {
         let params = VehicleParams::default();
         let controller = CascadedController::with_defaults();
         let guidance = NlglGuidance::new(NlglConfig::default());
+        let avoidance = ReactiveAvoidance::new(config.avoidance);
 
         let mission = if config.waypoints.is_empty() {
             None
@@ -440,6 +470,7 @@ impl SimRunner {
             params,
             controller,
             guidance,
+            avoidance,
             mission,
             rtl_mission: None,
             truth,
@@ -1070,9 +1101,28 @@ impl SimRunner {
                     .mission
                     .as_ref()
                     .expect("WAYPOINT implies a mission");
-                let (v_des, diagnostics) =
-                    self.guidance
-                        .compute_mission(ekf_position, ekf_velocity, mission);
+                let mission_leg = MissionLeg {
+                    origin: mission.previous_point(ekf_position),
+                    waypoint: mission.active_waypoint().position,
+                    index: mission.active_index(),
+                };
+                // The law may substitute a bypass for the waypoint. With no
+                // zones, or with the law disabled, this returns the waypoint
+                // itself and the leg below is the mission's own leg, so the
+                // path is exactly what it was before avoidance existed.
+                let directive = self.avoidance.update(
+                    ekf_position,
+                    ekf_velocity,
+                    Some(mission_leg),
+                    &self.config.obstacles,
+                );
+                let target = directive.target.unwrap_or(mission_leg.waypoint);
+                let (v_des, diagnostics) = self.guidance.compute_leg(
+                    ekf_position,
+                    ekf_velocity,
+                    mission_leg.origin,
+                    target,
+                );
                 let leg = mission.active_index() as f64;
                 self.v_cmd = v_des;
                 self.reference = [
@@ -1233,6 +1283,11 @@ impl SimRunner {
             ekf_converged: self.ekf_converged,
             ekf_diverged: self.ekf_diverged,
             duration_s,
+            min_obstacle_clearance_m: min_surface_clearance(
+                &self.history_truth_pos,
+                &self.config.obstacles,
+            ),
+            avoidance_activations: self.avoidance.activations(),
         }
     }
 }
@@ -1709,5 +1764,135 @@ mod tests {
         for p in &result.truth_position {
             assert!(p[2] <= 1e-9, "truth z went below the ground plane: {p:?}");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Reactive avoidance, closed loop
+    // ------------------------------------------------------------------
+
+    fn north_zone() -> Obstacle {
+        Obstacle {
+            id: "obs_north".to_string(),
+            center_ned: [20.0, 3.0, -10.0],
+            radius_m: 4.0,
+        }
+    }
+
+    /// Two legs that cut straight across the north zone, which the offline
+    /// planner would have detoured before the run.
+    fn straight_through_config() -> SimConfig {
+        SimConfig {
+            waypoints: vec![
+                waypoint(40.0, 0.0, -10.0, 3.0),
+                waypoint(40.0, 30.0, -10.0, 3.0),
+            ],
+            obstacles: vec![north_zone()],
+            ..Default::default()
+        }
+    }
+
+    fn fly(cfg: SimConfig, duration_s: f64) -> SimResult {
+        let mut r = SimRunner::new(cfg).unwrap();
+        r.request_event("arm", None);
+        r.request_event("takeoff", None);
+        r.run(duration_s).unwrap()
+    }
+
+    #[test]
+    fn zones_alone_do_not_change_the_flown_path() {
+        // The idle guarantee: with the law off, adding zones to a scenario
+        // leaves the flight bit-identical, so the frozen runs and the four
+        // shipped live configs cannot move because avoidance now exists.
+        let with_zones = straight_through_config();
+        let without_zones = SimConfig {
+            obstacles: Vec::new(),
+            ..straight_through_config()
+        };
+        let a = fly(with_zones, 45.0);
+        let b = fly(without_zones, 45.0);
+        assert_eq!(a.truth_position, b.truth_position);
+        assert_eq!(a.avoidance_activations, 0);
+        // The breach is still measured and reported: zones are observed even
+        // when the law is not flying the detour.
+        assert!(a.min_obstacle_clearance_m.is_finite());
+        assert_eq!(b.min_obstacle_clearance_m, f64::INFINITY);
+    }
+
+    #[test]
+    fn the_same_mission_without_the_law_flies_through_the_zone() {
+        // The control for the test below: the planned path really does breach
+        // the zone, so the clearance the law achieves is the law's doing.
+        let result = fly(straight_through_config(), 45.0);
+        assert!(
+            result.min_obstacle_clearance_m < 0.0,
+            "the planned path should breach the zone, got {}",
+            result.min_obstacle_clearance_m
+        );
+    }
+
+    #[test]
+    fn the_law_flies_around_the_zone_and_completes_the_mission() {
+        let cfg = SimConfig {
+            avoidance: AvoidanceConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            ..straight_through_config()
+        };
+        let result = fly(cfg, 45.0);
+        assert!(
+            result.avoidance_activations >= 1,
+            "the law should have taken at least one bypass"
+        );
+        assert!(result.mission_complete, "the mission still finishes");
+        assert_eq!(result.final_phase(), FlightPhase::Land);
+        assert!(
+            result.min_obstacle_clearance_m >= 2.0,
+            "achieved clearance {} should hold the 2 m margin",
+            result.min_obstacle_clearance_m
+        );
+    }
+
+    #[test]
+    fn the_law_clears_a_zone_on_a_later_leg() {
+        // The second leg runs east along the 40 m line, so the zone sits on
+        // the leg that starts after the first one is reached.
+        let zone = Obstacle {
+            id: "obs_east".to_string(),
+            center_ned: [37.0, 15.0, -10.0],
+            radius_m: 3.5,
+        };
+        let cfg = SimConfig {
+            obstacles: vec![zone],
+            avoidance: AvoidanceConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            ..straight_through_config()
+        };
+        let result = fly(cfg, 45.0);
+        assert!(result.avoidance_activations >= 1);
+        assert!(result.mission_complete);
+        assert!(
+            result.min_obstacle_clearance_m >= 2.0,
+            "achieved clearance {} should hold the 2 m margin",
+            result.min_obstacle_clearance_m
+        );
+    }
+
+    #[test]
+    fn negative_avoidance_tuning_is_rejected_at_construction() {
+        let cfg = SimConfig {
+            avoidance: AvoidanceConfig {
+                enabled: true,
+                clearance_margin_m: -1.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(matches!(
+            SimRunner::new(cfg),
+            Err(SimError::Avoidance(AvoidanceError::NegativeClearanceMargin(_)))
+        ));
     }
 }

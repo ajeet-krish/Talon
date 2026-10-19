@@ -19,7 +19,7 @@
 //! their shape is unit tested natively with `cargo test -p talon-wasm`; only the
 //! thin `#[wasm_bindgen]` methods below need a browser.
 
-use serde_json::json;
+use serde_json::{json, Value};
 use talon_core::constants::DT;
 use talon_core::export;
 use talon_core::scenario::ScenarioConfig;
@@ -76,6 +76,12 @@ fn summary_json(result: &SimResult, steps_done: usize, total_steps: usize) -> St
         "final_truth_altitude_m": result.final_truth_altitude_m(),
         "ekf_converged": result.ekf_converged,
         "ekf_diverged": result.ekf_diverged,
+        "min_obstacle_clearance_m": if result.min_obstacle_clearance_m.is_finite() {
+            json!(result.min_obstacle_clearance_m)
+        } else {
+            Value::Null
+        },
+        "avoidance_activations": result.avoidance_activations,
         "steps_done": steps_done,
         "total_steps": total_steps,
     })
@@ -408,8 +414,42 @@ mod tests {
     }
 
     #[test]
-    fn the_summary_reports_the_mission_outcome() {
-        let config = waypoint_scenario();
+    fn a_json_scenario_with_the_law_on_flies_around_a_zone() {
+        // The browser path end to end: scenario JSON in, avoidance flown, the
+        // headline numbers out of the summary.
+        let json = r#"{
+            "id": "avoidance",
+            "duration_s": 45.0,
+            "auto_arm": true,
+            "waypoints": [
+                {"position": [40.0, 0.0, -10.0], "speed": 5.0, "heading": 0.0, "radius": 3.0},
+                {"position": [40.0, 30.0, -10.0], "speed": 5.0, "heading": 0.0, "radius": 3.0}
+            ],
+            "obstacles": [
+                {"id": "obs_north", "center_ned": [20.0, 3.0, -10.0], "radius_m": 4.0}
+            ],
+            "avoidance": {"enabled": true}
+        }"#;
+        let config = ScenarioConfig::from_json(json).unwrap();
+        let mut runner = prepared_runner(&config);
+        let steps = (config.duration_s / DT).round() as usize;
+        for i in 0..steps {
+            runner.step_once(i);
+        }
+        let result = runner.snapshot(runner.time());
+        let value: serde_json::Value =
+            serde_json::from_str(&summary_json(&result, steps, steps)).unwrap();
+        assert!(
+            value["avoidance_activations"].as_u64().unwrap() >= 1,
+            "summary: {value}"
+        );
+        let clearance = value["min_obstacle_clearance_m"].as_f64().unwrap();
+        assert!(clearance >= 2.0, "clearance {clearance}");
+        assert_eq!(value["mission_complete"], true);
+    }
+
+    #[test]
+    fn the_summary_reports_the_mission_outcome() {        let config = waypoint_scenario();
         let mut runner = prepared_runner(&config);
         let steps = (config.duration_s / DT).round() as usize;
         for i in 0..steps {
@@ -432,6 +472,10 @@ mod tests {
         assert_eq!(value["final_phase"].as_str().unwrap(), "idle");
         // Landed, so the final altitude is back on the ground.
         assert!(value["final_truth_altitude_m"].as_f64().unwrap().abs() < 0.05);
+        // No zones in this scenario, so the clearance is reported as null and
+        // the law never took a bypass.
+        assert!(value["min_obstacle_clearance_m"].is_null());
+        assert_eq!(value["avoidance_activations"], 0);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-18
 
-## Current-state snapshot (FlightLab Phase 7, complete)
+## Current-state snapshot (FlightLab Phase 9a, complete)
 
 Talon is a single-vehicle UAV GNC stack whose autopilot is one Rust library,
 `talon-core`, plus a Python analysis harness and a TypeScript flight tool.
@@ -30,7 +30,13 @@ Phase 6 gave the live run a ground-station shell: a scene framed from the
 mission, an instrument rail, strip charts, and per-phase teaching captions
 (D26, D27). Phase 7 made altitude legible in that scene: the pad carries a
 graduated ladder derived from the altitudes the mission flies, and the
-vehicle's plumb line is drawn at a constant on-screen width (D31).
+vehicle's plumb line is drawn at a constant on-screen width (D31). Phase 9a
+moved avoidance into the core: spherical keep-out zones and a reactive law
+(D33) that substitutes a bypass point for the waypoint while a leg is
+threatened (D34), with the clearance it achieved reported on the truth
+trajectory. It is off by default, so every existing path is unchanged; the
+offline detour planner remains as mission planning and collapses onto the same
+geometry in 9b.
 
 ### Repository layout
 
@@ -74,25 +80,43 @@ editable install additionally maps the `talon` package to `python/talon`.
 
 ### Obstacle avoidance pipeline
 
+Two layers share one geometry (`core/src/avoidance.rs`, and the Python module
+that delegates to it in 9b).
+
+Mission planning, offline, when a detour can be worked out in advance:
+
     CIRCUIT_WAYPOINTS (5-leg rectangle)
         |
         v
-    plan_avoidance_mission (talon.avoidance, pure Python)
-        |  inserts detour waypoints around SphericalObstacle keep-out zones
+    plan_avoidance_mission
+        |  inserts one detour waypoint per threatened leg
         v
-    augmented waypoint list (8 Waypoints)
+    augmented waypoint list (8 Waypoints) -> SILConfig.waypoints
         |
         v
-    SILConfig.waypoints -> SILRunner closed loop (EKF + NLGL + cascaded PD)
-        |
-        v
-    SILResult (truth_position, phase_timeline, obstacles, ...)
-        |
-        v
-    export_sil_result_json (schema 1.1, obstacles serialized as top-level key)
+    SILRunner closed loop -> SILResult -> export_sil_result_json (schema 1.1)
         |
         v
     src/ web app (R3F scene renders ObstacleField from the JSON)
+
+Reactive, in the loop, when the world is not known until the run (D33):
+
+    mission leg + position + velocity + obstacles
+        |
+        v
+    ReactiveAvoidance::update
+        |  threatened? -> latch a bypass point; else the waypoint
+        |  clear of it? -> release, back onto the waypoint
+        v
+    guidance target this tick -> NLGL compute_leg -> cascaded PD
+        |
+        v
+    SimResult.min_obstacle_clearance_m + avoidance_activations
+
+The law is a substitution at the guidance target, so mission bookkeeping,
+acceptance, and the phase machine see the mission they always saw. It is
+disabled unless a scenario asks for it, and the zone list it reads is the same
+`obstacles` array the document already carries.
 
 ### Module ownership
 
@@ -110,7 +134,7 @@ estimator and wind in a Python SIL run now come from the Rust `_core`.
 | Motors | `motors.rs` (lag + X mixer) | `motors.py` (harness) |
 | Sensors | `sensors.rs` (truth-side IMU/GPS) | `sensors.py` (harness) |
 | Guidance / mission | `guidance.rs` (NLGL), `mission.rs` | `guidance.py`, `mission.py` (harness) |
-| Obstacle avoidance | - (offline detours are planned in Python) | `avoidance.py` (detour planner, clearance) |
+| Obstacle avoidance | `avoidance.rs` (reactive law + geometry) | `avoidance.py` (offline detour planner, via `_core` in 9b) |
 | State machine / FDIR | `state_machine.rs` | `state_machine.py` (harness) |
 | SIL loop | `sim.rs` (pure stepper, no transport) | `mavlink_sil.py` + `mavlink_codec.py` (MAVLink edge) |
 | Battery | `battery.rs` | `battery.py` (harness) |
@@ -200,6 +224,7 @@ library compiled to wasm32; the page only steps it:
            derived flags: convergence / divergence (mirrors mavlink_sil)
            state machine + FDIR
            guidance: NLGL + waypoint mission
+           avoidance: reactive keep-out-zone law (off unless configured)
            controller: cascaded PD, 100 Hz ZOH
            motors: X mixer + first-order lag
            plant: RK4 + Dryden wind, ground clamp
@@ -323,4 +348,5 @@ lands), and that a paced 1x run tracks the wall clock without drift.
 | 6 | GCS shell with live telemetry and teaching captions | Complete |
 | 7 | Altitude legibility in the scene | Complete |
 | 8 | Mission authoring (waypoints, wind, faults) | Not started |
-| 9 | Reactive avoidance in Rust, with validation | Not started |
+| 9a | Reactive avoidance in Rust: geometry, the law, loop wiring, tests | Complete |
+| 9b | One implementation (Python delegates to `_core`) + a browser demo config | Not started |

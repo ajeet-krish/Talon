@@ -18,6 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::avoidance::AvoidanceConfig;
 use crate::sim::{SimConfig, SimError};
 use crate::types::{Arr3, Obstacle, Waypoint};
 
@@ -73,6 +74,10 @@ pub struct ScenarioConfig {
     pub waypoints: Vec<Waypoint>,
     #[serde(default)]
     pub obstacles: Vec<Obstacle>,
+    /// Reactive avoidance tuning. Off unless a scenario asks for it, so zones
+    /// alone do not change how a planned path is flown.
+    #[serde(default)]
+    pub avoidance: AvoidanceConfig,
     #[serde(default)]
     pub wind_sigma: [f64; 3],
     #[serde(default)]
@@ -109,6 +114,7 @@ impl Default for ScenarioConfig {
             start_position_ned: [0.0; 3],
             waypoints: Vec::new(),
             obstacles: Vec::new(),
+            avoidance: AvoidanceConfig::default(),
             wind_sigma: [0.0; 3],
             wind_steady_ned: [0.0; 3],
             battery_initial_soc: 1.0,
@@ -152,6 +158,8 @@ impl ScenarioConfig {
             gps_position_noise_vertical: self.gps_position_noise_vertical,
             gps_velocity_noise: self.gps_velocity_noise,
             cruise_hold_s: self.cruise_hold_s,
+            obstacles: self.obstacles.clone(),
+            avoidance: self.avoidance,
             seed: self.seed,
         }
     }
@@ -262,6 +270,26 @@ mod tests {
         assert_eq!(cfg.seed, 20_261_012);
         assert!(!cfg.auto_arm);
         assert!(cfg.waypoints.is_empty());
+        assert!(cfg.obstacles.is_empty());
+        // Avoidance is off unless a scenario asks for it.
+        assert!(!cfg.avoidance.enabled);
+    }
+
+    #[test]
+    fn the_avoidance_block_is_optional_and_may_be_partial() {
+        // Absent: the documented defaults, disabled.
+        let bare = ScenarioConfig::from_json(r#"{"id":"bare"}"#).unwrap();
+        assert_eq!(bare.avoidance, crate::avoidance::AvoidanceConfig::default());
+        // Only the switch: every other knob keeps its default.
+        let on = ScenarioConfig::from_json(r#"{"id":"on","avoidance":{"enabled":true}}"#).unwrap();
+        assert!(on.avoidance.enabled);
+        assert_eq!(on.avoidance.clearance_margin_m, 2.0);
+        assert_eq!(on.avoidance.lookahead_s, 3.0);
+        assert_eq!(on.avoidance.detour_buffer_m, crate::avoidance::DETOUR_BUFFER_M);
+        // And the projection carries both the zones and the tuning through.
+        let sim = on.to_sim_config();
+        assert!(sim.avoidance.enabled);
+        assert_eq!(sim.avoidance, on.avoidance);
     }
 
     #[test]
