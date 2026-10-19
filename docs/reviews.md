@@ -1,6 +1,6 @@
 # Talon Reviews
 
-Last updated: 2026-10-18
+Last updated: 2026-10-19
 
 ## One avoidance implementation (Phase 9b, 2026-10-18)
 
@@ -1166,3 +1166,388 @@ x.is_nan()`) and should grow `is_finite()` when the hardening pass lands; the
 security-relevant invariant is the truth table, not the shape of the
 expression. A test that reads generated artifacts from disk should use
 path-constant, repo-relative reads and fail closed, as this one does.
+
+### Phase 3 review (2026-10-19)
+
+Scope: the Python vs Rust parity harness, uncommitted at review time: new
+PyO3 boundary modules `bindings/src/{guidance,mission,motors,state_machine,
+sensors,battery}.rs`, edits to `bindings/src/convert.rs` and
+`bindings/src/lib.rs`, and the new pytest material
+`python/tests/parity_util.py` plus `python/tests/test_parity_{guidance,
+mission,motors,state_machine,sensors,battery}.py`. This closes the Medium
+finding from the full codebase review above (the six layers existing twice
+with no parity test pinning them). No source under `python/talon/` changed.
+
+Verdict: PASS. All four verification commands are green, every parity test
+runs both implementations, the 13 registered divergences are real,
+reproducible, and correctly attributed, and no frozen artifact moved. No
+blocking issues; one Medium and six Low notes below.
+
+- PASS: marshalling-only rule. The six new boundary modules contain no
+  autopilot arithmetic, clamping, thresholds, or physics: every computation
+  delegates to `talon-core` (`motors::motor_mixing` at bindings/src/motors.rs
+  :38, `BatteryModel::update` at bindings/src/battery.rs:245,
+  `FlightPhaseMachine::request` at bindings/src/state_machine.rs:172,
+  `NlglGuidance::compute_leg` at bindings/src/guidance.rs:284,
+  `WaypointMission::update` at bindings/src/mission.rs:140,
+  `SensorSuite::generate_imu` at bindings/src/sensors.rs:424). Config
+  defaults come from the core's `::default()` impls, not literals
+  (guidance.rs:57, battery.rs:75, sensors.rs:72, motors.rs:68). The edits to
+  `convert.rs` and `lib.rs` are conversion helpers and registration only.
+  The only duplicated logic is error text (Low findings below).
+- PASS: error text parity. Every verbatim message helper was compared
+  against the Python `raise` strings and matches for simple decimal values:
+  `time_const must be positive, got ...` (python/talon/motors.py:86 vs
+  bindings/src/motors.rs:32), `capacity_mah` / `hover_thrust_n must be
+  positive` (battery.py:42-46 vs battery.rs:38,45), `waypoints must be
+  non-empty` (mission.py:39 vs mission.rs:67 and the core Display at
+  core/src/mission.rs:28), `takeoff_altitude must be positive, got ...`
+  (state_machine.py:217-218 vs state_machine.rs:54). Rust `{:?}` float
+  formatting reproduces Python `str()` for `0.0`, `-0.0`, `-0.02`, `-1.0`;
+  the parity tests pin each message with `assert_same_error` plus an exact
+  string. The numpy repr messages cannot match and are handled honestly: the
+  non-finite `update` message (mission.py:99) is a registered divergence
+  pinned with a `match=` prefix rather than a verbatim claim; the shape-error
+  family (`must have shape (3,), got (2,)` vs `must have 3 elements, got 2`)
+  is claimed by neither side (Low).
+- PASS: divergence registry honesty. All 13 `DIVERGENCES` entries were
+  reproduced against both sources and each is correctly attributed:
+  motors.py:100 raises on `dt < 0` while core/src/motors.rs:153 clamps,
+  battery.py:98 vs core/src/battery.rs:167 the same way, mission.py:99
+  raises where core/src/mission.rs:112-113 returns early,
+  sensors.py:90/178 raise where core/src/sensors.rs:126/212 return zeros,
+  and the three NaN entries name the Python-side acceptance bugs (a `<= 0.0`
+  guard accepts NaN) while the Rust core rejects explicitly
+  (core/src/motors.rs:129, battery.rs:88-91, state_machine.rs:206). The
+  three snapshot entries follow the documented `Ekf.nominal` policy. No
+  entry hides a bug in the Rust core, and none of the Python-fixable entries
+  could be closed without touching frozen Python source, so registering them
+  is the honest choice. Completeness gap (Medium below): two dt-NaN edges
+  are genuine divergences the registry does not carry.
+- PASS: test quality. Every parity test compares Python module against
+  `_core` (cross-side `assert_same_error` / `assert_near` / `assert_exact`
+  in each); the only one-sided tests are the two labeled `rust_only` access
+  tests and the deliberate per-side RNG drift bounds (decision D18), each
+  with a comment saying why. Tolerances are justified: 1e-12 rel and abs
+  covers the platform-libm vs `libm` crate ULP gap while an algorithmic
+  error passes it by orders of magnitude, and `assert_exact` compares
+  `float.hex()` for copies and closed forms. `math.isclose` fails on NaN, so
+  a NaN-vs-NaN pair cannot false-green. Boundary discipline is strong: exact
+  threshold and one step inside for every state-machine guard
+  (test_parity_state_machine.py:140-203), mission acceptance radius (2.0
+  exact, 1.5 inside, 2.5 outside), battery 0.20 / 0.19 / 0.10 / 0.099, and
+  the guidance behind-A trigger at exactly -0.7071. Parametrized cases carry
+  descriptive ids.
+- PASS: verification, all from the repository root. `cargo fmt --all --
+  --check` exit 0, no output. `cargo clippy --workspace --all-targets --
+  -D warnings` exit 0, no warnings. `cargo test -p talon-py` 12 passed, 0
+  failed (9 new binding unit tests plus the 3 pre-existing). `TALON_REQUIRE
+  _CORE=1 uv run pytest python/tests/ -q` 366 passed in 8.04 s against the
+  186-test baseline in docs/tests.md:438, so 180 new parity tests, 0
+  skipped, 0 failed.
+- PASS: frozen artifacts. `git status --porcelain` shows only
+  `bindings/src/convert.rs` and `bindings/src/lib.rs` modified and the
+  eleven new files in `bindings/src/` and `python/tests/`; nothing under
+  `python/talon/`, `public/`, or `docs/videos/`. `git diff --stat` is 2
+  files, 75 insertions, 1 deletion. The lone stray, `eagle-shield.svg`, is
+  the pre-existing untracked file already noted in the Phase 1 review.
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Medium | python/tests/parity_util.py:96-164 | Registry incomplete: `dt = NaN` is a genuine unregistered divergence in the same class as the registered negative-dt entries. Python `MotorModel.step` guards `dt < 0.0` only (python/talon/motors.py:100), so a NaN dt produces NaN forces, while core/src/motors.rs:153 clamps NaN dt to zero and leaves the forces unchanged. Likewise Python `BatteryModel.update` (python/talon/battery.py:98,105) floors the state of charge to 0.0 through `max(0.0, nan)` where core/src/battery.rs:167 leaves it unchanged. The registry docstring claims to register the API-edge behaviours that genuinely differ; these two counterexamples are reproducible and cheap to pin. | Add `motors.step_nan_dt` and `battery.update_nan_dt` entries with evidence, and one pin each mirroring the existing negative-dt divergence tests |
+| Low | bindings/src/mission.rs:64-68 | `no_waypoints_error` re-implements the empty-list validation whose message the core already emits verbatim (`MissionError::NoWaypoints` Display at core/src/mission.rs:28). The pre-check, and the unit tests at mission.rs:163-172 that test it, are redundant; they would also mask a future change to the core Display. | Drop the pre-check and let the existing `map_err` at mission.rs:87-88 carry the core text, which equals the Python text today |
+| Low | bindings/src/motors.rs:30-33, bindings/src/battery.rs:36-46, bindings/src/state_machine.rs:52-55 | The three message-shim predicates duplicate the core validation formulas (`time_const <= 0.0 || is_nan()` at core/src/motors.rs:129 and siblings) because the core `Display` prints `0` where Python `str` prints `0.0`. Acceptable for text parity, but if a core guard changes the binding silently keeps the old rule, and the fallback `map_err` would then emit core text that no longer matches Python. | Note at each site that the predicate must track the core guard, or teach the core error types to format floats with `{:?}` so the binding can delegate whole |
+| Low | bindings/src/motors.rs:32, bindings/src/battery.rs:38,45, bindings/src/state_machine.rs:54 | Verbatim message parity holds only where Python `str(float)` equals Rust `{:?}`. Values in scientific notation (`1e-05` vs `1e-5`) and integer arguments (`MotorModel(0)` prints `got 0` in Python, `got 0.0` in Rust) can never match; neither class is tested or registered. | Document the formatting limitation in parity_util, or pin one representative value per formatting class |
+| Low | convert.rs:35-37,62-64,86-96 vs python/talon/{mission,motors,guidance,sensors}.py shape raises | Malformed-input messages can never match (`got (2,)` is a numpy shape repr where the binding says `got 2`) and the whole family is outside both the tests and the registry, so the parity claim silently excludes it. The `mission.update_non_finite_position` entry shows the right pattern for a numpy-repr message: register it and pin with `match=`. | Register a shape-error divergence family or state explicitly in parity_util that malformed-input message parity is out of scope |
+| Low | python/tests/test_parity_state_machine.py | The `emergency_landing` transition (EMERGENCY to LAND, guard `_g_emergency_landing` at python/talon/state_machine.py:167-168) is the only entry in the transition table with no parity case, and `emergency_descent_active` is never set True, so the binding's `optional_bool` default (bindings/src/state_machine.rs:81-86) and that guard are unverified across the boundary. | Add one case: force EMERGENCY, toggle `emergency_descent_active`, request `emergency_landing` on both machines |
+| Low | bindings/src/mission.rs:35-37 | The duck-typed waypoint fallback defaults (5.0, 0.0, 2.0) match python/talon/types.py:68-70 as verified by reading, but no test passes a waypoint object missing `speed` / `heading` / `radius`, so the fallback path is dead in the suite and a future mismatch would go unnoticed. | One case constructing the mission from a minimal duck-typed object with `position` only |
+| Low | parity_util.py:119-123 | `mission.update_non_finite_position` says the core "returns False"; core/src/mission.rs:113 actually returns the latched `complete` flag, which is True on an already-completed mission. The pinned test uses a fresh mission, where the claim reads correctly. | Reword to "returns the latched complete flag without advancing or recording the start" |
+
+Coverage gaps found beyond the table (all Low, listed for the next phase):
+the motor saturation test never pins a command exactly at
+`MOTOR_FORCE_MAX`; the `min_ground_speed_for_nu2` exact floor boundary and
+the behind-A `||p - A|| > L1` second condition boundary are not pinned (the
+s-threshold boundary is); `is_low` / `is_critical` are only pinned through
+`force_soc`, never after real drain; `update` with `+inf` position is
+covered by the registered "non-finite" entry text but only NaN is pinned;
+unknown event names (logged rejection on both sides) rely on the per-side
+unit tests rather than the parity suite; and one `test_critical_fault_from_
+every_phase` parametrize lacks explicit ids (pytest derives them from the
+enum repr).
+
+Recurring patterns for other agents: a parity registry entry must cover the
+whole behavioral class it names, not one member of it (the negative-dt
+entries missed the NaN-dt sibling; `x < 0.0` guards admit NaN exactly like
+`x <= 0.0` guards do). Error-text shims that re-implement a core guard to
+reproduce Python `str()` formatting need a comment binding them to the core
+site, or they drift. When a Python message embeds a numpy repr or a type
+repr it can never be matched verbatim: register the divergence and pin with
+a `match=` prefix, never with an exact string claim.
+
+### Phase 3 review follow-up (2026-10-19)
+
+Scope: the follow-up increment in `python/tests/` only, closing the Medium
+and three Low items from the Phase 3 review above: two new divergence
+entries with pins (`motors.step_nan_dt`, `battery.update_nan_dt`), one new
+`emergency_landing` state-machine boundary case, one position-only
+waypoint fallback case, and the reworded `mission.update_non_finite_position`
+entry. `git diff -- python/tests` is empty because the seven files are
+untracked; the increment was verified by reading against the reviewed
+versions.
+
+Verdict: PASS. The Medium is CLOSED. `TALON_REQUIRE_CORE=1 uv run pytest
+python/tests/ -q` reports 370 passed in 7.90 s, exactly the prior 366 plus
+the four new tests (two pins, one boundary param, one fallback case), so
+nothing was removed or weakened.
+
+- PASS: `motors.step_nan_dt` (parity_util.py:141-145, test_parity_motors.py
+  :245-262) pins both sides correctly: Python guards only `dt < 0.0`
+  (python/talon/motors.py:100), so a NaN dt yields NaN forces and poisons
+  the stored state (asserted on the returned tuple and `py_model.forces`),
+  while `_core` clamps NaN dt to zero (core/src/motors.rs:153) and returns
+  and stores the forces unchanged (asserted bit-exactly against the prior
+  step). The entry attributes both behaviors correctly.
+- PASS: `battery.update_nan_dt` (parity_util.py:120-124,
+  test_parity_battery.py:275-294) pins both sides correctly: Python floors
+  the state of charge to 0.0 through `max(0.0, nan)` (python/talon/battery.
+  py:98,105), asserted on the returned state and the model, while `_core`
+  clamps NaN dt to zero (core/src/battery.rs:167) and the pin proves the
+  NaN step equals an explicit `dt=0.0` step in both state of charge and
+  voltage bit-exactly. Attribution correct.
+- PASS: the `emergency_landing` case (test_parity_state_machine.py:203-208,
+  id `emergency_landing_requires_descent_flag`) runs through
+  `test_guard_threshold_parity` on BOTH machines: `emergency_descent_active
+  = False` is rejected by both with the phase held and the full log compared
+  (`assert_same_phase`, `assert_same_log`), `= True` is accepted by both.
+  The guard (`_g_emergency_landing`, python/talon/state_machine.py:167-168)
+  and the binding's `optional_bool` default (bindings/src/state_machine.rs:
+  81-86) are now exercised. The EMERGENCY to LAND target is pinned per side
+  by python/tests/test_state_machine.py:163 and the core test at
+  core/src/state_machine.rs:497-506.
+- PASS: the position-only fallback case (test_parity_mission.py:214-243)
+  drives the binding's duck-typed fallbacks (bindings/src/mission.rs:35-37)
+  with a `SimpleNamespace(position=...)` against a Python dataclass
+  `Waypoint`, pins the surfaced tuples field by field, asserts the literal
+  defaults (speed 5.0, heading 0.0, radius 2.0) on the Python side, and
+  exercises the defaulted 2.0 m acceptance radius at the exact boundary
+  (both hold) and inside (both complete), cross-side at every step.
+- PASS: no weakening or collateral change. Spot reads of the previously
+  reviewed regions show identical assertions (test_parity_motors.py:229-243,
+  test_parity_battery.py:262-272 and 297-310, the landed boundary cases at
+  test_parity_state_machine.py:185-202, test_parity_mission.py:200-211 and
+  246-258, and the guidance and sensors pins); the +4 test delta matches
+  the additions exactly. `git status` shows nothing under `python/talon/`,
+  `public/`, or `docs/videos/`, and no tracked file outside
+  `docs/reviews.md` (this note) moved since the Phase 3 review; the
+  `bindings/src/` edits are the original Phase 3 work.
+
+Residual Low items from the Phase 3 review that remain open (unchanged,
+non-blocking): the shape-error message family, the float-formatting
+limitations of the text shims, the redundant `no_waypoints_error` pre-check,
+the message-shim predicates duplicated from the core guards, and the
+motor-ceiling and nu2-floor exact boundaries. The two NaN-dt entries close
+the Medium, and this increment also fixed the mission registry wording and
+the mission fallback and emergency_landing coverage gaps.
+
+### Phase 3 security review (2026-10-19)
+
+Focused security review of the Phase 3 parity harness (the same uncommitted
+change set as the Phase 3 review and its follow-up above): the six new PyO3
+boundary modules `bindings/src/{guidance,mission,motors,state_machine,
+sensors,battery}.rs`, the edits to `bindings/src/convert.rs` and
+`bindings/src/lib.rs`, and `python/tests/parity_util.py` plus the six
+`python/tests/test_parity_*.py` files. Five checks: FFI and memory safety at
+the PyO3 boundary, whether the bindings weaken or bypass core validation,
+test-harness purity, supply chain and secrets, and caller-driven DoS through
+the new Python surface. The 2026-10-18 full security review and both Phase 3
+reviews above are treated as read; their findings are referenced, not
+repeated.
+
+Verdict: PASS. All five checks pass. No Critical or High findings, no new
+Medium. Two Low findings: one NaN clamp gap that is also an unregistered
+divergence edge in exactly the class the follow-up closed for `dt`, and one
+error-swallowing pattern in the duck-typed attribute helpers. Two inherent
+DoS notes are recorded as accepted. Nothing found is exploitable beyond a
+caller harming their own local process.
+
+Per-item results (PASS/FAIL):
+
+1. PASS: memory safety and FFI discipline. Grep for `unsafe` across every
+   `*.rs` in the workspace returns zero matches; PyO3 0.29 generates the FFI
+   shims and the new modules use only safe extractions (`&str`, `f64`,
+   `u64`, `PyRef`, `&Bound<PyAny>`). No raw pointer or length confusion:
+   the conversion helpers write into fixed three-, four-, and nine-element
+   arrays through explicit counters with post-loop length checks
+   (convert.rs:24-40, 51-67, 70-98), so the `row * 3 + col` index at
+   convert.rs:82 is bounded by the loop guards and a short, long, or
+   wrong-typed sequence cannot index out of bounds or shift a vector. Every
+   `unwrap()`/`expect()` in the six new modules sits inside `#[cfg(test)]`
+   on constant inputs (motors.rs:129-139, battery.rs:265-286,
+   state_machine.rs:200-213, mission.rs:164); none is reachable from Python.
+   The one production panic on the reachable core path is
+   `core/src/motors.rs:57-64`, which inverts a compile-time constant mix
+   matrix once behind a `OnceLock`, so no caller value influences it. The
+   `active_waypoint` index at `core/src/mission.rs:80` cannot go out of
+   bounds because `WaypointMission::new` rejects an empty list
+   (`core/src/mission.rs:51-54`) and `update` only increments while
+   `active_index + 1 < len` (`core/src/mission.rs:124-128`). Errors are
+   mapped, not panicked: every fallible entry point returns `PyResult`,
+   extraction failures surface as `TypeError`, and core errors map through
+   `to_string()` to `PyValueError` (mission.rs:87-88, motors.rs:72-74,
+   battery.rs:203-206, state_machine.rs:123-125). Borrows are PyO3-checked
+   `PyRef`/`&mut self` under the GIL; no aliasing or lifetime hazard.
+
+2. PASS: input validation stays in the core. The bindings cannot accept what
+   `talon-core` rejects: each message shim runs the core's own predicate
+   (`time_const <= 0.0 || is_nan()` at motors.rs:30-33 mirroring
+   `core/src/motors.rs:129`; battery.rs:36-46 mirroring
+   `core/src/battery.rs:88-91`; state_machine.rs:52-55 mirroring
+   `core/src/state_machine.rs:206`) and then delegates to the core
+   constructor, which validates again (`motors::MotorModel::new`,
+   `FlightPhaseMachine::new`, `BatteryModel::new` via `config.validate()`).
+   The edge cases named in the check all land in core code, not binding
+   code: negative and NaN `dt` are clamped to zero by the core
+   (`core/src/motors.rs:153`, `core/src/battery.rs:167`) or yield a zero
+   sample (`core/src/sensors.rs:126,212`); a non-finite position returns the
+   latched flag without advancing (`core/src/mission.rs:111-114`); unknown
+   phase labels are rejected with `PyValueError` (state_machine.rs:59-78)
+   and unknown event strings are logged and rejected by the core table
+   lookup (`core/src/state_machine.rs:265-269`), never panicking. The
+   config-snapshot policy actually closes a bypass: a config setter write
+   after construction cannot reach the model (battery.rs:193 copies), so a
+   validated `capacity_mah` cannot be flipped to zero afterwards to force
+   the division at `core/src/battery.rs` update. Two Low findings below
+   (NaN clamp, error swallowing) are the only gaps.
+
+3. PASS: test harness safety. `parity_util.py` imports only `math` and
+   `typing` (parity_util.py:99-102) and contains no file, socket, process,
+   or string-evaluation primitive; `expect_divergence` is a dict lookup that
+   fails closed. The six parity tests import only `__future__`, `math`,
+   `types.SimpleNamespace`, `numpy`, `pytest`, `parity_util`, and pure
+   `talon.*` modules; notably none imports `talon.mavlink_sil`, the one
+   module in the package with a socket surface. No `open`, `os`, `sys`,
+   `subprocess`, `eval`/`exec`/`compile`, `monkeypatch`, `tmp_path`, or
+   network call appears anywhere in the seven files (grep). Every loop is a
+   bounded constant (`range(25)`, `range(50)`, `range(100)`, `range(500)`).
+   The only environment read in the suite is the pre-existing
+   `conftest.py:22` `TALON_REQUIRE_CORE` gate, which is a flag, not a path.
+
+4. PASS: supply chain and secrets. No new dependency: `bindings/Cargo.toml`
+   lists `talon-core` (path), `pyo3 = "0.29"`, and the `pyo3-build-config`
+   build dep (Cargo.toml:23-30), all inside the OSV-swept set from the
+   2026-10-18 review. Grep over `bindings/src/` finds no process, network,
+   filesystem, or environment API (the only `Command` matches are the
+   `ControlCommand` type name). No credential, token, key, absolute
+   developer path, or `.env` content in any in-scope file; the Python side
+   adds no import beyond the stdlib, numpy, and pytest already locked.
+
+5. PASS: DoS surface (theoretical). Allocation is bounded at every fixed-size
+   marshal (convert.rs stops at 3/4/3x3 even on infinite generators), and
+   guidance, motors, battery, and sensors are O(1) fixed-array arithmetic
+   per call. Two caller-driven growth vectors exist and are inherent:
+   `PyWaypointMission::new` materializes any iterable without a bound
+   (mission.rs:80-83, an infinite generator hangs, a huge list allocates
+   proportionally), and the state machine's event log grows per `request`
+   or `force_phase` call while storing the caller-supplied `event`/`reason`
+   string (state_machine.rs:146-158 plus the core log). Both match what the
+   pure-Python module already allows, both are keyed to caller behavior
+   rather than a value the caller hands to an innocent consumer, and in a
+   local library the caller is the victim. No fix required.
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | bindings/src/battery.rs:192-207, 233-236 vs core/src/battery.rs:123, 157-158 vs python/talon/battery.py:65, 89 | NaN state of charge: the binding and doc comment promise "clamped to [0, 1]", but Rust `f64::clamp` returns NaN when self is NaN, so `BatteryModel(config, initial_soc=nan)` and `force_soc(nan)` store a NaN soc through the new surface. Python `min(1.0, max(0.0, nan))` floors to 0.0 instead. This is an unregistered divergence in exactly the class the Phase 3 follow-up closed for `dt`, and the clamp parametrizations at test_parity_battery.py:182-211 carry no NaN case, so nothing pins either behavior. Not memory-unsafe and not beyond what the core allows (the core clamp is the source), so Low and theoretical. | Register `battery.soc_nan_clamp` with a pin (Python floors to 0.0, `_core` stores NaN), or reject non-finite `initial_soc` / `force_soc` input explicitly, which would also make the doc claim true |
+| Low | bindings/src/mission.rs:42-47, bindings/src/state_machine.rs:81-86, bindings/src/sensors.rs:39-44 | The optional-attribute helpers treat every `getattr` failure as "absent", including exceptions raised inside a property, silently substituting the default (`speed` 5.0, `radius` 2.0, and for the guard flags `False`). A broken `motor_fault` read therefore fails open: `critical_fault` would not fire from that flag alone (state_machine.rs:104-105). Theoretical: the caller controls the telemetry object and could pass `False` anyway; the hazard is a buggy lazy attribute being masked as a default. | Match only `AttributeError` for the "omitted" case and propagate every other exception from the getter |
+
+Inherent notes, accepted and not counted against the verdict: the unbounded
+waypoint-list materialization and event-log growth recorded under check 5.
+Adjacent members of the standing finiteness class, verified as shared
+behavior rather than divergences so not new findings: a NaN `dt` reaches
+both `generate_imu` implementations equally (`dt <= 0.0` guards at
+python/talon/sensors.py:90,177 and core/src/sensors.rs:126,212 both admit
+NaN and both sides NaN-poison the sample and clock), and a NaN waypoint
+`radius` is accepted by both the Python `Waypoint` dataclass
+(python/talon/types.py:72-77 checks only the position shape) and the core
+(`core/src/types.rs:204-210` stores fields as given), where the acceptance
+loop then completes the mission instantly on both sides.
+
+Recurring patterns for other agents: a duck-typed attribute helper must
+distinguish "missing" (AttributeError) from "broken" (any other exception);
+swallowing both converts a bug into a silent default, which fails open on
+safety guard flags. And `f64::clamp` plus `min`/`max` chains do not reject
+NaN in either language (Rust `clamp` returns NaN for a NaN self, Python
+`min(1.0, max(0.0, nan))` floors to 0.0), so any "clamped to [0, 1]" or
+"non-negative" contract has a NaN edge that is a divergence edge; register
+or reject it, exactly as the dt-NaN entries now do.
+
+### Phase 3 security follow-up (2026-10-19)
+
+Security follow-up on the two Low findings from the Phase 3 security review
+above. The author changed the three duck-typed optional-attribute helpers
+(bindings/src/mission.rs:51-57, sensors.rs:49-55, state_machine.rs:91-97)
+to default only on `AttributeError` and propagate any other exception,
+registered `battery.soc_nan_clamp` in parity_util.py with a pin in
+test_parity_battery.py:321-338, and added propagation tests for all three
+helpers (test_parity_state_machine.py:587-660, test_parity_mission.py:
+246-271, test_parity_sensors.py:199-230). Verified by reading the changed
+files and tests; this environment has no shell for `git diff`, so the
+verification is by content against the reviewed versions.
+
+Verdict: PASS. Both findings are CLOSED. No new findings; one pre-existing
+Low in a sibling module and one doc nit recorded below.
+
+- CLOSED: the error-swallowing finding. Each helper now has exactly three
+  arms: `Ok` extracts (so a wrong-typed optional still raises `TypeError`),
+  `Err(e) if e is PyAttributeError` defaults, and `Err(e) => Err(e)`
+  propagates untouched. Fail-closed for the guard flags is genuinely
+  pinned: test_parity_state_machine.py:587-631 drives a `motor_fault`
+  property that raises `RuntimeError` through `request("critical_fault",
+  ...)` and asserts the original type and message surface, then asserts the
+  machine is untouched (phase `idle`, empty event log), which proves the
+  exception escapes before any transition or log row; the
+  `emergency_descent_active` variant does the same for the
+  `emergency_landing` guard with the EMERGENCY phase and log held. The
+  companion test (634-660) pins that a genuinely absent flag still
+  defaults and documents that a property raising `AttributeError` is
+  indistinguishable from absence by Python's own protocol. The mission and
+  sensors pins (broken `radius`/`speed`, broken `timestamp`) assert the
+  same propagation and also cover the absent-still-defaults path. The
+  binding-side-only scope of the telemetry pin is justified in the test
+  comment (the Python module raises `TypeError` for a non-Telemetry, the
+  registered divergence), matching the accepted `rust_only` pattern.
+- CLOSED: the `battery.soc_nan_clamp` registry gap. The entry
+  (parity_util.py:126-131, docstring at 57-62) attributes both sides
+  correctly: Python `min(1.0, max(0.0, nan))` floors to 0.0 because
+  `max(0.0, nan)` returns its first argument when the comparison is False,
+  while `_core` stores NaN because Rust `f64::clamp` returns NaN for a NaN
+  self. The pin (test_parity_battery.py:321-338) calls
+  `expect_divergence` first and then asserts both Python paths at
+  `assert_exact(..., 0.0)` and both `_core` paths with `math.isnan`,
+  covering `initial_soc` and `force_soc` alike. The registry keeps its
+  fail-closed `expect_divergence` discipline (16 entries).
+- PASS: no collateral change and no weakened validation. The required
+  fields (`position`, `lat` through `vd`, the ten telemetry guard fields)
+  still propagate through `?` exactly as before; the message-shim
+  predicates, the core delegation, and the constructor signatures are
+  untouched; the module docstrings were updated to state the new semantics.
+  The change is strictly more strict: every case that previously silently
+  defaulted now raises unless the attribute is genuinely absent.
+
+Residual from the Phase 3 security review, still open and unchanged: the
+two inherent DoS notes (unbounded waypoint-list materialization at
+mission.rs:80-83, event-log growth at state_machine.rs:146-158), accepted
+as caller-is-victim behavior in a local library.
+
+New residual found while diff-reading, Low and pre-existing outside the
+Phase 3 change set: bindings/src/avoidance.rs:57-62 keeps the swallow-all
+`optional_f64` for the duck-typed waypoint fields (avoidance.rs:50-52),
+and `obstacle_from`'s `id` read (avoidance.rs:35-39) swallows any error
+the same way (missing, broken, or wrong-typed all become an empty id). The
+identical one-line fix applies when the avoidance boundary is next touched.
+Also `phase_from` (state_machine.rs:64-67) still swallows a broken
+`.value` property and falls back to string extraction: no silent
+misbehavior is possible (the fallback yields a validated label or an
+error), but the original exception is masked, and propagating
+non-AttributeError there would complete the pattern. And the `force_soc`
+doc comment (battery.rs:233, "clamped to `[0, 1]`") could name the NaN
+edge that `battery.soc_nan_clamp` now pins.

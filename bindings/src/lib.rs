@@ -19,9 +19,15 @@
 use pyo3::prelude::*;
 
 mod avoidance;
+mod battery;
 mod control;
 mod convert;
 mod estimation;
+mod guidance;
+mod mission;
+mod motors;
+mod sensors;
+mod state_machine;
 mod types;
 
 use control::{PyCascadedController, PyControlCommand, PyControlGains};
@@ -79,6 +85,16 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Keep-out-zone geometry, the offline detour planner, and clearance.
     avoidance::register(m)?;
+
+    // NLGL guidance, the waypoint mission manager, and motor mixing.
+    guidance::register(m)?;
+    mission::register(m)?;
+    motors::register(m)?;
+
+    // Flight-phase state machine, truth-side sensor models, battery model.
+    state_machine::register(m)?;
+    sensors::register(m)?;
+    battery::register(m)?;
 
     Ok(())
 }

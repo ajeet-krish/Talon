@@ -14,7 +14,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use talon_core::ekf::{Matrix15, Vector6};
-use talon_core::types::{Mat3, Vec3};
+use talon_core::types::{to_arr3, Arr3, Mat3, Vec3};
 
 /// Read exactly three floats from any Python iterable of numbers.
 ///
@@ -37,6 +37,64 @@ pub fn vec3_from(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec3> {
         )));
     }
     Ok(Vec3::new(out[0], out[1], out[2]))
+}
+
+/// Read a 3-vector as the core's plain `[f64; 3]` alias.
+pub fn arr3_from(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Arr3> {
+    Ok(to_arr3(&vec3_from(value, what)?))
+}
+
+/// Read exactly four floats from any Python iterable of numbers.
+///
+/// Same contract as [`vec3_from`]: extra elements past the fourth are
+/// ignored, fewer than four is an error.
+pub fn vec4_from(value: &Bound<'_, PyAny>, what: &str) -> PyResult<[f64; 4]> {
+    let mut out = [0.0_f64; 4];
+    let mut seen = 0_usize;
+    for item in value.try_iter()? {
+        if seen == 4 {
+            break;
+        }
+        out[seen] = item?.extract::<f64>()?;
+        seen += 1;
+    }
+    if seen != 4 {
+        return Err(PyValueError::new_err(format!(
+            "{what} must have 4 elements, got {seen}"
+        )));
+    }
+    Ok(out)
+}
+
+/// Read a 3x3 matrix from any Python iterable of three rows of three floats.
+pub fn mat3_from(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Mat3> {
+    let mut out = [0.0_f64; 9];
+    let mut row = 0_usize;
+    for items in value.try_iter()? {
+        if row == 3 {
+            break;
+        }
+        let mut col = 0_usize;
+        for item in items?.try_iter()? {
+            if col == 3 {
+                break;
+            }
+            out[row * 3 + col] = item?.extract::<f64>()?;
+            col += 1;
+        }
+        if col != 3 {
+            return Err(PyValueError::new_err(format!(
+                "{what} row {row} must have 3 elements, got {col}"
+            )));
+        }
+        row += 1;
+    }
+    if row != 3 {
+        return Err(PyValueError::new_err(format!(
+            "{what} must have 3 rows, got {row}"
+        )));
+    }
+    Ok(Mat3::from_row_slice(&out))
 }
 
 /// Present a 3-vector as a Python list.
