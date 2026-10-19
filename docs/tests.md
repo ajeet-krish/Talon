@@ -1566,3 +1566,244 @@ The fault window was tightened to the exact last-step clock, and two
 divergence-mode tests were added. Final counts: 293 Rust tests (264
 talon-core, 16 talon-wasm, 13 talon-py), 399 pytest, 182 vitest.
 clippy and rustfmt remain clean, and the wasm smoke checks pass.
+
+### Phase 8b test gate (2026-10-19)
+
+Scope: generated limits (`Limits` in `core/src/constants.rs`, the ts-rs
+mirror, and the `LIMITS` constant the browser imports) and the authored-scenario
+validator (`src/data/validate.ts`: `validateScenarioConfig` plus the fault
+window, with the committed tests in `src/data/validate.test.ts` and
+`src/types/generated.test.ts`). Run on the working tree at `4078631` plus the
+uncommitted Phase 8b changes. The only repository write from this gate is this
+section: every probe ran out of tree in the approved session temp directory
+(`opencode/p8b/`), two Rust probe binaries path-depend on the working-tree
+`talon-core`, and the TypeScript probe is an esbuild bundle of the
+working-tree `src/data/validate.ts` run under plain node (esbuild 0.25.12,
+node v26.11.1, rustc 1.99.0, Python 3.14.3).
+
+#### Gate commands and exact counts (2026-10-19, repository root)
+
+| Command | Exit | Result |
+|---------|------|--------|
+| `cargo fmt --all -- --check` | 0 | no output |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 0 warnings |
+| `cargo test --workspace` | 0 | 294 passed, 0 failed (talon-core 265, talon-wasm 16, talon-py 13, ts_export generator 0 by `#[ignore]`, doc-tests 0 x3) |
+| `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` | 0 | 399 passed in 8.95 s |
+| `npm test` | 0 | 14 files, 205 tests passed |
+| `npm run build` | 0 | `tsc` clean, vite 650 modules, built in 1.92 s (chunk-size warning only) |
+| `npm run smoke:wasm` | 0 | 76 `ok`, 0 FAIL, 5 of 5 configs (hover, waypoints, obstacle_field, avoidance, wind) plus the paced 3600-frame loop |
+| `./scripts/gen_types.sh` | 0 | mirror regenerates byte-identically (hash below) |
+
+Movement against the Phase 8a follow-up record: Rust 293 to 294 (the new
+`limits_mirror_the_named_constants_and_every_cap_is_finite_and_positive` in
+`core/src/constants.rs`), vitest 182 to 205 (`src/data/validate.test.ts` now
+50 tests, `src/types/generated.test.ts` now 10). Pytest is unchanged at 399.
+
+#### Parity matrix method
+
+One shared case file (163 cases) feeds both sides. The TypeScript probe
+bundles the working-tree `validate.ts` and applies each case through
+`validateScenarioConfig` and `validateLiveConfigs`; the Rust probe applies the
+same decimal literals through `ScenarioConfig::validate` and, secondarily,
+`SimConfig::validate` (via `to_sim_config()`). NaN and infinities are supplied
+as native values on both sides (they cannot cross a JSON boundary); seed and
+tag cases go through the JSON parsers on both sides (serde tag and u64
+parsing is the seam there). Verdict parity is accept/reject agreement; the
+message wording is recorded but is not required to match, since the seams sit
+at different layers.
+
+Result: 163 cases, 161 verdict matches, 2 divergences (both `seed`, below).
+Every non-seed field matched on both TS entry points and on the Rust scenario
+seam. All boundary values below are the exact shared literals.
+
+#### Per-field boundary verdicts (TS scenario = TS live = Rust in every row except seed)
+
+Legend: A accept, R reject. "cap + eps" is cap + 1e-9.
+
+| Field (cap) | at cap | cap + eps | NaN | +Inf | -Inf | negative in range | negative out | zero | Verdict parity |
+|-------------|--------|-----------|-----|------|------|-------------------|--------------|------|----------------|
+| duration_s (0, 900] | 900 A | R | R | R | R | n/a | -1 R | 0 R | identical |
+| takeoff_altitude (0, 1000] | 1000 A | R | R | R | not run | n/a | -1 R | 0 R | identical |
+| start_position_ned[\*] [-1e6, 1e6] | +/-1e6 A | R | R | R | R | -5 A | -1e6-eps R | 0 A | identical |
+| waypoints count (<= 512) | 512 A | 513 R | n/a | n/a | n/a | n/a | n/a | 0 A | identical |
+| waypoint position [-1e6, 1e6] | 1e6 A | R | R | R | not run | -1e6 A | -1e6-eps R | 0 A | identical |
+| waypoint speed [0, 200] | 200 A | R | R | R | not run | n/a | -1 R | 0 A | identical |
+| waypoint heading (finite only) | 1e12 A | n/a | R | R | R | -1 A | n/a | 0 A | identical |
+| waypoint radius [0, 1e6] | 1e6 A | R | R | R | not run | n/a | -1 R | 0 A | identical |
+| obstacles count (<= 512) | 512 A | 513 R | n/a | n/a | n/a | n/a | n/a | 0 A | identical |
+| obstacle center_ned [-1e6, 1e6] | 1e6 A | R | R | R | not run | -1e6 A | not run | 0 A | identical |
+| obstacle radius_m [0, 1e6] | 1e6 A | R | R | R | not run | n/a | -1 R | 0 A | identical |
+| avoidance clearance_margin_m [0, 1000] | 1000 A | R | R | R | R | n/a | -1 R | 0 A | identical |
+| avoidance detour_buffer_m [0, 1000] | 1000 A | R | R | R | not run | n/a | -1 R | 0 A | identical |
+| avoidance lookahead_s [0, 60] | 60 A | R | R | R | not run | n/a | -1 R | 0 A | identical |
+| wind_sigma[\*] [0, 100] | 100 A | R | R | R | not run | n/a | -1 R | 0 A | identical |
+| wind_steady_ned[\*] [-100, 100] | +/-100 A | R | R | R | R | -100 A | -100-eps R | 0 A | identical |
+| gps_position_noise [0, 100] | 100 A | R | R | R | not run | n/a | -1 R | 0 A | identical |
+| gps_position_noise_vertical [0, 100] | 100 A | R | R | R | not run | n/a | -1 R | 0 A | identical |
+| gps_velocity_noise [0, 50] | 50 A | R | R | R | not run | n/a | -1 R | 0 A | identical |
+| cruise_hold_s [0, 60] | 60 A | R | R | R | not run | n/a | -1 R | 0 A | identical |
+| battery_initial_soc [0, 1] | 1 A | R | R | R | not run | n/a | -0.01 R | 0 A | identical |
+| faults count (<= 16) | 16 A | 17 R | n/a | n/a | n/a | n/a | n/a | 0 A | identical |
+| fault at_s [0, window end] | window end A | R | R | R | not run | n/a | -1 R | 0 A | identical |
+| gps outage duration_s (0, 900] | 900 A | R | R | R | not run | n/a | -1 R | 0 R | identical |
+| fault soc [0, 1] | 1 A | R | R | R | not run | n/a | -0.01 R | 0 A | identical |
+| divergence mode (3 tags) | all 3 A | n/a | n/a | n/a | n/a | n/a | bogus R | n/a | identical |
+| seed (TS safe integer vs Rust u64) | 2^53-1 A | 2^53 DIVERGE | n/a | 1e999 R/R | n/a | n/a | -1 R/R | 0 A | 2 DIVERGENCES |
+
+Representative message pairs (verdicts agree, wording is layer-specific):
+
+| Case | TS message | Rust message |
+|------|------------|--------------|
+| duration NaN | `duration_s must be finite` | `duration_s must be positive, got NaN` |
+| duration 900.000000001 | `duration_s must be in (0, 900]` | `duration_s must be in [0, 900], got 900.000000001` |
+| waypoint speed 200.000000001 | `waypoints[0].speed must be <= 200` | `waypoint speed must be in [0, 200], got 200.000000001` |
+| avoidance margin -1 | `avoidance.clearance_margin_m must be >= 0` | `avoidance: clearance_margin_m must be non-negative, got -1` |
+| wind steady -100.000000001 | `wind_steady_ned[0] must be in [-100, 100]` | `wind_steady_ned must be in [-100, 100], got -100.000000001` |
+| faults 17 | `faults must have at most 16 entries (got 17)` | `faults has 17 items, at most 16 allowed` |
+| at_s past window | `faults[0].at_s must be in [0, 29.995]` | `fault at_s must be in [0, 29.995], got 29.995000001` |
+| mode `bogus` | `faults[0].mode must be one of corrupt_bias, suppress_updates, adversarial_gps` | `parse: unknown variant \`bogus\`, expected one of \`corrupt_bias\`, \`suppress_updates\`, \`adversarial_gps\`` |
+
+#### The two divergences: seeds between 2^53 and u64::MAX
+
+Both sides accept 0 and every seed up to `2^53 - 1`
+(9007199254740991), and both reject negative, fractional, `2^64`, and the
+JSON literal `1e999` seeds (TS: `seed must be >= 0`, `seed must be an
+integer`, `seed must be <= 9007199254740991`, `seed must be finite`; Rust at
+parse: `invalid value: integer \`-1\`, expected u64`,
+`invalid type: floating point \`1.5\`, expected u64`,
+`invalid type: floating point \`1.8446744073709552e+19\`, expected u64`,
+`number out of range`). Between `2^53` and `u64::MAX` inclusive the gates
+disagree:
+
+| Seed literal | TS (`validateScenarioConfig` and `validateLiveConfigs`) | Rust (`ScenarioConfig::validate`) |
+|--------------|----------------------------------------------------------|-----------------------------------|
+| 9007199254740992 (2^53) | REJECT `seed must be <= 9007199254740991` | ACCEPT |
+| 18446744073709551615 (u64::MAX) | REJECT `seed must be <= 9007199254740991` | ACCEPT |
+
+Root cause: TS `asSafeSeed` caps at `Number.MAX_SAFE_INTEGER`, Rust deserializes
+into `u64`. No shipped config or recording uses a seed above 2^53 (all use
+20261012), so nothing can fly differently today, but the two gates do not
+reject the same documents in this band. Reported, not fixed: this gate does
+not modify source.
+
+#### Fault-window parity (grid and non-grid durations)
+
+The TS expression is `steps = max(1, round(duration_s / LIMITS.dt));
+steps < 2 ? null : (steps - 1) * LIMITS.dt` (`validate.ts:417-421`); the Rust
+expression is `steps = (duration_s / DT).round(); steps < 2.0 ? None :
+(steps - 1.0) * DT` (`faults.rs:42-48`). `Math.round` and `f64::round` agree
+on every positive input (half cases round up in both; negative durations
+cannot reach either expression, since duration positivity is checked first).
+
+| duration_s | steps (both) | TS formula window | TS validator prints | Rust validator window | at_s = window end | at_s = window end + 1e-9 |
+|------------|--------------|-------------------|---------------------|------------------------|-------------------|--------------------------|
+| 30 | 6000 | 29.995 | 29.995 | 29.995 | ACCEPT / ACCEPT | REJECT / REJECT |
+| 60.002 (rounds down) | 12000 | 59.995000000000005 | 59.995000000000005 | 59.995000000000005 | ACCEPT / ACCEPT | REJECT / REJECT |
+| 0.005 (one step) | 1 | null (no window) | no window | no window | REJECT / REJECT | n/a |
+| 0.0075 (rounds up to two steps) | 2 | 0.005 | 0.005 | 0.005 | ACCEPT / ACCEPT | REJECT / REJECT |
+| 900 | 180000 | 899.995 | 899.995 | 899.995 | ACCEPT / ACCEPT | REJECT / REJECT |
+
+The window doubles are bit-identical across languages: both compute
+`(steps - 1) * 0.005` in IEEE 754, and the shortest-repr strings agree
+(`59.995000000000005` is the exact double both sides print for 60.002). The
+no-window case rejects on both sides with layer-specific wording: TS
+`faults must be empty: a run of 0.005 s has fewer than two steps`, Rust
+`duration_s 0.005 leaves no fault window: a run must span at least two plant
+steps (0.005 s each) for a fault to fire`. The last-step acceptance contract
+(a fault exactly at the window end fires on the final step) is pinned in
+committed tests on both sides (`validate.test.ts` "accepts a fault on the
+last step clock and rejects one step later", `faults.rs`
+`at_s_must_be_finite_and_inside_the_run_window`).
+
+#### Defaults and round trip
+
+`validateScenarioConfig({id: 'custom'})` returns exactly
+`{...SCENARIO_DEFAULTS, id: 'custom'}`: `JSON.stringify` deep equality true,
+key sets identical (19 keys). The returned object:
+
+```json
+{"id":"custom","label":"","blurb":"","duration_s":60,"takeoff_altitude":10,
+"start_position_ned":[0,0,0],"waypoints":[],"obstacles":[],
+"avoidance":{"enabled":false,"clearance_margin_m":2.0,"lookahead_s":3.0,
+"detour_buffer_m":0.5},"wind_sigma":[0,0,0],"wind_steady_ned":[0,0,0],
+"battery_initial_soc":1,"gps_position_noise":0.3,
+"gps_position_noise_vertical":0.5,"gps_velocity_noise":0.05,
+"cruise_hold_s":2,"seed":20261012,"auto_arm":false,"faults":[]}
+```
+
+Full authored document round trip: a document carrying all 19 fields with
+non-default values (120 s, 25 m takeoff, nonzero start position, one waypoint
+with heading, one zone, the avoidance block on with distinct tuning, wind
+sigma and steady, soc 0.9, cruise hold 5, seed 42, auto_arm true) plus all six
+fault kinds (including all three divergence modes) returns byte-identical
+`JSON.stringify` output, and the returned key list equals the input key list,
+so no field is dropped, renamed, or defaulted over.
+
+#### No regression
+
+- Five shipped configs (hover, waypoints, obstacle_field, avoidance, wind):
+  accepted by TS `validateLiveConfigs` (5 of 5), accepted by Rust
+  `ScenarioConfig::validate` (5 of 5), and flown by `npm run smoke:wasm`
+  (76 checks, 5 of 5, plus the paced loop).
+- Four committed recordings (gps_outage 7000, wind 6000, emergency 5000,
+  obstacle_field 7000 samples, all schema 1.1): accepted by TS
+  `validateFlightData` and by Python `validate_flight_json` (4 of 4 each).
+- `./scripts/gen_types.sh`: exit 0, `src/types/generated/talon_core.ts`
+  sha256 `b77037b714ccd7c560101e0e08a3ec4537c648c6d75f5d01d9add09e9fe1c843`
+  before and after, byte identical; `git status` unchanged by the run.
+- `LIMITS` (generated TS) versus `Limits::current()` (Rust): 17 of 17 fields
+  identical (dt 0.005, max_duration_s 900, max_takeoff_altitude_m 1000,
+  max_wind_component_mps 100, max_gps_position_noise_m 100,
+  max_gps_velocity_noise_mps 50, max_cruise_hold_s 60, max_waypoints 512,
+  max_obstacles 512, max_coordinate_m 1e6, max_waypoint_speed_mps 200,
+  max_radius_m 1e6, max_avoidance_margin_m 1000, max_avoidance_buffer_m 1000,
+  max_avoidance_lookahead_s 60, max_faults 16, max_battery_soc 1.0).
+- Working tree at gate end: the same 8 modified files as at gate start
+  (constants.rs, faults.rs, ts_export.rs, reviews.md, the two validator test
+  and source files, the generated mirror and its drift guard); this section is
+  the ninth and only write by the gate.
+
+#### Residual gaps
+
+1. The seed band (2^53 through u64::MAX) diverges as recorded above. Small
+   fix either way: raise the TS cap to a BigInt `<= 18446744073709551615n`
+   check, or narrow the Rust seed to `u53`; no test pins the intended choice.
+2. `validateLiveConfigs` ignores a `faults` key entirely (17 fault cases pass
+   the browser gate because the key is absent from the live schema, while the
+   Rust scenario gate rejects or accepts on its own rules). The app
+   re-serializes the validated object into `Session`
+   (`src/live/sim.ts:68`), so a live config that ever carried faults would
+   silently fly without them. The shipped file carries none; a guard test
+   asserting the drop (or a rejection) would pin the layering.
+3. The TS live gate is stricter than Rust on field presence (id, label,
+   blurb, and every scalar are required in TS; serde defaults fill gaps in
+   Rust), and stricter on the id shape (lowercase slug, not reserved), which
+   Rust does not check at all. Intentional editor contract, but it is a
+   documented-behavior parity rather than a test-pinned one.
+4. The 163-case matrix is an out-of-tree probe; CI pins only the sampled
+   committed tests (50 in `validate.test.ts`, 10 in `generated.test.ts`, 1 in
+   `core/src/constants.rs`). A caps drift that the generated mirror and the
+   drift guard both miss would surface first in this probe, not in CI.
+5. `Math.round` versus `f64::round` agreement is evidenced for the durations
+   the repository uses (positive, bounded by 900 s); no committed test sweeps
+   the rounding tie explicitly on both sides.
+
+#### Verification checklist
+
+- [x] All seven gates pass with exit 0 and exact counts recorded above
+  (Rust 294, pytest 399, vitest 205, clippy 0, fmt 0, build 650 modules,
+  smoke 76 checks on 5 of 5 configs).
+- [x] Parity matrix: 163 shared cases, 161 verdict matches; the 2 divergences
+  are the seed band, reported with exact values and messages.
+- [x] Fault-window parity shown for 30, 60.002, 0.005, 0.0075, and 900 s with
+  bit-identical window values, exact last-step acceptance, and the no-window
+  rejection on both sides.
+- [x] Defaults: `validateScenarioConfig({id:'custom'})` deep-equals
+  `{...SCENARIO_DEFAULTS, id:'custom'}`; the full authored document
+  round-trips with all 19 keys and all six fault kinds intact.
+- [x] No regression: 5 shipped configs pass both gates and fly, 4 recordings
+  validate on both the TS and Python seams, the mirror regenerates
+  byte-identically, `LIMITS` matches the Rust constants field for field.
+- [x] No em dashes, double hyphens, or dash equivalents in this section; this
+  subsection is appended after all prior content, and no source file was
+  modified by the gate.
