@@ -13,6 +13,11 @@ export default {
         // Signal cyan: active UI, scrubber, focus
         signal: '#26b8d9',
         'signal-dim': '#1a7f96',
+        // Mission editor: amber warnings and keep-out zones, red blockers.
+        // Kept outside the Wong phase palette, which stays reserved for
+        // flight phases.
+        warn: '#e0a458',
+        danger: '#e05a5a',
         // Cool ink scale
         ink: '#dbe4f0',
         'ink-dim': '#8b9bb4',

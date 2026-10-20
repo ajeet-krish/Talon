@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useFlightStore } from './useFlightStore'
 import type { FlightData, ScenarioId } from '@/types/flight'
+import type { LiveConfig } from '@/live/types'
+import { emptyMission, toMissionConfig } from '@/utils/editor'
 
 function fakeFlightData(durationS: number): FlightData {
   return {
@@ -78,6 +80,11 @@ function fakeFlightData(durationS: number): FlightData {
 
 const id: ScenarioId = 'gps_outage'
 
+/** The editor's validated mission shape, which is also the run contract. */
+function authoredConfig(): LiveConfig {
+  return toMissionConfig(emptyMission('custom_mission'))
+}
+
 beforeEach(() => {
   useFlightStore.setState({
     scenarios: new Map([[id, fakeFlightData(10)]]),
@@ -91,6 +98,7 @@ beforeEach(() => {
     activeView: 'replay',
     validation: null,
     validationError: null,
+    authoredMission: null,
   })
 })
 
@@ -199,5 +207,48 @@ describe('loadScenario', () => {
     expect(loaded?.obstacles).toEqual([])
     expect(useFlightStore.getState().error).toBeNull()
     vi.unstubAllGlobals()
+  })
+})
+
+describe('setAuthoredMission', () => {
+  it('stores the exact config handed in, starting no run', () => {
+    const config = authoredConfig()
+
+    useFlightStore.getState().setAuthoredMission(config)
+
+    const state = useFlightStore.getState()
+    expect(state.authoredMission).toBe(config)
+    // The store is only the hand-off slot: the run view owns the run itself,
+    // so nothing about the playback or live-run state may move here.
+    expect(state.activeScenario).toBe(id)
+    expect(state.liveRun).toBeNull()
+    expect(state.isPlaying).toBe(false)
+    expect(state.currentTime).toBe(4)
+  })
+
+  it('clears the stored mission with null', () => {
+    useFlightStore.getState().setAuthoredMission(authoredConfig())
+    expect(useFlightStore.getState().authoredMission).not.toBeNull()
+
+    useFlightStore.getState().setAuthoredMission(null)
+
+    expect(useFlightStore.getState().authoredMission).toBeNull()
+  })
+
+  it('holds the full run contract: id, faults, avoidance, and wind', () => {
+    useFlightStore.getState().setAuthoredMission(authoredConfig())
+
+    const stored = useFlightStore.getState().authoredMission
+    expect(stored?.id).toBe('custom_mission')
+    expect(stored?.faults).toEqual([])
+    expect(stored?.obstacles).toEqual([])
+    expect(stored?.avoidance).toEqual({
+      enabled: false,
+      clearance_margin_m: 2.0,
+      lookahead_s: 3.0,
+      detour_buffer_m: 0.5,
+    })
+    expect(stored?.wind_sigma).toEqual([0, 0, 0])
+    expect(stored?.wind_steady_ned).toEqual([0, 0, 0])
   })
 })

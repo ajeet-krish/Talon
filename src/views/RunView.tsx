@@ -10,6 +10,7 @@ import { Pacer, RATES, rateLabel } from '@/live/pacing'
 import { bufferCapacity, readReadout } from '@/live/readout'
 import type { LiveReadout } from '@/live/readout'
 import { PHASE_COLORS } from '@/utils/colors'
+import { configButtonLabel, withAuthoredMission } from '@/utils/runConfigs'
 import { LiveScene } from '@/components/live/LiveScene'
 import { TelemetryRail } from '@/components/live/TelemetryRail'
 import type { RunState } from '@/components/live/TelemetryRail'
@@ -60,10 +61,17 @@ const PHASE_LABELS: Record<string, string> = {
  * no idea it is being paced, so a paced run and a batch run are the same flight.
  * When a run finishes, its document is published to the replay, telemetry, and
  * metrics sections exactly like a recorded one.
+ *
+ * The strip offers the fetched shipped configs plus, when the mission editor
+ * handed one over, the authored mission first, captioned as yours. It is not a
+ * second run path: `LiveSim.create(selected, engine.Session)` is the one way a
+ * run starts, whether the selected config was fetched or authored.
  */
 export function RunView() {
   const setView = useFlightStore((s) => s.setView)
   const setLiveRun = useFlightStore((s) => s.setLiveRun)
+  /** The mission the editor validated and handed over, or null. */
+  const authoredMission = useFlightStore((s) => s.authoredMission)
 
   const [configs, setConfigs] = useState<LiveConfig[] | null>(null)
   const [configError, setConfigError] = useState<string | null>(null)
@@ -75,8 +83,9 @@ export function RunView() {
   const [readout, setReadout] = useState<LiveReadout | null>(null)
   const [summary, setSummary] = useState<LiveRunSummary | null>(null)
   /**
-   * Bumped by Reset. The recorder is keyed on it so a reset gives the scene a
-   * fresh, empty buffer instead of one holding the previous flight.
+   * Bumped by Reset and by any selection hand-off (a new authored mission, a
+   * scenario button). The recorder is keyed on it so a change gives the scene
+   * a fresh, empty buffer instead of one holding the previous flight.
    */
   const [epoch, setEpoch] = useState(0)
 
@@ -89,7 +98,15 @@ export function RunView() {
   const frameCountRef = useRef(0)
   const lastPhaseRef = useRef<string | null>(null)
 
-  const selected = configs?.find((c) => c.id === selectedId) ?? null
+  // The offered list: the authored mission ahead of the fetched scenarios when
+  // one exists, the fetched list unchanged otherwise. The fetched array is
+  // never mutated, and the authored entry keeps its own config id.
+  const availableConfigs = useMemo(
+    () => withAuthoredMission(configs, authoredMission),
+    [configs, authoredMission],
+  )
+
+  const selected = availableConfigs?.find((c) => c.id === selectedId) ?? null
 
   // One recorder per scenario per run, sized to the config's length. Recreating
   // it is what gives the scene a clean slate on a new scenario or a reset.
@@ -160,6 +177,22 @@ export function RunView() {
   }, [stopLoop])
 
   useEffect(() => disposeRun, [disposeRun])
+
+  /**
+   * A new authored mission takes over the Run view: any in-flight or finished
+   * run is disposed, the selection moves to the authored config id, and the
+   * buffer epoch is bumped so the scene starts from an empty recorder. The
+   * run itself is never started here; the RUN button stays the only way up.
+   */
+  useEffect(() => {
+    if (authoredMission === null) return
+    disposeRun()
+    setSelectedId(authoredMission.id)
+    setRunState('idle')
+    setReadout(null)
+    setSummary(null)
+    setEpoch((e) => e + 1)
+  }, [authoredMission, disposeRun])
 
   /**
    * Advance the native session to where the pacer says it should be, drain the
@@ -285,6 +318,8 @@ export function RunView() {
       setRunState('idle')
       setReadout(null)
       setSummary(null)
+      // The recorder is keyed on the epoch, so the scene gets a clean buffer.
+      setEpoch((e) => e + 1)
     },
     [selectedId, disposeRun],
   )
@@ -315,7 +350,7 @@ export function RunView() {
         </div>
 
         <div className="flex flex-wrap items-center gap-1">
-          {(configs ?? []).map((cfg) => {
+          {(availableConfigs ?? []).map((cfg) => {
             const isSelected = cfg.id === selectedId
             return (
               <button
@@ -323,6 +358,7 @@ export function RunView() {
                 type="button"
                 disabled={busy}
                 aria-pressed={isSelected}
+                title={`${cfg.label} (${cfg.id})`}
                 onClick={() => selectScenario(cfg.id)}
                 className={`border px-2 py-1 font-mono text-[10px] tracking-wider transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-signal disabled:opacity-50 ${
                   isSelected
@@ -330,11 +366,11 @@ export function RunView() {
                     : 'border-grid text-ink-dim hover:bg-panel-3'
                 }`}
               >
-                {cfg.label.toUpperCase()}
+                {configButtonLabel(cfg, authoredMission)}
               </button>
             )
           })}
-          {configs === null && configError === null && (
+          {availableConfigs === null && configError === null && (
             <span className="font-mono text-[10px] text-ink-faint">LOADING CONFIGS</span>
           )}
         </div>
@@ -435,7 +471,7 @@ export function RunView() {
             {/* Overlay: what is being flown, and how to look around. */}
             <div className="pointer-events-none absolute left-3 top-3 flex flex-col gap-1">
               <span className="font-mono text-[11px] font-semibold tracking-[0.18em] text-ink">
-                {selected?.label.toUpperCase() ?? 'NO SCENARIO'}
+                {selected !== null ? configButtonLabel(selected, authoredMission) : 'NO SCENARIO'}
               </span>
               <span className="max-w-md font-mono text-[9px] leading-relaxed text-ink-faint">
                 {selected?.blurb ?? ''}

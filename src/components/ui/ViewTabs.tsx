@@ -7,18 +7,20 @@ const VIEWS: { id: ViewId; label: string }[] = [
   { id: 'metrics', label: 'METRICS' },
   { id: 'videos', label: 'VIDEOS' },
   { id: 'run', label: 'RUN' },
+  { id: 'mission', label: 'MISSION' },
 ]
 
 /**
  * Section switcher for the tool. Rendered as instrument tabs in the header;
- * the active section gets the signal-cyan underline.
+ * the active section gets the signal-cyan underline. The row wraps on narrow
+ * screens so every section stays reachable instead of clipping.
  */
 export function ViewTabs() {
   const activeView = useFlightStore((s) => s.activeView)
   const setView = useFlightStore((s) => s.setView)
 
   return (
-    <nav aria-label="Tool sections" className="flex items-stretch gap-1">
+    <nav aria-label="Tool sections" className="flex flex-wrap items-stretch gap-x-1 gap-y-0.5">
       {VIEWS.map((view) => {
         const active = view.id === activeView
         return (

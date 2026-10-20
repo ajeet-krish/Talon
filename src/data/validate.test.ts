@@ -298,6 +298,27 @@ describe('validateLiveConfigs', () => {
     )
   })
 
+  it('rejects a keep-out id that is not a lowercase slug or is repeated', () => {
+    const badId = validConfig()
+    badId.obstacles = [{ id: 'North Zone', center_ned: [1, 2, -3], radius_m: 4 }]
+    expect(() => validateLiveConfigs(configsFile(badId))).toThrow(
+      'configs[0].obstacles[0].id must be a lowercase slug: up to 64 letters, digits, or underscores',
+    )
+    const tooLong = validConfig()
+    tooLong.obstacles = [{ id: 'a'.repeat(65), center_ned: [1, 2, -3], radius_m: 4 }]
+    expect(() => validateLiveConfigs(configsFile(tooLong))).toThrow(
+      'configs[0].obstacles[0].id must be a lowercase slug: up to 64 letters, digits, or underscores',
+    )
+    const repeated = validConfig()
+    repeated.obstacles = [
+      { id: 'obs_a', center_ned: [1, 2, -3], radius_m: 4 },
+      { id: 'obs_a', center_ned: [9, 9, -3], radius_m: 2 },
+    ]
+    expect(() => validateLiveConfigs(configsFile(repeated))).toThrow(
+      'configs[0].obstacles[1].id must be unique in the list ("obs_a" is already used)',
+    )
+  })
+
   it('rejects non-finite wind triples', () => {
     const sigma = validConfig()
     sigma.wind_sigma = [1, Number.NaN, 0.5]
@@ -529,6 +550,7 @@ describe('validateScenarioConfig', () => {
       'gps_outage',
       'emergency',
       'draft',
+      'live',
     ]) {
       expect(() => validateScenarioConfig({ id }), id).toThrow(
         `id must not be a reserved scenario id ("${id}")`,
@@ -587,6 +609,46 @@ describe('validateScenarioConfig', () => {
     expect(() => validateScenarioConfig(scenario({ obstacles: [zone] }))).toThrow(
       'obstacles[0].radius_m must be <= 1000000',
     )
+  })
+
+  it('rejects a keep-out id that is not a lowercase slug or is repeated', () => {
+    expect(() =>
+      validateScenarioConfig(
+        scenario({
+          obstacles: [{ id: 'North Zone', center_ned: [1, 2, -3], radius_m: 4 }],
+        }),
+      ),
+    ).toThrow('obstacles[0].id must be a lowercase slug: up to 64 letters, digits, or underscores')
+    expect(() =>
+      validateScenarioConfig(
+        scenario({
+          obstacles: [{ id: 'zone a', center_ned: [1, 2, -3], radius_m: 4 }],
+        }),
+      ),
+    ).toThrow('obstacles[0].id must be a lowercase slug: up to 64 letters, digits, or underscores')
+    expect(() =>
+      validateScenarioConfig(
+        scenario({
+          obstacles: [
+            { id: 'obs_a', center_ned: [1, 2, -3], radius_m: 4 },
+            { id: 'obs_a', center_ned: [9, 9, -3], radius_m: 2 },
+          ],
+        }),
+      ),
+    ).toThrow('obstacles[1].id must be unique in the list ("obs_a" is already used)')
+  })
+
+  it('accepts the recorded zone ids and the editor-generated zone_N ids', () => {
+    const cfg = validateScenarioConfig(
+      scenario({
+        obstacles: [
+          { id: 'obs_north', center_ned: [1, 2, -3], radius_m: 3 },
+          { id: 'obs_east', center_ned: [5, 6, -3], radius_m: 3 },
+          { id: 'zone_12', center_ned: [9, 9, -3], radius_m: 3 },
+        ],
+      }),
+    )
+    expect((cfg.obstacles ?? []).map((o) => o.id)).toEqual(['obs_north', 'obs_east', 'zone_12'])
   })
 
   it('caps waypoints, obstacles and faults at the generated list caps', () => {

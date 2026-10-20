@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { FlightData, ScenarioId } from '@/types/flight'
-import type { LiveRunSummary } from '@/live/types'
+import type { LiveConfig, LiveRunSummary } from '@/live/types'
 import { validateFlightData } from '@/data/validate'
 
 export interface DisplayToggles {
@@ -12,7 +12,7 @@ export interface DisplayToggles {
 }
 
 /** Top-level tool sections. */
-export type ViewId = 'replay' | 'telemetry' | 'metrics' | 'videos' | 'run'
+export type ViewId = 'replay' | 'telemetry' | 'metrics' | 'videos' | 'run' | 'mission'
 
 /** One row of the validation driver's machine-readable report. */
 export interface ValidationRow {
@@ -62,6 +62,11 @@ interface FlightStore {
   validationError: string | null
   /** Summary of the most recent live run, or null before the first run. */
   liveRun: LiveRunSummary | null
+  /**
+   * The validated mission authored in the editor, ready to fly, or null.
+   * The store only holds it: starting the run belongs to the Run view.
+   */
+  authoredMission: LiveConfig | null
 
   /** Fetch scenario JSON (no-op if already cached, or if id is 'live'). */
   loadScenario: (id: ScenarioKey) => Promise<void>
@@ -69,6 +74,8 @@ interface FlightStore {
   setActive: (id: ScenarioKey) => Promise<void>
   /** Store a completed live run under the 'live' key and select it. */
   setLiveRun: (data: FlightData, summary: LiveRunSummary) => void
+  /** Hand the editor's validated mission to the Run view, or clear it. Starts no run. */
+  setAuthoredMission: (config: LiveConfig | null) => void
   /** Move the playhead, clamped to [0, duration]. */
   setTime: (t: number) => void
   togglePlay: () => void
@@ -100,6 +107,7 @@ export const useFlightStore = create<FlightStore>((set, get) => ({
   validation: null,
   validationError: null,
   liveRun: null,
+  authoredMission: null,
 
   loadScenario: async (id) => {
     if (id === 'live') return
@@ -142,6 +150,10 @@ export const useFlightStore = create<FlightStore>((set, get) => ({
       isPlaying: false,
       error: null,
     })),
+
+  // Pure hand-off: the Run view watches `authoredMission` and owns the reset,
+  // the selection, and the run itself, so no run starts here.
+  setAuthoredMission: (config) => set({ authoredMission: config }),
 
   setTime: (t) => {
     const data = get().scenarios.get(get().activeScenario)

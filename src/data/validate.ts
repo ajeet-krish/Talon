@@ -223,6 +223,32 @@ function validateObstacle(value: unknown, path: string): Obstacle {
   }
 }
 
+/** The keep-out id shape: a lowercase slug with underscores, 1 to 64 characters. */
+const OBSTACLE_ID_PATTERN = /^[a-z0-9_]{1,64}$/
+
+/**
+ * Check one already-typed keep-out list by id: every id is a lowercase slug
+ * (`obs_north`, `zone_3`, `o`) and no id appears twice, so a document can
+ * name its zones unambiguously. `path` is the list path the errors point at,
+ * e.g. `configs[0].obstacles`. Applied by both list gates, the live config
+ * gate and the authored scenario gate.
+ */
+function checkObstacleIds(obstacles: readonly Obstacle[], path: string): void {
+  const seen = new Set<string>()
+  for (const [index, obstacle] of obstacles.entries()) {
+    if (!OBSTACLE_ID_PATTERN.test(obstacle.id)) {
+      bad(
+        `${path}[${index}].id`,
+        'must be a lowercase slug: up to 64 letters, digits, or underscores',
+      )
+    }
+    if (seen.has(obstacle.id)) {
+      bad(`${path}[${index}].id`, `must be unique in the list ("${obstacle.id}" is already used)`)
+    }
+    seen.add(obstacle.id)
+  }
+}
+
 function validateAvoidance(value: unknown, path: string): AvoidanceConfig {
   const a = asRecord(value, path)
   const cfg: AvoidanceConfig = { enabled: asBoolean(a.enabled, `${path}.enabled`) }
@@ -268,6 +294,7 @@ function validateConfig(value: unknown, path: string): LiveConfig {
   const obstacles = asBoundedArray(c.obstacles, `${path}.obstacles`, LIMITS.max_obstacles).map(
     (entry, i) => validateObstacle(entry, `${path}.obstacles[${i}]`),
   )
+  checkObstacleIds(obstacles, `${path}.obstacles`)
   const avoidance =
     c.avoidance === undefined ? undefined : validateAvoidance(c.avoidance, `${path}.avoidance`)
   const wind_sigma = asSigmaVec3(c.wind_sigma, `${path}.wind_sigma`)
@@ -342,8 +369,13 @@ export function validateLiveConfigs(value: unknown): LiveConfig[] {
 // Authored scenarios (mission authoring, Phase 8)
 // ---------------------------------------------------------------------------
 
-/** Ids the shipped configs own; an authored scenario must not collide with one. */
-const RESERVED_SCENARIO_IDS = [
+/**
+ * Ids an authored scenario must not own: the shipped configs' ids plus the
+ * live run slot key. Exported for the mission editor, which must steer
+ * generated ids (`custom_mission`, `zone_N`) around the same list so every id
+ * the editor offers passes this gate.
+ */
+export const RESERVED_SCENARIO_IDS = [
   'hover',
   'waypoints',
   'obstacle_field',
@@ -352,6 +384,10 @@ const RESERVED_SCENARIO_IDS = [
   'gps_outage',
   'emergency',
   'draft',
+  // The live run slot: an authored mission must not claim the key the Run
+  // view files its in-browser run under, or it would read back as a shipped
+  // scenario instead of the author's draft.
+  'live',
 ] as const
 
 /** The authored id shape: a lowercase slug, letter first, at most 64 characters. */
@@ -507,7 +543,9 @@ function validateScenarioAvoidance(value: unknown, path: string): AvoidanceConfi
  * The result carries every field, so the Run view never has to guess. The
  * `id` is the one field that must be authored: a lowercase slug
  * (`^[a-z][a-z0-9_]{0,63}$`) that is not a reserved shipped scenario, since
- * it becomes the recording's `meta.scenario` and file name.
+ * it becomes the recording's `meta.scenario` and file name. Keep-out zones
+ * carry their own id rule: a lowercase slug (`^[a-z0-9_]{1,64}$`) used once
+ * per list, so a message naming a zone points at exactly one of them.
  *
  * Authored faults are checked against this scenario's own duration: a fault
  * fires when the clock reaches it, so the last accepted fire time is the run's
@@ -544,6 +582,7 @@ export function validateScenarioConfig(value: unknown): ScenarioConfig {
     'obstacles',
     LIMITS.max_obstacles,
   ).map((entry, i) => validateObstacle(entry, `obstacles[${i}]`))
+  checkObstacleIds(obstacles, 'obstacles')
   const avoidance = validateScenarioAvoidance(c.avoidance, 'avoidance')
   const wind_sigma = asSigmaVec3(authored(c.wind_sigma, SCENARIO_DEFAULTS.wind_sigma), 'wind_sigma')
   const wind_steady_ned = asBoundedVec3(
