@@ -2424,3 +2424,178 @@ Verification checklist:
       Phase 8a fault-window and fault-safety findings are carried and re-verified
       against untouched scheduling code, and the Phase 5c generation contract
       keeps the caps derivable from the Rust constants
+
+### Phase 8c review (2026-10-19)
+
+Scope: mission editor and Run handoff. Uncommitted working tree: seven
+modified tracked files (153 insertions, 35 deletions) plus nine untracked
+paths: `src/utils/editor.ts`, `src/utils/runConfigs.ts`, `src/data/presets.ts`,
+`src/store/useMissionStore.ts`, `src/views/MissionView.tsx`,
+`src/components/editor/` (twelve files including `chart.test.ts`), and the new
+test files `editor.test.ts`, `presets.test.ts`, `useMissionStore.test.ts`,
+`runConfigs.test.ts`. The tracked seven were reviewed against `git diff HEAD`;
+the new files were read in full. Prior reviews read as context.
+
+Overall verdict: FAIL. Two blocking findings, both small and local:
+value-equal commands manufacture undo history (a bare field focus and blur
+marks the draft EDITED), and invalid drafts are persisted (a tab reload after
+any invalid edit discards the whole draft). Everything else passes and all
+seven command gates are green.
+
+#### Check results
+
+| # | Check | Verdict | Details |
+|---|-------|---------|---------|
+| 1 | Editor model correctness | FAIL | Every other clause passes. Commands apply immutably and to the intended field only (`applyToConfig`, editor.ts:419-547, with deep copies at 51-87 and identity returns for bad indices, empty tuning, and end-of-list reorder; the immutability tests at editor.test.ts:533-541 are real). Altitude conversions preserve NED z and kill negative zero (editor.ts:171-190, tested 154-180). Estimates derive only from authored data (editor.ts:201-234, hand-computed tests 186-221). The fault window is exactly the validator's and Rust's rule: `faultWindowEndS` (editor.ts:249-253) equals `lastStepTime` (validate.ts:421-425) and `last_step_time` (core/src/faults.rs:42-48): `round(duration/dt)`, null below two steps, `(steps-1)*dt` inclusive. Warnings are non-blocking (Fly gates on `errors` only, MissionView.tsx:142) and product-language (editor.ts:269-290). Ids avoid the reserved list (`nextMissionId`, editor.ts:301-310, against the exported `RESERVED_SCENARIO_IDS` validate.ts:350-359) and every template id clears it (presets.test.ts:30-36). The one FAIL: no-op commands do create history (finding F1 below) |
+| 2 | Store correctness | FAIL | All clauses pass except one. Persistence is guarded at every touch (storage() and persist(), useMissionStore.ts:42-74) and import enforces the 1,000,000-byte cap before parsing (185-189), rejects malformed JSON (191-196) and invalid missions (197-204) while preserving the previous draft (tested at useMissionStore.test.ts:189-214). Export writes pretty JSON plus newline as `id.json` and marks the draft saved (207-220, pinned at 218-254). Clear removes the persisted key and resets without re-persisting (222-241, tested 258-270). Loading a template resets history through `createHistory` (174-182, tested 143-175). Errors and warnings recompute on every committed change (132-142) and warnings read the whole config so obstacle edits re-trigger them. No stale closures (`get()` throughout) and no shared-object mutation (every constructor clones). The one FAIL: invalid drafts are saved, not skipped (finding F2 below) |
+| 3 | UI correctness and accessibility | PASS | NumberField cannot emit NaN or out-of-range values: commit is gated on `draftProblem` (NumberField.tsx:54-65, 111-122) and arrows clamp through `stepValue` (40-51); labels, `aria-invalid`, and `aria-describedby` are wired (86-104, 149-153). Waypoint and obstacle edits go through the sanctioned helpers and commands (`withWaypointAltitude` / `waypoint/set`, WaypointPanel.tsx:133-157; `withObstacleAltitude` / `obstacle/set`, ObstaclePanel.tsx:88-110). Drag previews locally and commits exactly one command on pointer up (MissionCanvas.tsx:164-207; the threshold keeps bare clicks out). Keyboard selection, 1 m and 5 m nudges, and Delete removal work (267-287, focus selects at 451, 563). Focus rings are present on every button and node (`focus-visible:outline-2 outline-signal`), the chart carries both an `aria-label` summary and an `sr-only` route list (79-102, 646-660). Layout stacks below `lg` with a wrapping toolbar (MissionView.tsx:151, 281-308) and only `transition-colors` is used anywhere (no keyframes, no `animate-*`). Caveats recorded as low findings: the NumberField input suppresses its own outline in favor of the wrapper border shift, and none of the interaction code has a DOM test (no DOM tier exists; tsc strict is the gate) |
+| 4 | Handoff | PASS | The Fly button validates, clones through `toMissionConfig(validateScenarioConfig(config))`, stores the mission, and opens Run (MissionView.tsx:124-138); the clone means later edits cannot reach the stored mission. The authored mission lands first in the strip (withAuthoredMission, runConfigs.ts:17-24, identity-preserving and tested) and is captioned `MY MISSION: ...` (31-35). Pressing RUN is the single existing path: `LiveSim.create(selected, engine.Session)` (RunView.tsx:217) stringifies the whole config (src/live/sim.ts:67-68), so faults, obstacles, avoidance, and wind ride along; there is no second run path (the Run view owns the run, the store slot only holds the config, useFlightStore.ts:156). With nothing authored the fetched five are returned unchanged (runConfigs.ts:21, `toBe` identity test runConfigs.test.ts:20-23) and their captions are plain uppercased labels. A new authored mission disposes any run, selects its id, clears readout and summary, and bumps the buffer epoch (RunView.tsx:187-195). The authored id is preserved in the document meta: the session writes `meta.scenario` from the config id (core/src/export.rs:81-113) |
+| 5 | No regressions | PASS | The tracked diff is additive. App.tsx hides the scenario rail only on the mission view (`!mission &&`, App.tsx:65-93) and keeps `timeBased` gating untouched; ViewTabs gains the MISSION tab and wraps (ViewTabs.tsx:10, 23); validate.ts only exports `RESERVED_SCENARIO_IDS`; useFlightStore gains the `authoredMission` slot and `ViewId` member with no behavior change to replay or live; RunView's only behavioral delta besides the handoff is an extra epoch bump on scenario switch (harmless: the buffer was already recreated on `selected` change); tailwind adds `warn` and `danger` only. The existing suites (311 vitest, 399 pytest, 294 cargo) all stayed green |
+| 6 | Tests | PASS | 106 new or extended cases, all genuine: editor model 48 (editor.test.ts), chart helpers 17 (chart.test.ts), mission store 20 (useMissionStore.test.ts), presets 9 (presets.test.ts), run-config merge 9 (runConfigs.test.ts), flight-store handoff 3 (useFlightStore.test.ts). Wrong-reason audit: the history-cap arithmetic recomputed and correct (editor.test.ts:553-563: 105 edits leave `past[0].cruise_hold_s === 4`), the export test pins the real filename and JSON shape, the no-op store test asserts storage stays empty, and no assertion rests on a coincidental substring. One weak case: editor.test.ts:247 ("agrees with the validator") is trivially true (59.995 > 20) and proves little. Important uncovered behavior: value-equal commands (F1) and invalid-draft persistence (F2) have no test, and component interaction (drag, keyboard, NumberField commit) is review-only since there is no DOM tier. The pure logic is otherwise fully covered and the UI is strict-mode typechecked |
+| 7 | Command gates | PASS | `cargo fmt --all -- --check` exit 0, clean. `cargo clippy --workspace --all-targets -- -D warnings` exit 0, zero warnings. `cargo test --workspace` exit 0, 294 passed / 0 failed / 0 ignored (talon-core 265, talon-py 13, talon-wasm 16, ts_export 0, doc-tests 0). `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` exit 0, 399 passed. `npm test` exit 0, 19 files / 311 tests passed. `npm run build` exit 0, tsc clean (0 errors), vite 666 modules (chunk-size notice only). `npm run smoke:wasm` exit 0, all live smoke checks passed (five scenarios plus the paced loop; avoidance activations 3, minClearance 1.68 m) |
+
+#### Findings
+
+| Severity | File:Line | Issue | Suggested Fix |
+|----------|-----------|-------|---------------|
+| Blocking (Medium) | src/utils/editor.ts:514-540 (also 443-446, 477-483, 496-499) with src/components/editor/NumberField.tsx:110-122 | F1: A command that changes nothing still creates an undo entry. `param/set`, `waypoint/set`, `obstacle/resize`, `obstacle/set`, and the wind commands return a fresh object unconditionally, so setting a field to its current value pushes history, clears redo, marks the draft dirty, and persists. The UI makes this easy to hit: NumberField seeds its draft on focus and commits on blur even when the text is unchanged, so merely tabbing through the parameter fields flips the toolbar to EDITED and fills the undo stack with identical states. The module docstring (editor.ts:413-418) promises "a command that changes nothing returns the same reference", which is only true for index and shape no-ops. | Two layers: skip `onCommit` in NumberField.onBlur when `Number(draft) === value`, and give `applyToConfig` value equality per field (return `cfg` when the written value equals the current one) so the model holds its own contract. Re-test: a value-equal `param/set` and a focus-blur cycle must leave `history`, `dirty`, and storage untouched. |
+| Blocking (Medium) | src/store/useMissionStore.ts:66-74, 132-142 (consequence at 52-63) | F2: `commit` persists every present, valid or not. After any invalid edit (for example duration set to 0) the invalid draft overwrites the last valid one in `localStorage`; on the next tab load `loadDraft` validates, fails, and falls back to `emptyMission()`, silently discarding the whole draft. The scope requires persistence not to save invalid drafts; today it saves them and the load path throws the work away. | Persist only when the present validates: in `commit`, call `persist(config)` only when `errors.length === 0` (or validate inside `persist`). The in-memory draft stays authoritative and editable as today. Add a test: an invalid dispatch keeps the stored draft at the last valid state, and a reload restores that state. |
+| Low | src/components/editor/NumberField.tsx:93-95, 143 | The input sets `outline-none`; the only focus indication is the wrapper border shifting to `focus-within:border-signal`. Visible, but subtle in monochrome and easy to lose among many fields. | Give the input its own `focus-visible:outline` matching the buttons, or strengthen the wrapper treatment. |
+| Low | src/data/presets.ts:46-78, 112-192 vs public/data/live/configs.json | The five template routes and zone sets "mirror the shipped live configs" but nothing pins them to the fixture, so a later edit to either side drifts silently while both suites stay green. | Add one test that compares each mirrored template's waypoints, obstacles, and wind against the corresponding entry of the validated `configs.json`. |
+| Low | src/utils/editor.ts:162-164, 301-310 | `cloneAsTemplate` and `nextMissionId` are exported and tested but have no production caller (templates use fixed ids). Dead API surface that can drift from what the UI actually does. | Wire them into a "duplicate mission" or rename flow, or drop them until such a flow exists. |
+| Low | src/components/editor/NumberField.tsx:54-65 with MissionParametersPanel.tsx:101-108 | NumberField has no integer mode, so the seed field accepts 1.5. It cannot emit NaN or an out-of-range value, but it can emit an in-range non-integer that the validator then rejects (non-blocking error shown). | Add an `integer` prop that rounds or rejects non-integers, used by the seed field. |
+| Low | src/components/editor/WaypointPanel.tsx:67-75 vs MissionCanvas.tsx:218-228 | The panel's ADD WAYPOINT does not clamp coordinates (`clampCoord`) the way the chart's double-click add does, so adding near the coordinate cap authors an invalid draft (caught by the validator, non-blocking). | Route both adds through one helper that clamps north and east. |
+| Info | src/components/editor/MissionCanvas.tsx:191-207, src/components/editor/WindPanel.tsx:152-170 | A drag that returns to its origin and a click on the already-active turbulence preset also manufacture one history entry each. Both fall out of the F1 fix. | None beyond F1. |
+| Info | src/components/editor/MissionCanvas.tsx:164-287 | Drag, keyboard nudge, and Delete logic is component-internal and untested: the repo has no DOM tier, so these were verified by strict typecheck plus review only. | If the interaction grows, extract the pure geometry (nudge deltas, drag commit values) into `chart.ts` where it can be unit tested. |
+
+Recurring patterns for other agents: (1) a model that documents "a command
+that changes nothing returns the same reference" must compare values, not just
+indices and shapes, and its UI must not commit unchanged text on blur; the
+reference-equality no-op check is half of the contract. (2) persistence that
+writes on every change needs a validity gate at the write, because the
+read-side validation fallback (blank on invalid) turns a clobbering write into
+silent data loss.
+
+#### Verification checklist
+
+- [ ] All checks passed (two FAIL: F1 history no-ops, F2 invalid-draft persistence)
+- [x] No critical issues found (no Critical or High; the two blocking findings are Medium)
+- [x] Code follows project conventions (snake_case, `LIMITS`-driven bounds, clone-then-write everywhere)
+- [x] No em dashes, double hyphens, or dash equivalents; use proper punctuation (the `// ---` section rules and the `'--:--'` clock placeholder are pre-existing conventions, not dash punctuation)
+- [x] Phase code integrates cleanly with prior phases (replay, telemetry, live run, and the Phase 8a/8b validator contract all unchanged)
+
+Counts for the phase: 294 Rust tests, 399 pytest, 311 vitest (19 files, 106
+new), all green, plus clean fmt, clippy, typecheck, production build, and wasm
+smoke run.
+
+### Phase 8c review follow-up (2026-10-19)
+
+Scope: the F1 and F2 fixes in `src/utils/editor.ts`,
+`src/components/editor/NumberField.tsx`,
+`src/components/editor/MissionParametersPanel.tsx`,
+`src/components/editor/WaypointPanel.tsx`,
+`src/components/editor/MissionCanvas.tsx`, `src/store/useMissionStore.ts`, and
+the added tests (`editor.test.ts`, `NumberField.test.ts`,
+`useMissionStore.test.ts`). All six files plus the three test files are
+untracked, so `git diff` is empty by construction and the verification was
+done against the working-tree contents.
+
+Verdict: PASS. F1 and F2 are both closed.
+
+| Check | Verdict | Details |
+|-------|---------|---------|
+| F1: value-equal commands are no-ops | PASS (closed) | `applyToConfig` now compares before it copies on every value-carrying command: `waypoint/move` (editor.ts:488-496, horizontal pair), `waypoint/set` (497-502, `waypointEqual` covers position triple, speed, heading, radius), `obstacle/move` (523-533), `obstacle/resize` (534-541), `obstacle/set` (542-549, `obstacleEqual` covers id, center triple, radius), `wind/steady` and `wind/sigma` (556-561, `vec3Equal`), `avoidance/enabled` (562-564), `avoidance/tuning` (565-586, patch built only from differing knobs, empty patch returns `cfg`), `param/set` (587-614, one `cfg[command.key] === command.value` gate covers every key), `faults/set` (615-625, length plus `faultEqual` field by field). A no-op therefore returns the identical history reference (applyCommand, 641-649): no undo entry, `past` untouched, `future` preserved. No over-equality: each of the eleven no-op rows in the new table (editor.test.ts:638-721) is paired with a real change of the same command that records exactly one entry and clears the redo stack. Residual note only: the `reset` command (626-627) is not value-compared, but it has no production caller (grep: model test only). |
+| F2: invalid drafts never reach storage | PASS (closed) | `commit` (useMissionStore.ts:140-152) persists only when `errors.length === 0`, keeps the invalid draft in memory with its errors, and leaves `lastSavedAt` at the previous write's time when nothing is written. The new test (useMissionStore.test.ts:108-146, fake clock) proves storage remains the previous valid config byte for byte (`toBe(persisted)`), the invalid edit stays fixable in memory, `lastSavedAt` does not advance, and the corrected edit persists and re-stamps. Residual carried from before this fix (unchanged, out of F2's scope): a quota or privacy throw inside `persist` is swallowed after `lastSavedAt` already advanced; making `persist` return success would close it. |
+| NumberField commit rule | PASS | `draftOutcome` (NumberField.tsx:83-94) commits nothing when the text parses to the committed value: `12`, `12.0`, and ` 12 ` are all pinned (NumberField.test.ts:22-26). Integer mode rejects fractions with "Whole numbers only" (draftProblem, 70), steps by one, and guards the arrows (175). Blur and Enter route through `draftOutcome` (143-156) and the arrows skip equal values (176), so tabbing through the form creates no undo entry. |
+| Tests fail against the previous behavior | PASS | Three proofs: (1) the `param/set` no-op row asserts `after` is the same history reference (editor.test.ts:706), which the old unconditional spread always violated; (2) "keeps a redo stack alive" (723-733) requires `canRedo` after a value-equal command, and the old `future: []` always cleared it; (3) the store test's `toBe(persisted)` and frozen `lastSavedAt` (128-129) fail against the old unconditional `persist` and `Date.now()` stamp. The `faults/set` and `waypoint/set` no-op rows fail before as well (unconditional clone and new object). The `NumberField.test.ts` cases target the newly extracted `draftOutcome`, so they are new coverage of the fixed rule rather than red-then-green, and the model and store rows carry the user-visible regression proof. |
+| Command gates | PASS | `npm test` exit 0: 20 files / 340 tests passed (311 + 29: 23 in editor.test.ts, 5 in the new NumberField.test.ts, 1 in useMissionStore.test.ts). `npm run typecheck` exit 0, `tsc --noEmit` clean. `npm run build` exit 0, tsc clean, vite 666 modules (chunk-size notice only). |
+
+Also fixed along the way, closing three of the low findings from the main
+review: `clampCoordinate` is now shared (`@/utils/editor`, editor.ts:331) and
+used by both the chart and the panel's add (WaypointPanel.tsx:79-80), the seed
+field is an integer field (MissionParametersPanel.tsx:106), and the
+NumberField input carries its own `focus-visible:outline`
+(NumberField.tsx:179).
+
+Verification checklist:
+
+- [x] F1 closed (value-equal commands return the same history; paired change rows prove no over-equality)
+- [x] F2 closed (storage keeps the last valid config; `lastSavedAt` frozen while invalid)
+- [x] New tests fail against the previous behavior (three proofs above)
+- [x] All gates green (340 vitest, typecheck, production build)
+- [x] No em dashes, double hyphens, or dash equivalents; use proper punctuation
+
+### Phase 8c security review (2026-10-19)
+
+Scope: the Phase 8c surface the two reviews above covered (uncommitted):
+`src/utils/editor.ts`, `src/data/presets.ts`, `src/store/useMissionStore.ts`,
+`src/utils/runConfigs.ts`, `src/views/MissionView.tsx`,
+`src/components/editor/` (twelve files), `src/store/useFlightStore.ts`,
+`src/views/RunView.tsx`, `src/App.tsx`, `src/components/ui/ViewTabs.tsx`, and
+`tailwind.config.js`, with the supporting gate code re-walked rather than
+taken on trust (`src/data/validate.ts`, `src/live/sim.ts`, `wasm/src/lib.rs`).
+Examined against the 2026-10-18 full security review's threat model: a
+malicious mission document or stored draft fed to a willing victim's own tab,
+and the worst achievable outcome being that tab hanging or showing wrong
+numbers. The 2026-10-18 full security review and the Phase 2 through 8b
+security reviews are treated as read.
+
+Overall verdict: PASS. No Critical, High, or Medium findings. Four Low
+findings and four informational notes; none exploitable in the threat model.
+This phase also closes two carried Mediums on this path: the unbounded
+`bufferCapacity` allocation is now clamped (`MAX_BUFFER_SAMPLES`,
+src/live/readout.ts:106-124), and `validateScenarioConfig` has production
+callers at the authoring seam (the Phase 8b Low "no production caller" is
+closed).
+
+#### Check results
+
+| # | Check | Verdict | Evidence |
+|---|-------|---------|----------|
+| 1 | Import is the untrusted entry | PASS | `importFile` enforces the 1,000,000-byte cap on `file.size` before `file.text()` (useMissionStore.ts:194-200), rejects malformed JSON inside a catch that names the failure (201-206), and runs `validateScenarioConfig` before any state change (207-214); every failure throws before `commit`, so the previous draft, history, and storage are untouched, and `MissionView.onPickFile` turns the throw into a dismissible banner (MissionView.tsx:92-103). No prototype pollution: `JSON.parse` only defines own data properties, and every consumer rebuilds fresh object literals keyed by name (validate.ts:207-224, 428-457, 522-596; editor.ts:98-128), so a `__proto__` or `constructor` key in the file never survives normalization; the one spread over a fault (`cloneFault`, editor.ts:74-76) copies only the already-rebuilt literal's own keys. No DOM injection sink exists: grep over `src/` finds no `dangerouslySetInnerHTML`, `innerHTML`, `eval(`, `new Function`, `document.write`, or dynamic-tag `createElement` (the `createElement` sites are fixed `'a'` and `'canvas'` tags), and every user-derived string renders as a React text node or a React-escaped attribute (`title`, `aria-label`): chart labels (MissionCanvas.tsx:432), the sr-only list (652-655), warning text (MissionValidation.tsx:56, editor.ts:279-289), the import banner (MissionView.tsx:266), the Run overlay caption and blurb (RunView.tsx:474, 477), and the strip captions (runConfigs.ts:31-35). No path traversal surface exists on this path. Unbounded work is bounded as in check 6 |
+| 2 | localStorage is untrusted too | PASS | `localStorage` appears nowhere in `src/` outside `useMissionStore` (grep). `loadDraft` wraps `JSON.parse` and `validateScenarioConfig` in one try/catch and falls back to `emptyMission()` (useMissionStore.ts:54-66), and the store initializer derives errors from that validated-or-blank config (154-160), so a hostile stored value cannot crash the store, bypass the validator, or reach the UI unvalidated: the validator rebuilds the config field by field. No other code trusts stored data: the run path reads in-memory state and fetched JSON only, and the fetched documents go through `validateLiveConfigs` / `validateFlightData` (useFlightStore.ts:124-125, live.ts) |
+| 3 | Handoff to the run | PASS | Both gates run. The browser gate runs at the Fly button: `toMissionConfig(validateScenarioConfig(config))` (MissionView.tsx:124-138), and the stored mission is the validator's rebuilt clone, so later edits cannot reach it. The Rust gate runs at run start: `LiveSim.create` stringifies the whole config (src/live/sim.ts:67-68) and `Session::new` parses and validates before constructing anything (wasm/src/lib.rs:88-91), so faults, zones, wind, and avoidance are validated twice across the two layers: fault window and cap 16 (validate.ts:460-468 against `lastStepTime`, 421-425), zones with cap 512 and finiteness-first bounds (541-550, 217-224), wind triples capped at `max_wind_component_mps` (552-557), the avoidance block capped per knob (475-501), each mirrored in Rust (scenario.rs:177-213, faults.rs:162-237, avoidance.rs:152-209, parity walked in the Phase 8b review). A hypothetical future caller of `setAuthoredMission` that skips the browser gate fails closed at `Session::new` (no run starts; `LiveSim.create` throws before any allocation is retained). The authored id cannot collide with shipped or recorded ids: `asScenarioId` enforces the anchored slug and rejects the reserved list (validate.ts:402-412, 350-359), which covers all five shipped live config ids (public/data/live/configs.json: hover, waypoints, obstacle_field, avoidance, wind) and all four recorded scenario ids (useFlightStore.ts:33-38), and no `EditorCommand` carries an id key (editor.ts:356-397), so the id is fixed at validated construction. It cannot be a filesystem path (check 4) |
+| 4 | File export | PASS | `anchor.download` is `${config.id}.json` (useMissionStore.ts:225) where the id is provably slug-valid: fixed at construction (`emptyMission`, presets, all tested against the slug and the reserved list) or validated at import and load, and immutable through every command. `^[a-z][a-z0-9_]{0,63}$` admits no dot, slash, backslash, or control character, so no `..` traversal and no CR/LF for header injection; and there is no server, so no response header exists to inject into. The browser re-sanitizes download names. The object URL is created and revoked in the same tick (221-227) and the Blob type is a fixed literal |
+| 5 | No new dependency, network, secret, file write, or unsafe | PASS | `git status` shows no Cargo.toml, Cargo.lock, package.json, package-lock.json, or uv.lock change, so no new dependency exists to audit. Grep over the phase surface for secret patterns (api_key, token, password, private key blocks, AKIA, ghp_, sk-) finds nothing, and grep over `src/utils` and the editor for fetch, `import.meta`, `navigator`, WebSocket, EventSource, and sendBeacon finds nothing: the fetch calls in useFlightStore.ts:118, 176 and live.ts:19 are pre-existing, target fixed same-origin paths, and take only ids from the closed `ScenarioKey` union (the authored id never enters `loadScenario`). The only file write is the user-requested download (check 4). This phase touches no Rust file, so the workspace zero-unsafe posture carries. The import/export code is browser-only and guarded: `exportFile` checks `typeof document` and `URL.createObjectURL` (useMissionStore.ts:221), `storage()` degrades to null without a DOM (45-52), and the store module imports cleanly under node for the vitest suite |
+| 6 | Denial of service | PASS | Caps are enforced before any per-entry work: waypoints 512, obstacles 512, faults 16, duration 900 s, coordinates 1e6 m, radius 1e6 m, wind 100 m/s (generated LIMITS, talon_core.ts:252-270), checked by `asBoundedArray` on `length` before mapping (validate.ts:83-89) and honored by the editor's add paths (WaypointPanel.tsx:64, ObstaclePanel.tsx:30, FaultPanel.tsx:110, MissionCanvas.tsx:215). A hostile import is rejected at 1 MB before parsing (useMissionStore.ts:195-199) and validation recurses only along the fixed schema shape, so nothing hostile reaches the UI. String lengths (label, blurb, zone id) remain uncapped (carried from the Phase 8b info) but are bounded in practice by the import cap and the origin's storage quota. The editor's history is capped at 100 entries (HISTORY_CAP, editor.ts:407, applied at 646 and 668). Chart bounds stay finite and bounded at the extremes: every authored coordinate passes `clampCoordinate` (editor.ts:331-333) and the validator rejects beyond 1e6, so `gridStepM` resolves to 5000 m and at most about 1600 grid lines plus at most 512 nodes render, with `clampRadius` (MissionCanvas.tsx:67-69) keeping resize drags sane. A valid maximum-size mission stays usable: one commit costs one validate, one O(waypoints x obstacles) warning pass (about 262k trivial clearance calls worst case, useMissionStore.ts:90-97), and one JSON write of a few hundred KB; the run recorder allocation is clamped (MAX_BUFFER_SAMPLES, readout.ts:106-124), closing the 2026-10-18 white-screen finding on this path |
+| 7 | Command gates | PASS | `cargo clippy --workspace --all-targets -- -D warnings` exit 0, zero warnings (fresh `CARGO_TARGET_DIR` recompile of all four crates). `cargo fmt --all -- --check` exit 0, no output. Both run against this working tree on 2026-10-19. This phase touches no Rust, so the gates are a posture check |
+
+#### Findings
+
+| Severity | Check | File:Line | Issue | Exploitable or theoretical | Fix |
+|----------|-------|-----------|-------|----------------------------|-----|
+| Low | Import, DoS | src/store/useMissionStore.ts:200-205 | A 1 MB file of pathological nesting (for example 500k nested arrays) makes `JSON.parse` throw `RangeError`, which the catch relabels as "not valid JSON". The draft survives and no state changes, so the outcome is a misleading message, not a failure mode; the Rust side of the same boundary has serde_json's 128-level recursion limit and a named parse error | Theoretical: bounded 1 MB work, caught error, wrong label | Catch `RangeError` separately and name it, or note the parser's depth behavior in the message |
+| Low | Ids | src/data/validate.ts:350-359 with src/store/useFlightStore.ts:45 | `live` is a reserved `ScenarioKey` but not a reserved scenario id, so an imported mission may be named `live`. Nothing security-relevant follows (the completed run is stored under `live` regardless and no fetch is keyed on the authored id), but the recording's `meta.scenario` then reads `live`, which collides in meaning with the shipped live slot | Theoretical: naming confusion only | Add `live` to `RESERVED_SCENARIO_IDS` |
+| Low | Ids, DoS | src/data/validate.ts:217-224 | An imported zone id is any string: no slug rule and no length cap (unlike the scenario id), so a hostile file can carry a near-1 MB id into the chart label (MissionCanvas.tsx:432), the sr-only list (652-655), the warnings (editor.ts:279), and the React key `ob${ob.id}` (MissionCanvas.tsx:415). Rendering is text-only and safe (no injection), and the import cap bounds the string, but duplicate ids also collide as React keys, since import does not run `uniqueZoneId` | Theoretical: render cost and key warnings in the victim's own tab | Slug-validate and length-cap obstacle ids in `validateObstacle`, and reject duplicates |
+| Low | Export | src/store/useMissionStore.ts:217-230 | `exportFile` exports `history.present` without re-validating and without a guard around the DOM work. The filename is provably safe today (the id is immutable and slug-valid), so the residual is defense in depth plus the unguarded `document.createElement` for a non-browser consumer of the store | Not exploitable today | Assert the id slug at the write (or validate the config), and wrap the anchor work like `persist()` is wrapped |
+
+Informational notes:
+
+| Severity | File:Line | Issue |
+|----------|-----------|-------|
+| Info | src/store/useMissionStore.ts:90-97 | The warning pass is O(waypoints x obstacles) per commit: about 262k clearance calls at the 512 x 512 worst case, a few milliseconds today. If the caps ever grow, this is the first quadratic to revisit |
+| Info | src/utils/editor.ts:407, 646 | At maximum mission size the 100-entry history can hold tens of MB of cloned configs. Bounded, user-driven, and the same class as the accepted "the user may run long missions" posture |
+| Info | src/utils/editor.ts:626-627 | The `reset` command takes any `MissionConfig` with no validation (already noted in the Phase 8c follow-up as having no production caller). If it is ever wired to UI or import, it must run `validateScenarioConfig` first |
+| Info | src/views/RunView.tsx:361, src/components/editor/MissionCanvas.tsx:442 | User strings reach `title` and `aria-label` attributes. React escapes attributes and neither is a URL or code context, so this is rendering-only and risk-free; recorded here because these are the only non-text-node sinks in the phase |
+
+Recurring patterns for other agents: (1) the layered gate posture now has its
+first production wiring and should stay this way: the browser validator is a
+pre-check, `Session::new` is the boundary, and no reviewer or caller should
+treat the TS validator as the only control. (2) Any new id-like field needs a
+slug rule and a length cap at the validator, the way `id` has them; the zone
+id gap above is what an unruled id looks like. (3) Untrusted strings are
+safe in this codebase exactly because they only ever reach React text nodes
+and escaped attributes; keep new views that way and never introduce
+`innerHTML`-class sinks.
+
+Verification checklist:
+
+- [x] No Critical findings
+- [x] No High findings
+- [x] All Medium findings have mitigations (none raised; two carried Mediums closed by this phase)
+- [x] Low findings documented (four, all non-blocking)
+- [x] Phase security integrates with prior phases: the 2026-10-18 finiteness
+      remediation is preserved at every new seam, the Phase 8b parity between
+      the TS gate and the Rust gate is exercised on every Fly and every run,
+      and the Phase 8a/8b fault-window and fault-safety findings carry
+      unchanged through untouched scheduling code

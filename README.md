@@ -2,7 +2,7 @@
 
 # Talon FlightLab: UAV Autopilot Simulator
 
-Talon FlightLab is a drone autopilot simulator you can fly and inspect in the browser. It pairs a validated guidance, navigation, and control (GNC) core with a web tool that presents the results: a replayable 3D flight, live telemetry channels, the automated validation report, the recorded flight videos, and a live run that executes the autopilot itself in the browser.
+Talon FlightLab is a drone autopilot simulator you can fly and inspect in the browser. It pairs a validated guidance, navigation, and control (GNC) core with a web tool that presents the results: a replayable 3D flight, live telemetry channels, the automated validation report, the recorded flight videos, a mission editor, and a live run that executes the autopilot itself in the browser.
 
 The core is a complete autopilot for a 1.5 kg Crazyflie-class quadrotor: a 15-state multiplicative error-state Kalman filter, NLGL line-of-sight guidance, reactive obstacle avoidance, a cascaded PID controller, an 8-state flight-phase state machine with FDIR, and a UDP MAVLink software-in-the-loop (SIL) runner, all closed loop against a Rust rigid-body truth plant. The autopilot is one Rust library, `talon-core`: the browser runs it through WebAssembly (`wasm/`, wasm-bindgen) and the Python analysis harness runs it through a PyO3 extension (`bindings/`, exposing `talon._core`). The recorded-run glue (the mission manager, guidance, sensors, motors, battery, and the MAVLink SIL edge) and the analysis tooling are Python, and they call into the same core.
 
@@ -29,8 +29,9 @@ The Run section needs the WebAssembly kernel. Build it once with
 
 ## Sections
 
-One entry point, five sections (the replay and telemetry sections share the playback clock; the left rail always carries the scenario list):
+One entry point, six sections (the replay and telemetry sections share the playback clock; the left rail carries the recorded scenario list, and the mission editor owns the full width):
 
+- **Mission**: author a mission on a north-up planning chart. Add, drag, and reorder waypoints with altitude, leg speed, and acceptance radius; set steady wind and turbulence; place keep-out zones and toggle reactive avoidance; schedule faults on a timeline; read a pre-flight summary and named validation errors; import and export mission JSON. Fly sends the validated mission into the live Run pipeline.
 - **Replay**: a full-bleed 3D scene. Scrub a recorded flight and read the autopilot working: EKF state estimation with a 3-sigma covariance ellipsoid, the flight-phase state machine (phase-colored trail and phase-segmented timeline), NLGL guidance, and detour avoidance around spherical keep-out zones with a live clearance readout.
 - **Telemetry**: the recorded channels as time-series (altitude, ground speed, EKF error, wind, thrust, 3-sigma, obstacle clearance).
 - **Metrics**: a run summary derived from the active scenario plus the validation driver's own acceptance table.
@@ -46,8 +47,9 @@ One entry point, five sections (the replay and telemetry sections share the play
 - **UDP MAVLink SIL**: real MAVLink v2 frames (pymavlink codec) for telemetry (HEARTBEAT, ATTITUDE, LOCAL_POSITION_NED, GPS_RAW_INT, BATTERY_STATUS) and COMMAND_LONG events on loopback ports 14550/14551, plus fault injection (GPS outage, EKF corruption, battery drain).
 - **Native reactive avoidance**: spherical keep-out zones are a core layer (`core/src/avoidance.rs`). A zone that covers the active leg inside the lookahead gets a bypass point substituted for the waypoint, the latch is retired once the clearance recovers, and the run reports the minimum 3-D surface clearance it achieved plus the number of bypasses taken. The offline leg-detour planner that inserts detour waypoints before a run keeps working and now delegates to the same geometry, and the schema 1.1 telemetry export still carries the zones so the web scene can render them.
 - **7 closed-loop scenarios** with printed acceptance metrics, plus a validation driver that runs everything, generates seven publication plots and five flight videos, exports schema 1.1 telemetry JSON, and writes an automated validation report plus a machine-readable copy.
+- **Mission authoring**: a 2D planning chart and inspector over the generated scenario config, with a pure command and undo history, a persisted draft, validation against the core's own limits, JSON import and export, and a Fly handoff into the existing WASM run. Waypoints, wind, keep-out zones, and scheduled faults are authored data the Rust core applies; the editor never re-implements flight math.
 - **In-browser WASM run**: the same Rust autopilot (dynamics, Dryden wind, cascaded PID, 15-state MEKF, NLGL guidance, reactive avoidance, mission, phase machine, sensors, motors) compiled to WebAssembly with wasm-bindgen, so hover, waypoints, obstacle field, reactive avoidance, and wind fly live in the browser with no server round trip and no second implementation of the flight-critical math.
-- **Test suites**: 399 pytest, 245 Rust core, 14 wasm-binding, 13 PyO3 marshalling, and 182 vitest, all passing.
+- **Test suites**: 399 pytest, 265 Rust core, 16 wasm-binding, 13 PyO3 marshalling, and 357 vitest, all passing.
 
 ## Architecture
 
@@ -104,7 +106,7 @@ wasm-bindgen wrapper and `bindings/` is the PyO3 wrapper. The Python extension
 backend). From the repository root:
 
 ```bash
-cargo test --workspace               # 245 core + 14 wasm + 13 PyO3 tests
+cargo test --workspace               # 265 core + 16 wasm + 13 PyO3 tests
 
 uv sync                              # Python environment (.venv)
 ./bindings/build.sh                  # -> python/talon/_core<EXT_SUFFIX>
@@ -161,7 +163,7 @@ Headline numbers from `uv run python python/sims/run_all.py` (the full 25-row ta
 | Obstacle field min 3-D surface clearance | > 0 m | 2.072 m |
 | Emergency detection / final altitude | < 1 s / < 0.5 m | 0.000 s / settled |
 | State machine phases covered (SIL union) | 8 of 8 | 8 of 8 |
-| Test suites | 139+ pytest | 399 pytest, 245 Rust core, 182 vitest |
+| Test suites | 139+ pytest | 399 pytest, 265 Rust core, 357 vitest |
 
 Two example plots (generated by the validation driver into the gitignored `plots/` directory; regenerate with `uv run python python/sims/run_all.py`):
 
@@ -263,15 +265,17 @@ Talon/
 ├── vite.config.ts           # base '/Talon/', '@' alias to src/
 ├── Cargo.toml               # Cargo workspace: core, wasm, bindings
 ├── src/                     # web app: React 19 + react-three-fiber
-│   ├── views/               #   Replay, Telemetry, Metrics, Videos, Run
+│   ├── views/               #   Replay, Mission, Telemetry, Metrics, Videos, Run
 │   ├── components/scene/    #   R3F layers + FlightScene
 │   ├── components/live/     #   live ground-station scene and instrument rail
+│   ├── components/editor/   #   mission chart, inspector panels, number field
 │   ├── components/charts/   #   SVG time-series chart
 │   ├── components/ui/       #   rail, tabs, HUD, legend, timeline
 │   ├── live/                #   engine loader, recorder, pacer, readout (pure)
-│   ├── utils/               #   interpolation, clearance, chart, telemetry (pure)
-│   ├── store/               #   scenario cache, clock, toggles, active section
-│   └── data/                #   scenario, recording, and live-run metadata
+│   ├── utils/editor.ts      #   mission commands, history, estimates (pure)
+│   ├── utils/               #   interpolation, clearance, chart, telemetry, editor (pure)
+│   ├── store/               #   scenario cache, clock, toggles, active section, mission draft
+│   └── data/                #   scenario, recording, live-run metadata, mission templates and validators
 ├── core/                    # talon-core: the autopilot (Rust)
 │   └── src/                 #   dynamics, wind, controller, ekf, guidance,
 │                            #   avoidance, mission, state machine, sensors,

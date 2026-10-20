@@ -937,3 +937,97 @@ is renamed `TelemetryRunSummary` to keep it distinct from the core
 histories while the document rounds to six decimals, so a value recomputed from
 the document arrays can differ from the summary in the last digits; the core
 values are the authoritative ones.
+
+## Mission editor and Run handoff (Phase 8c, 2026-10-19)
+
+### D38: The draft is the generated ScenarioConfig, edited as commands over a 2D chart
+
+**Context.** Phase 8 had no authoring surface: the only way to fly a live run
+was one of the five shipped configs in `public/data/live/configs.json`, and the
+reactive law (D33, D34) made the geometry something an author needs to see
+before flying. An authored mission also crosses the same trust boundary as an
+imported document, so it had to pass the same gate the core runs.
+
+**Decision.** The draft is the wire type. `MissionConfig` (`src/utils/editor.ts`)
+is the generated `ScenarioConfig` (D37) normalized: every field required, the
+avoidance block complete, the fault list always present, so a draft validates,
+exports, and runs with no translation layer between editor and core. The editor
+is a pure command and history model over it: `applyCommand` applies one
+`EditorCommand` immutably to an `EditorHistory` (present plus undo/redo stacks
+capped at 100 entries), and a value-equal command returns the history unchanged,
+so tabbing through a field cannot pollute the undo stack or clear the redo
+stack. Altitudes are authored as meters above ground through one sanctioned
+conversion pair (`waypointAltitudeM` / `withWaypointAltitude`, plus the obstacle
+twin), keeping the NED sign convention in one place.
+
+The authoring surface is a 2D top-down SVG chart
+(`src/components/editor/MissionCanvas.tsx`, `chart.ts`), not the r3f scene:
+waypoints drag and reorder, zones add, move and resize, and wind, faults, and
+mission parameters are edited in the inspector panels beside the chart. Every
+gesture has a keyboard alternative (Enter or Space selects, arrows nudge 1 m and
+5 m with Shift, Delete removes), and a drag commits exactly one command on
+pointer up. `NumberField` cannot emit NaN or out-of-range values and commits
+nothing when the text equals the committed value.
+
+State is one Zustand store (`src/store/useMissionStore.ts`) persisting the draft
+to `localStorage` under `talon.mission.draft.v1`. Only valid drafts are
+persisted: an invalid edit stays in memory with its errors so the user can fix
+it, and storage keeps the last valid config until a valid commit rewrites it.
+Validation is the shared gate: `validateScenarioConfig`, `LIMITS`, and
+`SCENARIO_DEFAULTS` from the generated mirror (D37) are exactly what the browser
+runs, so a draft the editor accepts is one `ScenarioConfig::validate` in the core
+accepts. Errors block Fly; warnings never block.
+
+Sharing is import and export of the JSON document. `importFile` enforces a
+1,000,000 byte cap before parsing and validates before any state change, and
+`exportFile` writes `id.json`. The id contract is a lowercase slug
+(`^[a-z][a-z0-9_]{0,63}$`) that is not reserved (`RESERVED_SCENARIO_IDS`, which
+includes `live`, the store key of the completed-run slot that no mission may
+claim), and keep-out zone ids carry their own rule: a lowercase slug
+(`^[a-z0-9_]{1,64}$`) used once in the list.
+
+The Run handoff is one store slot. Fly validates, clones the draft through
+`toMissionConfig`, and stores it in `useFlightStore.authoredMission`; the Run
+view merges it ahead of the fetched configs with `withAuthoredMission`
+(`src/utils/runConfigs.ts`), captioned `MY MISSION`, and the authored id is
+preserved through `meta.scenario`. Pressing RUN is the single existing path,
+`LiveSim.create(selected, engine.Session)`: faults, zones, avoidance, and wind
+ride along in the config the session parses, and the editor owns no run code.
+
+One warning is pre-flight rather than in-flight. When avoidance is on and a zone
+center stands within `radius + margin + buffer` of a planned leg, the editor
+warns before the mission is flown. That standoff is the one the bypass itself
+plans to keep, and the warning names a known limitation of the reactive law
+(D33, D34): on a short leg a bypass that wide can carry the vehicle past the
+waypoint the leg leads to, the 2 m acceptance radius is then missed, and with
+only behind-A recovery in guidance the waypoint is never recaptured. The two
+remedies it offers are a larger acceptance radius on that waypoint or moving the
+zone; it reports the geometry rather than promising an outcome. A core past-B
+recovery is deferred, because adding one would move the Rust/Python guidance
+parity (D36) and the frozen recorded artifacts.
+
+**Rationale.** Editing the wire type directly means no authoring format can
+drift from what the core parses, and sharing one validator makes the browser
+gate and the core gate the same gate by construction. A command model over pure
+data gives undo and redo for free and keeps every edit testable without a DOM;
+the value-equality no-op rule is what keeps the history honest. A top-down SVG
+chart over the r3f scene because authoring is measurement, not spectacle: SVG
+gives keyboard operation, aria semantics, and deterministic pure tests of the
+chart math. `localStorage` is per browser and per profile, so import and export
+carry the sharing burden instead of a server. The handoff is a store slot rather
+than a callback chain so the Run view keeps one run path (the D26 seam is
+unchanged) and a completed authored run lands in the same rail slot every other
+run uses.
+
+**Trade-offs.** Obstacle editing was a could-have in the phase scope and was
+promoted to must-have by user request, which took effort from the fault and
+report surface; fault-aware report tiles and teaching preset polish are deferred
+to 8e. Deferred with the past-B recovery: any DOM interaction tier (drag,
+keyboard, and NumberField behaviour rest on review plus the strict typecheck,
+while the model, chart math, and store are tested), and the `reset` command's
+unvalidated entry (it has no production caller). Known and accepted: the id
+slug and reserved-list rules are TypeScript-only policy where the TS gate is
+stricter than Rust's (the safe direction), the history holds cloned configs so
+a maximum-size mission can hold tens of MB (bounded and user-driven), and the
+warning is geometry, so it still stands after a remedy that fixes the outcome
+rather than the geometry (a larger acceptance radius), by design.

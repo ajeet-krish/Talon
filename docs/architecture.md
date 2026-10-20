@@ -1,8 +1,8 @@
 # Talon Architecture
 
-Last updated: 2026-10-19 (Phase 5c)
+Last updated: 2026-10-19 (Phase 8c)
 
-## Current-state snapshot (FlightLab Phase 9b + hardening + Phase 5c, complete)
+## Current-state snapshot (FlightLab Phase 9b + hardening + Phase 5c + Phase 8c, complete)
 
 Talon is a single-vehicle UAV GNC stack whose autopilot is one Rust library,
 `talon-core`, plus a Python analysis harness and a TypeScript flight tool.
@@ -63,6 +63,19 @@ final error, deduplicated phases, minimum clearance, avoidance activations)
 and displayed as-is, and CI regenerates the mirror and fails on any diff so it
 cannot drift from the Rust structs.
 
+Phase 8c added the mission editor (D38). The draft is the generated
+`ScenarioConfig` itself (`MissionConfig`, normalized in `src/utils/editor.ts`),
+edited by a pure command and history model over a 2D top-down SVG chart
+(`src/components/editor/`) with inspector panels, keyboard alternatives, and
+value-equal commands as no-ops. The Zustand store
+(`src/store/useMissionStore.ts`) persists only valid drafts to `localStorage`;
+an invalid edit stays in memory with its errors. Validation runs the shared
+`validateScenarioConfig` against the generated `LIMITS` and `SCENARIO_DEFAULTS`,
+so the browser gate and the core gate agree, and import/export share a mission
+as a JSON document under a 1 MB cap and the slug id contract (the reserved `live`
+id included). Fly hands a validated clone to `useFlightStore.authoredMission`
+and the Run view lists it first.
+
 ### Repository layout
 
 The web app owns the repository root. Hosting publishes the built `dist/`
@@ -75,6 +88,14 @@ emitted asset URL carries that prefix (D21).
       Cargo.toml           Cargo workspace (members: core, wasm, bindings)
       src/                 views, components, utils, store, data, hooks
       src/components/live/ the live ground-station scene and instrument rail
+      src/components/editor/ mission editor: 2D SVG chart (MissionCanvas,
+                            chart.ts) and inspector panels (waypoints, zones,
+                            wind, faults, parameters) + MissionValidation
+      src/views/MissionView.tsx  the mission editor view (Phase 8c)
+      src/store/useMissionStore.ts  editor draft, undo/redo history, persistence
+      src/utils/editor.ts  pure command model, estimates, mission warnings
+      src/utils/runConfigs.ts  Run config list merge and button captions
+      src/data/presets.ts  mission templates for the editor
       src/live/            engine loader, recorder, pacer, display geometry
       src/types/           facades (flight.ts, live/types.ts) over
                            generated/talon_core.ts (ts-rs mirrors)
@@ -413,6 +434,38 @@ with `./scripts/gen_types.sh` and fails on any diff (`git diff --exit-code`
 over `src/types/generated`), so a hand edit or a stale mirror breaks the build
 rather than shipping (D37).
 
+Test gates at Phase 8c, all from the repository root and all green: `npm test`
+357 passed (20 files), `cargo test --workspace` 294 passed,
+`TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` 399 passed,
+`npm run build` clean, `npm run smoke:wasm` all live checks passed.
+
+### Mission authoring (Phase 8c)
+
+The editor edits the document the core runs and hands it to the one run path
+(D38):
+
+    editor command (chart drag, panel field, keyboard)
+      -> useMissionStore: applyCommand -> EditorHistory (undo/redo, cap 100)
+      -> validateScenarioConfig + missionWarnings  (shared with the core gate)
+      -> localStorage (valid drafts only; invalid edits stay in memory)
+      -> Fly: toMissionConfig clone -> useFlightStore.authoredMission
+      -> RunView: withAuthoredMission (authored first, own id preserved)
+      -> LiveSim.create -> talon_core Session -> the existing `live` run slot
+
+The surface is a 2D top-down SVG chart, not the r3f scene, because authoring is
+measurement: waypoint drag and reorder, zone add/move/resize, wind, faults, and
+parameters in the inspector panels, with keyboard alternatives for every
+gesture. Chart math is pure (`src/components/editor/chart.ts`) and tested.
+
+One warning is pre-flight. With avoidance on, a zone standing within
+`radius + margin + buffer` of a planned leg is flagged before the run: a bypass
+that wide on a short leg can carry the vehicle past the waypoint the leg leads
+to, and the 2 m acceptance radius is then missed. Guidance has only behind-A
+recovery, so the missed waypoint is never recaptured. The warning offers the two
+remedies, a larger acceptance radius or moving the zone; a core past-B recovery
+is deferred because it would change the Rust/Python guidance parity (D36) and
+the frozen recorded artifacts.
+
 ## Phase roadmap
 
 | Phase | Description | Status |
@@ -426,7 +479,7 @@ rather than shipping (D37).
 | 5c | Generated TypeScript type mirrors (ts-rs) | Complete |
 | 6 | GCS shell with live telemetry and teaching captions | Complete |
 | 7 | Altitude legibility in the scene | Complete |
-| 8 | Mission authoring (waypoints, wind, faults) | Not started |
+| 8 | Mission authoring (waypoints, wind, faults, keep-out zones) | In progress (8c mission editor complete) |
 | 9a | Reactive avoidance in Rust: geometry, the law, loop wiring, tests | Complete |
 | 9b | One implementation (Python delegates to `_core`) + a browser demo config | Complete |
 | Hardening | Wrap contract, fmt and clippy CI gates, Python versus `_core` parity harness | Complete |

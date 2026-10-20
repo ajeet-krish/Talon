@@ -1807,3 +1807,280 @@ so no field is dropped, renamed, or defaulted over.
 - [x] No em dashes, double hyphens, or dash equivalents in this section; this
   subsection is appended after all prior content, and no source file was
   modified by the gate.
+
+### Phase 8c test gate (2026-10-19)
+
+Mission editor and Run handoff. The counts come from the repository root on
+the committed tree. The authored end-to-end, model, and persistence probes ran
+out of tree against an esbuild bundle of the pure modules, so this gate added
+and modified no source file.
+
+#### Gate commands and exact counts (2026-10-19, repository root)
+
+| Gate | Command | Result |
+|------|---------|--------|
+| Rust | `cargo test --workspace` | exit 0, 294 passed, 0 failed (265 `talon-core`, 13 `talon-py`, 16 `talon-wasm`, 0 ts-rs export, 0 doctests) |
+| Python | `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` | exit 0, 399 passed in 8.93 s |
+| Web unit | `npm test` | exit 0, 340 passed in 20 files, 0 failed |
+| Typecheck and build | `npm run build` | exit 0, tsc clean, 666 modules transformed |
+| Live smoke | `npm run smoke:wasm` | exit 0, 76 checks, 0 failed, 5 of 5 configs plus the paced loop |
+| Lint | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0, no warnings |
+| Format | `cargo fmt --all -- --check` | exit 0, no diff |
+
+#### Authored end-to-end (out of tree, 42 checks, 41 pass)
+
+Method: an `entry.ts` outside the repository, bundled with the repository's own
+esbuild (`--bundle --format=esm --platform=node --tsconfig=tsconfig.json`) into
+one ESM bundle exporting `teachingPreset`, `validateScenarioConfig`,
+`validateFlightData`, the editor model, and the mission store. The runner
+imports the committed `public/wasm-rust/talon_core.js` and steps a `Session` in
+200 plant steps per frame, the way the paced run does.
+
+Baseline, `teachingPreset()` as authored: it validates (879 bytes serialized),
+constructs a `Session`, and flies its 60 s window.
+
+| Evidence | Result |
+|----------|--------|
+| Phases visited | `idle, arm, takeoff, cruise, waypoint, rtl, land, idle` (8 timeline events) |
+| Waypoints reached | 5 of 5, `mission_complete` true, final altitude 0.00 m |
+| GPS fault applied | accepted 579, gated 0, skipped 41; the same mission with `faults: []` skips 0, so the authored outage alone is the difference |
+| Estimator | converged, not diverged through the outage |
+| Document | schema 1.1, 6000 samples, `meta.sample_count` matches the history, `waypoints_ned` identical to the authored route, accepted by `validateFlightData` |
+
+Then six commands through `applyCommand`, each taking exactly one history
+entry: `waypoint/move` of waypoint 3 to `[0, 20, -10]`, `obstacle/add` a zone at
+`[15, 7.5, -10]` radius 3, `wind/steady` `[4, 1, 0]`, `avoidance/enabled`,
+`param/set duration_s 90`, and `faults/set` keeping the outage while adding
+`{kind: 'motor_fault', at_s: 70}`. The edited config validates, serializes, and
+flies through the same seam:
+
+| Evidence | Result |
+|----------|--------|
+| Waypoints carried | document `waypoints_ned` equals the edited route, the moved waypoint at `[0, 20, -10]` |
+| Zones carried | document carries `zone_1` at `[15, 7.5, -10]`, radius 3 |
+| Wind carried | mean sampled wind `3.88, 0.90, 0.17` NED against the authored steady `[4, 1, 0]` over 9000 samples |
+| Avoidance carried | 1 activation, minimum clearance 1.55 m against the 2 m margin less the 1.0 m tracking tolerance |
+| Faults carried | GPS skipped 41 (the outage survived the edits), a `critical_fault` event at 70.00 s from `waypoint` to `emergency`, phases visited include `emergency` |
+| Document | accepted by `validateFlightData` |
+| Mission outcome | 1 of 5 waypoints reached (the stall below), vehicle back on the ground, final phase `idle` |
+
+The single failed check in this probe was "every waypoint was still reached",
+reported as 1/5.
+
+Isolation runs, one change per run from the same bundle:
+
+| Variant | Reached | Activations | Furthest east |
+|---------|---------|-------------|-----------------|
+| baseline, no edits | 5/5 | 0 | 14.8 m |
+| zone only | 5/5 | 0 | 14.8 m |
+| avoidance only | 5/5 | 0 | 14.8 m |
+| zone + avoidance (the gate case) | 1/5 | 1 | 245.5 m |
+| far zone + avoidance | 5/5 | 0 | 14.8 m |
+| zone + avoidance + wind 3 north | 1/5 | 1 | 245.5 m |
+| zone + avoidance + waypoint move | 1/5 | 1 | 245.5 m |
+| zone + waypoint move + wind, no avoidance | 5/5 | 0 | 18.9 m |
+
+Geometry sweep for the stall: it needs a zone centered on the leg between two
+waypoints 7.5 m away with radius 3 or 4 and the default 2 m acceptance.
+Radius 2 passes, a zone 1 m off the line passes, a 30 m leg passes, a 4 m
+waypoint acceptance radius passes, clearance margin 1.0 passes, and the shipped
+avoidance geometry (a zone 3 m off the leg) passes. Seeds 1, 7, 42, and 1234
+all reproduce the stall, so it is deterministic.
+
+#### Editor model matrix (out of tree, 115 checks, all pass)
+
+Representative commands over `teachingPreset()`: waypoint add (append and at
+an index), move, set, remove, reorder up and down; zone add (fresh id and next
+free id), move keeping altitude, resize, set, remove; `wind/steady` and
+`wind/sigma`; `avoidance/enabled` and `avoidance/tuning`; `param/set` for
+label, blurb, duration, takeoff altitude, seed, and auto_arm; `faults/set`;
+`reset`. Every changing command produced its expected config with exactly one
+history entry and a cleared redo stack. Every value-equal repeat of a
+set-style command returned the same history reference with no entry: the same
+waypoint position, the same zone radius, the same label, the same steady wind,
+the same wind sigma, the same avoidance state, the same avoidance tuning, the
+same fault list, the same waypoint, the same zone, an out-of-range index, and a
+reorder at the list end. Undo walks every edit back
+to the original preset and then stops, redo walks forward to the present, a
+value-equal command issued between undo and redo leaves the redo stack intact,
+and the resulting matrix config still passes `validateScenarioConfig`.
+Repeating an append or a swap changes the config again and takes its own
+entry, which is the documented behavior of those two commands rather than a
+no-op.
+
+#### Persistence, import, and export (part of the same 115 checks)
+
+| Case | Result |
+|------|--------|
+| Valid draft reload | an edit persists under `talon.mission.draft.v1`; a fresh module instance against the same stubbed storage restores the id and the moved waypoint with no errors and a clean draft |
+| Invalid edit | `duration_s: 0` is held in memory with its error, storage keeps the last valid draft, `lastSavedAt` keeps the earlier stamp, and the fix persists 75 s |
+| Malformed import | rejected with "not valid JSON", draft identity preserved |
+| Oversized import | rejected above `MAX_IMPORT_BYTES` (1,000,000), draft identity preserved |
+| Invalid config import | rejected with `import rejected:`, draft identity preserved |
+| Export round trip | pretty JSON ending in a newline, `dirty` cleared, and re-import compares equal to the pre-export config |
+
+#### No regression
+
+- `npm run smoke:wasm`: 76 checks, 0 failed. The five shipped configs
+  (`hover`, `waypoints`, `obstacle_field`, `avoidance`, `wind`) fly with the
+  outcomes of the earlier gates, including 3 avoidance activations and 1.68 m
+  minimum clearance on `avoidance`.
+- The four recordings (`gps_outage`, `wind`, `emergency`, `obstacle_field`)
+  validate through `validateFlightData` with `sample_count` matching the
+  history, read from disk exactly as the store fetches them (20 checks, all
+  pass). The shipped live list passes `validateLiveConfigs`, and all five
+  shipped ids are still rejected by the authored scenario gate as reserved.
+
+#### UI static checks
+
+- `npm run build` typechecks the editor: `tsc -p tsconfig.build.json --noEmit`
+  is clean before the bundle builds.
+- New and touched files: no `any` type annotations (the only grep hit is the
+  word "any" inside a Run view comment), no `dangerouslySetInnerHTML`, no
+  `eval`, and no em dashes, en dashes, or double hyphens used as dashes.
+- The planning chart carries `role="group"` and an `aria-label` from
+  `chartSummary`; its waypoint and zone groups are `role="button"`,
+  `tabIndex={0}`, labelled per node, with `onKeyDown` handling Enter and Space
+  to select, Delete and Backspace to remove, and arrow nudges.
+- The mission view hides the scenario rail (`{!mission && <aside ...>}`), and
+  both the header row and the `ViewTabs` nav carry `flex-wrap`.
+
+#### Residual gaps
+
+1. The one failed authored check: a keep-out zone centered on a leg between
+   two waypoints 7.5 m away with avoidance enabled makes the reactive law latch
+   a bypass 5.5 m off the line, and the vehicle recaptures wide of the next
+   waypoint (closest approach 2.24 m against a 2 m acceptance radius). The
+   waypoint is missed, and `NlglGuidance::compute_leg` has only a
+   behind-the-start recovery, so once past the waypoint the vehicle tracks the
+   leg line east indefinitely (245 m at the run end, 1 of 5 waypoints reached,
+   mission incomplete). The shipped configurations and every other probe
+   complete, so this is not a regression of what is deployed, but an authored
+   mission reaches it silently: `waypointWarning` does not flag a zone whose
+   `radius + margin` sits between two close waypoints. Suggested: steer back
+   at the waypoint when the along-track distance passes the leg end in
+   `compute_leg`, plus an editor warning for a zone between waypoints closer
+   than `radius + margin + detour buffer + capture allowance`.
+2. `reset` with a config equal to the present one still adds an undo entry,
+   because that command clones unconditionally; every other set-style no-op is
+   reference-stable.
+3. The probes (42 authored checks, 115 model and persistence checks, 20
+   recording checks, plus the variant, geometry, and seed sweeps) live outside
+   the repository; the committed vitest suite (340 tests) is what CI pins.
+4. The end-to-end evidence comes from the committed wasm build in
+   `public/wasm-rust/`; a core change without `./wasm/build.sh` would leave
+   these probes flying an older core.
+
+#### Verification checklist
+
+- [x] All seven gate commands exit 0 with exact counts recorded above
+  (Rust 294, pytest 399, vitest 340, build 666 modules, smoke 76 checks on 5
+  of 5 configs, clippy 0, fmt 0).
+- [ ] Authored end-to-end: 41 of 42 checks pass; the teaching preset flies 5/5
+  with the outage applied and a valid document, and the edited preset carries
+  waypoints, wind, zones, avoidance, and both faults into a document that
+  validates, but the edited mission completes 1 of 5 waypoints (residual gap 1).
+- [x] Editor model matrix: 115 checks, every expected config with one history
+  entry, and no entry for a value-equal repeat.
+- [x] Persistence and round trip: valid draft survives reload, invalid edit
+  held and not persisted, malformed and oversized imports rejected with the
+  draft preserved, export re-imports to an identical config.
+- [x] No regression: 5 shipped configs fly (76 smoke checks) and the 4
+  recordings validate.
+- [x] UI static checks: typecheck clean, no `any`, no `dangerouslySetInnerHTML`,
+  no `eval`, no dash equivalents, chart labelled and keyboard operable, rail
+  hidden and header wrapping in the mission view.
+- [x] No em dashes, double hyphens, or dash equivalents in this section; this
+  subsection is appended after all prior content, and no source file was
+  modified by the gate.
+
+### Phase 8c follow-up (2026-10-19)
+
+The editor now warns before flight about the geometry that stalled the
+authored mission in the Phase 8c gate, and the id, import, and export paths are
+hardened. Counts come from the repository root; the warning, flight, and
+hardening probes ran out of tree against a rebuilt esbuild bundle of the pure
+modules, so this follow-up modified no source file.
+
+#### Commands and exact counts (2026-10-19, repository root)
+
+| Gate | Command | Result |
+|------|---------|--------|
+| Web unit | `npm test` | exit 0, 357 passed in 20 files, 0 failed |
+| Typecheck | `npm run typecheck` | exit 0, no diagnostics |
+| Build | `npm run build` | exit 0, tsc clean, 666 modules transformed |
+
+Out-of-tree probe `followup.mjs`: 59 checks, 0 failed.
+
+#### The warning (10 checks)
+
+The stalled geometry (zone `zone_1` centered on the leg to waypoint 2) now
+yields exactly one warning, verbatim:
+
+> Keep-out zone zone_1 is close to the leg to waypoint 2. The bypass may carry
+> the vehicle past waypoint 2: use a larger acceptance radius or move the zone.
+
+The store surfaces the same string as a non-blocking warning for the loaded
+draft, with no error. The same mission with the zone about 20 m from every leg
+warns nothing, and the same zone with the law off warns nothing.
+
+#### Original geometry versus the suggested remedy (11 checks)
+
+| Run | Waypoints | Mission | Evidence |
+|-----|-----------|---------|----------|
+| Original stalled geometry, re-flown | 1/5 | not complete | identical to the gate: 1 activation, the vehicle 245.5 m east and still tracking the leg line at the run end |
+| Remedy A: acceptance radius 4 on waypoint 2 | 5/5 | complete | document validates, estimator converged |
+| Remedy B: zone moved 6 m off the leg | 5/5 | complete | document validates, warning clears |
+
+The warning still stands after remedy A, because it reports the geometry rather
+than the outcome; remedy B clears it.
+
+#### The corrected authored mission (17 checks)
+
+The full Phase 8c edit (move waypoint 3, add the zone, wind `[4, 1, 0]`,
+avoidance on, 90 s, the GPS outage plus a motor fault at 70 s) with the
+suggested radius fix flies 5 of 5 waypoints and completes:
+
+- phases `idle, arm, takeoff, cruise, waypoint, rtl, land, idle, emergency, land, idle`;
+  `critical_fault` at 70.00 s from `idle` to `emergency`, final phase `idle`
+- zone carried as authored (`zone_1` at `[15, 7.5, -10]`, radius 3), mean
+  sampled wind `4.15, 1.01, 0.22` NED against the authored `[4, 1, 0]`, one
+  avoidance activation holding the 2 m margin, GPS skipped 41
+- the document validates through `validateFlightData` at schema 1.1 and carries
+  the edited route, including the moved waypoint at `[0, 20, -10]`
+
+#### Hardening (21 checks)
+
+| Case | Result |
+|------|--------|
+| Authored id `live` | rejected as reserved by `validateScenarioConfig` and by `loadConfig`; `RESERVED_SCENARIO_IDS` lists it and generated ids still start at `custom_mission` |
+| Obstacle id with a space | rejected on the authored gate and the live gate: `obstacles[0].id` must be a lowercase slug |
+| Duplicate obstacle id | rejected on both gates: `obstacles[1].id ... already used` |
+| Invalid export | refused with `export refused: fix 1 validation error first (duration_s must be in (0, 900])`; the in-memory draft, storage, dirty flag, and save time stay untouched and no anchor or blob is created; a valid draft exports normally afterwards |
+| Parser RangeError | labelled `import rejected: the file is nested too deeply to read` with the draft identity preserved. Node's parser does not throw at 240 KB of nesting, so the throw is provoked the way the committed test does it, by intercepting `JSON.parse` |
+| Reset no-op | `reset` to the config already loaded returns the same history reference; a reset to a different config still takes one entry |
+
+#### Known core limitation
+
+Unchanged and confirmed: `NlglGuidance::compute_leg` has only a
+behind-the-start recovery, so a waypoint missed after a reactive bypass is never
+recovered and the vehicle tracks the leg line until the run ends. The editor now
+names that risk before flight and both suggested remedies complete the mission;
+the core fix (steer back at the waypoint once the along-track distance passes
+the leg end) stays open.
+
+#### Verification checklist
+
+- [x] `npm test` 357 passed in 20 files, `npm run typecheck` exit 0,
+  `npm run build` exit 0 with 666 modules.
+- [x] The warning carries the exact product message, names the zone and the
+  waypoint, and offers both fixes; a far zone and avoidance off stay silent.
+- [x] The original geometry re-flies unchanged (1/5, not complete) and both
+  suggested remedies reach 5/5 with a valid document.
+- [x] The corrected mission carries zone, wind, avoidance, and faults, and its
+  document validates.
+- [x] The `live` id, obstacle id shape and uniqueness, export refusal, and the
+  RangeError label all behave as specified with the draft preserved.
+- [x] No em dashes, double hyphens, or dash equivalents in this section; this
+  subsection is appended after all prior content, and no source file was
+  modified by the gate.
