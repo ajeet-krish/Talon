@@ -101,6 +101,13 @@ export interface MissionStore {
   dirty: boolean
   /** When the draft was last written to storage (only valid configs are written), or null. */
   lastSavedAt: number | null
+  /**
+   * Counts document replacements: a successful load, template load, import,
+   * or clear advances it. The chart re-fits on a new epoch and never on an
+   * edit, undo, or redo, so zoom and pan survive an editing session; the
+   * counter itself lives outside the history and the persisted draft.
+   */
+  documentEpoch: number
 
   /** Apply one edit: new present, undo entry, errors/warnings, draft saved when valid. */
   dispatch: (cmd: EditorCommand) => void
@@ -146,6 +153,15 @@ export const useMissionStore = create<MissionStore>((set, get) => {
     if (persisted) persist(config)
   }
 
+  /**
+   * Advance the document epoch. Called only where the document identity
+   * changes (load, import, clear), never for an edit, undo, or redo: the
+   * chart's fit listens to this counter and nothing else.
+   */
+  function bumpEpoch(): void {
+    set({ documentEpoch: get().documentEpoch + 1 })
+  }
+
   const initial = loadDraft()
 
   return {
@@ -155,6 +171,7 @@ export const useMissionStore = create<MissionStore>((set, get) => {
     warnings: missionWarnings(initial),
     dirty: false,
     lastSavedAt: null,
+    documentEpoch: 0,
 
     dispatch: (cmd) => {
       const history = applyCommand(get().history, cmd)
@@ -180,6 +197,7 @@ export const useMissionStore = create<MissionStore>((set, get) => {
       // Validation throws naming the first bad path; the previous draft stays.
       const valid = validateScenarioConfig(config)
       commit(createHistory(toMissionConfig(valid)), false)
+      bumpEpoch()
     },
 
     loadTemplate: (build) => {
@@ -209,6 +227,7 @@ export const useMissionStore = create<MissionStore>((set, get) => {
       try {
         const valid = validateScenarioConfig(parsed)
         commit(createHistory(toMissionConfig(valid)), false)
+        bumpEpoch()
       } catch (err) {
         throw new Error(
           `import rejected: ${err instanceof Error ? err.message : 'invalid mission'}`,
@@ -260,6 +279,7 @@ export const useMissionStore = create<MissionStore>((set, get) => {
         dirty: false,
         lastSavedAt: null,
       })
+      bumpEpoch()
     },
   }
 })

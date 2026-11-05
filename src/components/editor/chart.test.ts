@@ -1,7 +1,9 @@
 /**
  * Display-helper tests for the mission editor chart and readouts (FlightLab
- * Phase 8c). Pure functions only: bounds framing, round grid/label/scale
- * steps, wind direction, fault labels, and the flight-time format.
+ * Phase 8c, viewport Phase 8d-C). Pure functions only: bounds framing,
+ * round grid/label/scale steps, the zoom and pan viewport (clamps, anchor
+ * maths, fit, grid coverage over the visible rectangle), wind direction,
+ * fault labels, and the flight-time format.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -10,19 +12,31 @@ import type { FaultSpec, Obstacle, Waypoint } from '@/types/generated/talon_core
 import {
   CHART_EMPTY_SPAN_M,
   CHART_PADDING_M,
+  MAX_GRID_LINES,
+  SPAN_MAX_M,
+  SPAN_MIN_M,
   boundsHeight,
   boundsViewBox,
   boundsWidth,
+  canZoomIn,
+  canZoomOut,
   chartBounds,
+  clampSpan,
   compassPoint,
   faultLabel,
   formatMinutesSeconds,
   formatWindSummary,
   gridStepM,
   labelStepM,
+  linesOver,
+  panBy,
   scaleBarLengthM,
+  viewBounds,
+  viewFit,
   windFromDirectionDeg,
   windSpeedMps,
+  zoomAt,
+  type ChartView,
 } from './chart'
 
 function leg(north: number, east: number, altitude = 10): Waypoint {
@@ -183,5 +197,235 @@ describe('formatMinutesSeconds', () => {
 
   it('floors negative input at zero rather than printing minus minutes', () => {
     expect(formatMinutesSeconds(-10)).toBe('0:00')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Viewport (zoom and pan)
+// ---------------------------------------------------------------------------
+
+describe('clampSpan', () => {
+  it('holds the zoom range and floors junk input', () => {
+    expect(clampSpan(60)).toBe(60)
+    expect(clampSpan(SPAN_MIN_M)).toBe(SPAN_MIN_M)
+    expect(clampSpan(1)).toBe(SPAN_MIN_M)
+    expect(clampSpan(-40)).toBe(SPAN_MIN_M)
+    expect(clampSpan(1e9)).toBe(SPAN_MAX_M)
+    expect(clampSpan(Number.NaN)).toBe(SPAN_MIN_M)
+    expect(clampSpan(Number.POSITIVE_INFINITY)).toBe(SPAN_MAX_M)
+    expect(clampSpan(Number.NEGATIVE_INFINITY)).toBe(SPAN_MIN_M)
+  })
+})
+
+describe('viewBounds', () => {
+  it('centres the visible rectangle on the view at a square aspect', () => {
+    expect(viewBounds({ centerX: 40, centerY: -10, spanM: 100 }, 1)).toEqual({
+      minX: -10,
+      maxX: 90,
+      minY: -60,
+      maxY: 40,
+    })
+  })
+
+  it('makes spanM the larger side at every aspect', () => {
+    const wide = viewBounds({ centerX: 0, centerY: 0, spanM: 200 }, 2)
+    expect(boundsWidth(wide)).toBe(200)
+    expect(boundsHeight(wide)).toBe(100)
+    const tall = viewBounds({ centerX: 0, centerY: 0, spanM: 200 }, 0.5)
+    expect(boundsWidth(tall)).toBe(100)
+    expect(boundsHeight(tall)).toBe(200)
+  })
+
+  it('never draws a degenerate or NaN frame, whatever state the view is in', () => {
+    for (const aspect of [0, -2, Number.NaN, 0.3, 1, 4]) {
+      for (const spanM of [SPAN_MIN_M, 60, SPAN_MAX_M, 1e9, Number.NaN, -7]) {
+        const bounds = viewBounds({ centerX: 1000, centerY: -1000, spanM }, aspect)
+        for (const edge of [bounds.minX, bounds.maxX, bounds.minY, bounds.maxY]) {
+          expect(Number.isFinite(edge)).toBe(true)
+        }
+        expect(boundsWidth(bounds)).toBeGreaterThan(0)
+        expect(boundsHeight(bounds)).toBeGreaterThan(0)
+        expect(boundsWidth(bounds)).toBeLessThanOrEqual(SPAN_MAX_M)
+        expect(boundsHeight(bounds)).toBeLessThanOrEqual(SPAN_MAX_M)
+      }
+      const junkCentre = viewBounds(
+        { centerX: Number.NaN, centerY: Number.NaN, spanM: 60 },
+        aspect,
+      )
+      expect(Number.isFinite(junkCentre.minX)).toBe(true)
+      expect(Number.isFinite(junkCentre.minY)).toBe(true)
+    }
+  })
+})
+
+describe('viewFit', () => {
+  const mission = chartBounds(withGeometry([leg(0, 0), leg(40, 30)]))
+
+  it('frames the whole mission at every aspect, without clipping', () => {
+    for (const aspect of [0.5, 1, 1.6, 2, 4]) {
+      const shown = viewBounds(viewFit(mission, aspect), aspect)
+      const slack = 1e-6
+      expect(shown.minX).toBeLessThanOrEqual(mission.minX + slack)
+      expect(shown.maxX).toBeGreaterThanOrEqual(mission.maxX - slack)
+      expect(shown.minY).toBeLessThanOrEqual(mission.minY + slack)
+      expect(shown.maxY).toBeGreaterThanOrEqual(mission.maxY - slack)
+    }
+  })
+
+  it('centres on the mission and keeps an empty mission a planning field', () => {
+    const view = viewFit(chartBounds(withGeometry([])), 1)
+    expect(view.centerX).toBeCloseTo(0)
+    expect(view.centerY).toBeCloseTo(0)
+    expect(view.spanM).toBeCloseTo(CHART_EMPTY_SPAN_M)
+  })
+
+  it('clamps a mission wider than the zoom ceiling', () => {
+    const huge = { minX: -200_000, maxX: 200_000, minY: -50, maxY: 50 }
+    expect(viewFit(huge, 1).spanM).toBe(SPAN_MAX_M)
+  })
+
+  it('never returns a span below the floor', () => {
+    const tiny = { minX: 0, maxX: 1, minY: 0, maxY: 1 }
+    expect(viewFit(tiny, 1).spanM).toBe(SPAN_MIN_M)
+  })
+})
+
+describe('zoomAt', () => {
+  const view: ChartView = { centerX: 100, centerY: -50, spanM: 400 }
+
+  it('shrinks the span when zooming in and grows it when zooming out', () => {
+    expect(zoomAt(view, { x: 100, y: -50 }, 2).spanM).toBe(200)
+    expect(zoomAt(view, { x: 100, y: -50 }, 0.5).spanM).toBe(800)
+  })
+
+  it('keeps the anchor fixed: the point under the cursor does not move', () => {
+    const anchor = { x: 180, y: -90 }
+    for (const factor of [1.3, 2, 0.8]) {
+      const zoomed = zoomAt(view, anchor, factor)
+      const ratio = zoomed.spanM / view.spanM
+      expect(anchor.x - zoomed.centerX).toBeCloseTo((anchor.x - view.centerX) * ratio)
+      expect(anchor.y - zoomed.centerY).toBeCloseTo((anchor.y - view.centerY) * ratio)
+    }
+  })
+
+  it('lands exactly on the clamp and stops there', () => {
+    const floor: ChartView = { centerX: 12, centerY: -4, spanM: SPAN_MIN_M }
+    expect(zoomAt(floor, { x: 0, y: 0 }, 1.3)).toEqual(floor)
+    const ceiling: ChartView = { centerX: 12, centerY: -4, spanM: SPAN_MAX_M }
+    expect(zoomAt(ceiling, { x: 0, y: 0 }, 1 / 1.3)).toEqual(ceiling)
+    // Repeated presses walk into the clamp and stay finite.
+    let zoomed: ChartView = { centerX: 0, centerY: 0, spanM: SPAN_MIN_M * 4 }
+    for (let i = 0; i < 50; i++) {
+      zoomed = zoomAt(zoomed, { x: 0, y: 0 }, 1.3)
+    }
+    expect(zoomed.spanM).toBe(SPAN_MIN_M)
+    expect(Number.isFinite(zoomed.centerX)).toBe(true)
+  })
+
+  it('ignores junk instead of drawing a NaN frame', () => {
+    expect(zoomAt(view, { x: 0, y: 0 }, 0)).toBe(view)
+    expect(zoomAt(view, { x: 0, y: 0 }, -2)).toBe(view)
+    expect(zoomAt(view, { x: 0, y: 0 }, Number.NaN)).toBe(view)
+    expect(zoomAt(view, { x: Number.NaN, y: 0 }, 2)).toBe(view)
+    const junk: ChartView = { centerX: 0, centerY: 0, spanM: Number.NaN }
+    expect(zoomAt(junk, { x: 0, y: 0 }, 2)).toBe(junk)
+  })
+})
+
+describe('panBy', () => {
+  it('shifts the centre and leaves the zoom alone', () => {
+    const view: ChartView = { centerX: 10, centerY: -20, spanM: 60 }
+    expect(panBy(view, 5, -15)).toEqual({ centerX: 15, centerY: -35, spanM: 60 })
+  })
+
+  it('ignores a delta that would break the frame', () => {
+    const view: ChartView = { centerX: 0, centerY: 0, spanM: 60 }
+    expect(panBy(view, Number.NaN, 5)).toBe(view)
+    expect(panBy(view, 5, Number.POSITIVE_INFINITY)).toBe(view)
+    const junk: ChartView = { centerX: Number.NaN, centerY: 0, spanM: 60 }
+    expect(panBy(junk, 5, 5)).toBe(junk)
+  })
+
+  it('preserves the span exactly across repeated pans, even at the clamps', () => {
+    for (const spanM of [SPAN_MIN_M, 60, SPAN_MAX_M]) {
+      const start: ChartView = { centerX: 1234.5, centerY: -678.25, spanM }
+      let view = start
+      for (let i = 0; i < 50; i++) view = panBy(view, 7.25, -3.5)
+      expect(view.spanM).toBe(spanM) // panning is pure translation
+      expect(view.centerX).not.toBe(start.centerX)
+      expect(view.centerY).not.toBe(start.centerY)
+    }
+  })
+})
+
+describe('zoom controls', () => {
+  it('enables each control until its clamp', () => {
+    expect(canZoomIn({ centerX: 0, centerY: 0, spanM: SPAN_MIN_M })).toBe(false)
+    expect(canZoomOut({ centerX: 0, centerY: 0, spanM: SPAN_MIN_M })).toBe(true)
+    expect(canZoomIn({ centerX: 0, centerY: 0, spanM: SPAN_MAX_M })).toBe(true)
+    expect(canZoomOut({ centerX: 0, centerY: 0, spanM: SPAN_MAX_M })).toBe(false)
+    expect(canZoomIn({ centerX: 0, centerY: 0, spanM: 60 })).toBe(true)
+    expect(canZoomOut({ centerX: 0, centerY: 0, spanM: 60 })).toBe(true)
+  })
+})
+
+describe('linesOver', () => {
+  it('returns every multiple of the step inside the visible range', () => {
+    expect(linesOver(-15, 25, 10)).toEqual([-10, 0, 10, 20])
+    expect(linesOver(0, 30, 10)).toEqual([0, 10, 20, 30])
+    expect(linesOver(3, 7, 10)).toEqual([])
+  })
+
+  it('covers a panned frame from edge to edge', () => {
+    // A view panned far from the mission: the grid still spans the frame.
+    const frame = viewBounds({ centerX: 98765, centerY: -54321, spanM: 1000 }, 2)
+    const step = gridStepM(1000)
+    const lines = linesOver(frame.minX, frame.maxX, step)
+    expect(lines.length).toBeGreaterThan(1)
+    expect(lines[0]).toBeGreaterThanOrEqual(frame.minX)
+    expect(lines[lines.length - 1]).toBeLessThanOrEqual(frame.maxX)
+    expect(lines[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(frame.minX + step)
+    expect(lines[lines.length - 1] ?? Number.NEGATIVE_INFINITY).toBeGreaterThan(
+      frame.maxX - step,
+    )
+  })
+
+  it('refuses junk and caps a runaway step', () => {
+    expect(linesOver(0, 100, 0)).toEqual([])
+    expect(linesOver(0, 100, -5)).toEqual([])
+    expect(linesOver(10, 0, 1)).toEqual([])
+    expect(linesOver(0, 100, Number.NaN)).toEqual([])
+    expect(linesOver(Number.NaN, 100, 1)).toEqual([])
+    expect(linesOver(0, 1e9, 1)).toHaveLength(MAX_GRID_LINES)
+  })
+})
+
+describe('grid density', () => {
+  it('keeps every zoom level under about fifty cells across', () => {
+    for (let i = 0; i <= 40; i++) {
+      const spanM = SPAN_MIN_M * Math.pow(SPAN_MAX_M / SPAN_MIN_M, i / 40)
+      const step = gridStepM(spanM)
+      expect(Math.ceil(spanM / step)).toBeLessThanOrEqual(50)
+      expect(linesOver(0, spanM, step).length).toBeLessThanOrEqual(MAX_GRID_LINES)
+    }
+  })
+})
+
+describe('grid steps follow the view', () => {
+  it('derives grid, label, and scale steps from the view span, not the mission', () => {
+    const mission = chartBounds(withGeometry([leg(0, 0), leg(40, 30)]))
+    // The mission frame alone is 56 m at its largest side: 10 m cells.
+    expect(gridStepM(Math.max(boundsWidth(mission), boundsHeight(mission)))).toBe(10)
+    const stepFor = (view: ChartView): number => {
+      const frame = viewBounds(view, 1)
+      return gridStepM(Math.max(boundsWidth(frame), boundsHeight(frame)))
+    }
+    // The same mission zoomed in: 5 m cells follow the view, not the bounds.
+    expect(stepFor({ centerX: 15, centerY: -20, spanM: 40 })).toBe(5)
+    // Panned far away at a wide span: 5 km cells.
+    expect(stepFor({ centerX: 4000, centerY: -4000, spanM: 40000 })).toBe(5000)
+    // The label and scale steps hang off the same view span.
+    expect(labelStepM(40)).toBe(25)
+    expect(scaleBarLengthM(40)).toBe(10)
   })
 })

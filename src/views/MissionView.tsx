@@ -55,6 +55,7 @@ export function MissionView({ onFly }: MissionViewProps) {
   const warnings = useMissionStore((s) => s.warnings)
   const dirty = useMissionStore((s) => s.dirty)
   const lastSavedAt = useMissionStore((s) => s.lastSavedAt)
+  const documentEpoch = useMissionStore((s) => s.documentEpoch)
   const dispatch = useMissionStore((s) => s.dispatch)
   const undo = useMissionStore((s) => s.undo)
   const redo = useMissionStore((s) => s.redo)
@@ -298,6 +299,7 @@ export function MissionView({ onFly }: MissionViewProps) {
             selected={selected}
             onSelect={select}
             dispatch={dispatch}
+            documentEpoch={documentEpoch}
           />
         </div>
         <aside className="w-full shrink-0 overflow-y-auto border-grid lg:w-[23rem] lg:border-l">

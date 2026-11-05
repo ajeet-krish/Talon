@@ -57,6 +57,7 @@ beforeEach(() => {
     warnings: [],
     dirty: false,
     lastSavedAt: null,
+    documentEpoch: 0,
   })
 })
 
@@ -190,6 +191,51 @@ describe('select', () => {
     expect(useMissionStore.getState().selected).toEqual({ kind: 'waypoint', index: 2 })
     useMissionStore.getState().select(null)
     expect(useMissionStore.getState().selected).toBeNull()
+  })
+})
+
+describe('documentEpoch', () => {
+  it('never advances on an edit, undo, or redo (the chart must not re-fit)', () => {
+    const before = useMissionStore.getState().documentEpoch
+    useMissionStore.getState().dispatch({ type: 'waypoint/add', north: 10, east: 0 })
+    expect(useMissionStore.getState().documentEpoch).toBe(before)
+    useMissionStore.getState().undo()
+    expect(useMissionStore.getState().documentEpoch).toBe(before)
+    useMissionStore.getState().redo()
+    expect(useMissionStore.getState().documentEpoch).toBe(before)
+    useMissionStore.getState().select({ kind: 'waypoint', index: 0 })
+    expect(useMissionStore.getState().documentEpoch).toBe(before)
+  })
+
+  it('advances on a template load, an import, and a clear', async () => {
+    const start = useMissionStore.getState().documentEpoch
+    useMissionStore.getState().loadTemplate(teachingPreset)
+    expect(useMissionStore.getState().documentEpoch).toBe(start + 1)
+    const text = JSON.stringify({ id: 'imported_mission', waypoints: [wp(1, 2, -10)] })
+    await useMissionStore.getState().importFile(fakeFile(text))
+    expect(useMissionStore.getState().documentEpoch).toBe(start + 2)
+    useMissionStore.getState().clearDraft()
+    expect(useMissionStore.getState().documentEpoch).toBe(start + 3)
+  })
+
+  it('stays put when a load or an import is refused', async () => {
+    const before = useMissionStore.getState().documentEpoch
+    expect(() => useMissionStore.getState().loadConfig({ id: 'hover' })).toThrow(/reserved/)
+    expect(useMissionStore.getState().documentEpoch).toBe(before)
+    await expect(useMissionStore.getState().importFile(fakeFile('{not json'))).rejects.toThrow()
+    expect(useMissionStore.getState().documentEpoch).toBe(before)
+  })
+
+  it('stays put when the draft is exported: a save must not re-frame the chart', () => {
+    vi.stubGlobal('URL', { createObjectURL: () => 'blob:mock', revokeObjectURL: vi.fn() })
+    vi.stubGlobal('document', {
+      createElement: () => ({ href: '', download: '', click: () => {} }),
+    })
+    const before = useMissionStore.getState().documentEpoch
+    useMissionStore.getState().dispatch({ type: 'param/set', key: 'label', value: 'Saved' })
+    useMissionStore.getState().exportFile()
+    expect(useMissionStore.getState().dirty).toBe(false) // the save still ran
+    expect(useMissionStore.getState().documentEpoch).toBe(before)
   })
 })
 

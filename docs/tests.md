@@ -2313,3 +2313,122 @@ tests that claim to catch that mutation, then reverted cleanly.
 - [x] No em dashes, double hyphens, or dash equivalents in this section
 - [x] Phase tests integrate with prior phase tests: the 377-test baseline
   passes unchanged beside the 5 new tests
+
+### Phase 8d-C test gate (2026-11-05)
+
+Independent gate run by the tester for Phase 8d-C (mission chart viewport:
+zoom, pan, FIT, and no auto-zoom on edits). The implementer reported 410
+tests across 25 files and the code reviewer could not execute the suites, so
+this run is the authoritative gate.
+
+| Suite | Command | Result |
+|-------|---------|--------|
+| Web unit tests (vitest) | `npm test` | PASS, 416 of 416 in 25 files (410 before this gate, 6 added here) |
+| Typecheck | `npm run typecheck` | PASS, exit 0 (`tsc --noEmit`) |
+| Production build | `npm run build` | PASS, exit 0 (`tsc -p tsconfig.build.json --noEmit` and `vite build`, 1.81 s) |
+
+#### Tests added by this gate (6)
+
+| Test | Type | What it tests |
+|------|------|---------------|
+| changes the view only from sanctioned viewport paths, never from an edit | source contract | Exactly 5 `setView` call sites (fit effect, wheel, zoom buttons, FIT, pan), each on a whitelisted line, and no `setView(` inside beginDrag, trackDrag, endDrag, cancelDrag, addWaypointAt, nudge, or onNodeKeyDown |
+| ignores wheel input while a drag or pan is in progress | source contract | The wheel handler calls preventDefault, guards on `interactionRef` before it reads an anchor, then zooms |
+| frames the current document from the FIT button, as a view change not an edit | source contract | FIT is wired to fitView, which frames `chartBounds(config)` and never dispatches or touches `documentEpoch` |
+| never writes storage or the dirty flag from the viewport | source contract | No localStorage read or write, no `DRAFT_STORAGE_KEY`, no `dirty:` assignment in the canvas |
+| preserves the span exactly across repeated pans, even at the clamps | unit | 50 pans leave `spanM` identical at the floor, mid-range, and the ceiling while the centre moves |
+| stays put when the draft is exported | unit | exportFile clears dirty but leaves `documentEpoch` alone, so a save never re-frames the chart |
+
+All six are in the PASS column of the final run above; the other 410 tests
+are unchanged from the implementer's run.
+
+#### Per-test results (new tests)
+
+| Test | Verdict | Notes |
+|------|---------|-------|
+| viewportContract: sanctioned setView paths only | PASS | 5 call sites, 7 edit functions clean |
+| viewportContract: wheel ignored mid-gesture | PASS | guard index precedes the anchor read |
+| viewportContract: FIT frames the current document | PASS | no dispatch, no epoch in fitView |
+| viewportContract: no storage or dirty writes | PASS | no localStorage method calls, no `dirty:` |
+| chart: pan preserves the span exactly | PASS | byte-equal span at 10, 60, and 50000 m |
+| store: export does not advance the epoch | PASS | dirty false, epoch unchanged |
+
+#### Acceptance criteria audit
+
+- No view change on any edit path: grep of MissionCanvas.tsx finds 6
+  occurrences of `setView`: the useState initializer plus 5 calls, at the fit
+  effect, the wheel handler, the zoom buttons, the FIT button, and trackPan.
+  The edit paths (endDrag's commits, addWaypointAt, nudge, onNodeKeyDown)
+  contain none, now pinned by the call-site test. View lives in component
+  `useState`, so a store-driven re-render preserves it: MissionView mounts
+  MissionCanvas unconditionally with no key, and MissionView has a single
+  return with no early exit, so no edit can remount the chart and reset the
+  frame.
+- Fit only on mount, epoch, and FIT: 3 `viewFit(` call sites (initializer,
+  the `[documentEpoch, aspectKnown]` effect, and fitView), pinned by the
+  count test. `documentEpoch` advances only in loadConfig, loadTemplate
+  (through loadConfig), a successful importFile, and clearDraft, and never on
+  dispatch, undo, redo, select, or exportFile, all pinned in the store tests.
+- Clamps and degenerate guards: clampSpan, viewBounds, zoomAt, and viewFit
+  junk handling in chart.test.ts cover NaN, infinities, zero and negative
+  aspects, and spans past both bounds.
+- Grid from view: `linesOver` over the visible rectangle plus the "grid
+  steps follow the view" test, which shows the step follows the zoom, not the
+  mission frame.
+- Zoom anchor math: "keeps the anchor fixed" across three factors, plus the
+  clamp landing tests.
+- Gestures: source contract for beginPan on the background rect, the moved
+  flag guard on double-click, and the wheel mid-gesture guard added here.
+- Epoch semantics: never on edit, undo, redo, select; advances on template
+  load, import, and clear; refused loads and imports leave it; a save leaves
+  it (new test).
+
+#### Mutation probes (each reverted byte-identically)
+
+| Probe | Target file | Mutation | Result | sha256 before = after |
+|-------|-------------|----------|--------|------------------------|
+| A | src/components/editor/MissionCanvas.tsx | `setView(viewFit(chartBounds(config), aspect ?? 1))` inserted in endDrag ahead of the dispatch commit | exactly 2 failed of 416: "fits only on mount, on the document epoch, and on the FIT button" (viewFit count went 3 to 4) and "changes the view only from sanctioned viewport paths, never from an edit" (6 call sites, one unsanctioned) | 6e624ba640fdaf568ab2c51eac5d4cb6fa3a5dc2ed8ad5184effd2c9cd0ac255 |
+| B | src/components/editor/chart.ts | zoomAt anchor terms `* scale` changed to `/ scale` | exactly 1 failed of 416: "keeps the anchor fixed: the point under the cursor does not move" | 78bed5885f55debe6c8d97981f5adbebd0625b708957783bdda1574f8414d198 |
+| C | src/components/editor/MissionCanvas.tsx | `{ passive: false }` removed from the wheel addEventListener | exactly 1 failed of 416: "registers the wheel listener non-passively at the chart" | 6e624ba640fdaf568ab2c51eac5d4cb6fa3a5dc2ed8ad5184effd2c9cd0ac255 |
+
+Backups and hashes live in the approved session temp directory, outside the
+repository. After the probes, `git status --porcelain` shows only the
+intended change set, and every mutated file hash matches its pre-probe value.
+
+#### Coverage summary and residual gaps
+
+- Covered now: the full setView call-site audit with per-function exclusion,
+  the fit path count and effect deps, wheel passive registration and the
+  mid-gesture guard, FIT button wiring, no storage or dirty writes from the
+  viewport, pan span invariance, epoch semantics including the save path,
+  clamps, degenerate views, grid from view, and zoom anchor math.
+- Not covered: no DOM render test of the chart itself. vitest runs
+  `environment: 'node'` with `src/**/*.test.ts`, so gesture behavior (pointer
+  capture, screen CTM math, wheel events) is asserted at the source tier, the
+  same residual recorded for other components. The new `useElementSize` hook
+  has no direct test; it is a thin ResizeObserver wrapper that only runs in
+  the browser.
+- Finding, not a defect: the fit effect depends on `[documentEpoch,
+  aspectKnown]`, so the first measured aspect triggers a second fit just
+  after mount. That is intentional (the frame becomes correct once the box
+  has a size) and is not an edit path.
+- Finding, not a defect: `zoomAt` clamps the span before computing the
+  anchor scale, so a zoom that lands on a clamp keeps the anchor exactly
+  rather than approximately; the clamp tests pin this.
+
+#### Failure analysis
+
+None. All 416 tests pass, typecheck and build exit 0, and each probe failed
+exactly the tests designed to catch it, then reverted cleanly.
+
+#### Verification checklist
+
+- [x] All tests pass: 416 of 416 in 25 files, typecheck exit 0, build exit 0
+- [x] Happy path covered: fit on mount and epoch, wheel and button zoom, pan,
+  FIT re-frames the current document
+- [x] Edge cases covered: clamps at both bounds, degenerate and NaN views,
+  refused loads and imports, pan at the floor and the ceiling
+- [x] Error conditions covered: junk factors, anchors, and aspects ignored;
+  refused load and import leave the epoch alone
+- [x] No em dashes, double hyphens, or dash equivalents in this section
+- [x] Phase tests integrate with prior phase tests: the 410-test baseline
+  passes unchanged beside the 6 new tests

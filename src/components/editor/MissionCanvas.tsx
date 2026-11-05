@@ -1,11 +1,15 @@
 /**
- * Mission planning chart (FlightLab Phase 8c). A true-scale, north-up
- * top-down view of the authored mission: a round-meter grid, the numbered
- * route from home through every waypoint with its acceptance circles and
- * altitudes, keep-out zones as amber dashed circles, a north arrow, and a
- * scale bar. The frame comes from `chartBounds` so the whole mission is
- * always in view; chrome (node dots, labels, the arrow) is sized off the
- * span so it stays legible at any zoom.
+ * Mission planning chart (FlightLab Phase 8c, viewport Phase 8d-C). A
+ * true-scale, north-up top-down view of the authored mission: a round-meter
+ * grid, the numbered route from home through every waypoint with its
+ * acceptance circles and altitudes, keep-out zones as amber dashed circles,
+ * a north arrow, and a scale bar. The frame comes from the component's own
+ * viewport (`ChartView`): zoom and pan are user-controlled and live outside
+ * the undo history, so editing never re-scales the chart. Fitting the whole
+ * mission happens only on mount, when the document identity changes
+ * (`documentEpoch`), and on the FIT button. The grid, its labels, the scale
+ * bar, and the chrome scale are all derived from the visible span and drawn
+ * over the visible rectangle, so panning never runs off the grid's edge.
  *
  * Editing: click a node to select it, drag a waypoint or zone to move it
  * (one undo entry per drag, dispatched on pointer up), drag the selected
@@ -15,21 +19,37 @@
  * removes the selected item. Dragging uses pointer capture with world
  * coordinates from `getScreenCTM`, so it tracks the cursor under any zoom
  * and works with touch (`touch-action: none`).
+ *
+ * Viewport: ZOOM IN and ZOOM OUT step by a fixed factor about the view
+ * centre, FIT frames the mission, the wheel zooms at the cursor, and
+ * dragging empty background pans. A pan or drag never reads as a click or a
+ * double-click (the moved-flag gesture guard), and the wheel is ignored
+ * mid-gesture so the frame cannot move while an edit is in progress.
  */
 
-import { useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { LIMITS } from '@/types/generated/talon_core'
+import { useElementSize } from '@/hooks/useElementSize'
 import { clampCoordinate } from '@/utils/editor'
 import type { EditorCommand, EditorSelection, MissionConfig } from '@/utils/editor'
 import {
   boundsHeight,
   boundsViewBox,
   boundsWidth,
+  canZoomIn,
+  canZoomOut,
   chartBounds,
   gridStepM,
   labelStepM,
+  linesOver,
+  panBy,
   scaleBarLengthM,
+  viewBounds,
+  viewFit,
+  zoomAt,
+  type ChartPoint,
+  type ChartView,
 } from './chart'
 
 export interface MissionCanvasProps {
@@ -41,9 +61,15 @@ export interface MissionCanvasProps {
   onSelect: (sel: EditorSelection) => void
   /** Apply one edit (move, resize, add, remove). */
   dispatch: (cmd: EditorCommand) => void
+  /**
+   * Store counter of document replacements (load, template load, import,
+   * CLEAR). The chart re-fits when it changes; an edit never advances it,
+   * so zoom and pan survive the editing session.
+   */
+  documentEpoch: number
 }
 
-/** A live drag: what is being dragged, where it started, and the last point. */
+/** A live drag on a waypoint or zone handle: what is being dragged, where it started, and the last point. */
 interface DragState {
   kind: 'move' | 'resize'
   target: 'waypoint' | 'obstacle'
@@ -63,6 +89,46 @@ interface DragState {
   radius: number
 }
 
+/** A live pan on the empty chart background: start point and last pointer position. */
+interface PanState {
+  kind: 'pan'
+  pointerId: number
+  /** Client coordinates at pointer down, to tell a pan from a click. */
+  downX: number
+  downY: number
+  /** True once the pointer has travelled past `DRAG_THRESHOLD_PX`. */
+  moved: boolean
+  /** Previous pointer position, for the world delta of the next move. */
+  lastX: number
+  lastY: number
+}
+
+/** One pointer gesture on the chart: a node drag or a background pan. */
+type Interaction = DragState | PanState
+
+/** What one finished gesture was, so a later click can tell them apart. */
+interface GestureRecord {
+  kind: 'background' | 'node'
+  /** True when the gesture travelled past `DRAG_THRESHOLD_PX`. */
+  moved: boolean
+}
+
+/**
+ * Chart-space coordinates of a client point, or null without a screen CTM.
+ * The CTM already carries the current zoom and pan, so this is the single
+ * source of world coordinates for drags, pans, wheel anchors, and
+ * double-clicks alike.
+ */
+function toChartPoint(svg: SVGSVGElement, clientX: number, clientY: number): ChartPoint | null {
+  const ctm = svg.getScreenCTM()
+  if (ctm === null) return null
+  const point = svg.createSVGPoint()
+  point.x = clientX
+  point.y = clientY
+  const local = point.matrixTransform(ctm.inverse())
+  return { x: local.x, y: local.y }
+}
+
 /** Clamp a dragged radius to a sensible, validator-legal range. */
 function clampRadius(value: number): number {
   return Math.min(Math.max(value, 0.5), Math.min(200, LIMITS.max_radius_m))
@@ -70,6 +136,16 @@ function clampRadius(value: number): number {
 
 /** Distance (px) the pointer must travel before a press counts as a drag. */
 const DRAG_THRESHOLD_PX = 2
+
+/** Fixed zoom step for the ZOOM IN and ZOOM OUT buttons, per press. */
+const ZOOM_STEP = 1.3
+
+/** Fixed zoom step for one wheel tick at the cursor. */
+const WHEEL_ZOOM_STEP = 1.25
+
+/** Chart chrome button: the toolbar's quiet mono style on a panel backing. */
+const CHROME_BUTTON =
+  'border border-grid bg-panel/85 px-3 py-2 font-mono text-[10px] tracking-[0.15em] text-ink-dim transition-colors hover:bg-panel-3 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-signal disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-dim'
 
 /** The route and zone story for the chart's screen-reader summary. */
 function chartSummary(config: MissionConfig): string {
@@ -97,32 +173,114 @@ function chartSummary(config: MissionConfig): string {
   return parts.join(' ')
 }
 
-export function MissionCanvas({ config, selected, onSelect, dispatch }: MissionCanvasProps) {
+export function MissionCanvas({
+  config,
+  selected,
+  onSelect,
+  dispatch,
+  documentEpoch,
+}: MissionCanvasProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
-  const dragRef = useRef<DragState | null>(null)
+  const interactionRef = useRef<Interaction | null>(null)
   const [preview, setPreview] = useState<DragState | null>(null)
+  /**
+   * The last two finished gestures. A double-click only counts when both
+   * clicks were clean presses on empty background, so a pan or a node drag
+   * (either over `DRAG_THRESHOLD_PX`) never drops a waypoint by accident.
+   */
+  const prevGestureRef = useRef<GestureRecord>({ kind: 'background', moved: false })
+  const lastGestureRef = useRef<GestureRecord>({ kind: 'background', moved: false })
 
-  const bounds = chartBounds(config)
+  /** The chart box, watched for resizes that change the frame's aspect. */
+  const [frameRef, frameSize] = useElementSize<HTMLDivElement>()
+  /** Element aspect (width / height), null until the box has been measured. */
+  const aspect =
+    frameSize.width > 0 && frameSize.height > 0 ? frameSize.width / frameSize.height : null
+  const aspectKnown = aspect !== null
+
+  /**
+   * The viewport: the visible centre and span in meters. Component state,
+   * outside the undo history, so zooming and panning never enable UNDO,
+   * never mark the draft EDITED, and never write to localStorage.
+   */
+  const [view, setView] = useState<ChartView>(() => viewFit(chartBounds(config), 1))
+
+  /**
+   * Fit the frame on mount, on the first measured aspect, and whenever the
+   * document identity changes (`documentEpoch`: template load, import,
+   * CLEAR). Edits, undo, and redo leave the epoch alone, so they never
+   * re-fit; `config` and `aspect` are read from the render the epoch change
+   * belongs to, and listing them here would re-fit on every edit or resize.
+   */
+  useLayoutEffect(() => {
+    setView(viewFit(chartBounds(config), aspect ?? 1))
+  }, [documentEpoch, aspectKnown])
+
+  /**
+   * Wheel zoom at the cursor. Registered by hand with `passive: false`:
+   * React's synthetic wheel listener is passive at the root and cannot call
+   * preventDefault, so the page would scroll under the chart. Wheel input is
+   * ignored while a drag or pan is in progress: the frame must not move
+   * during an edit gesture at any point.
+   */
+  useEffect(() => {
+    const svg = svgRef.current
+    if (svg === null) return
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (interactionRef.current !== null) return
+      const anchor = toChartPoint(svg, e.clientX, e.clientY)
+      if (anchor === null) return
+      const factor = e.deltaY < 0 ? WHEEL_ZOOM_STEP : 1 / WHEEL_ZOOM_STEP
+      setView((current) => zoomAt(current, anchor, factor))
+    }
+    svg.addEventListener('wheel', onWheel, { passive: false })
+    return () => svg.removeEventListener('wheel', onWheel)
+  }, [])
+
+  /** The visible rectangle: the viewBox, the grid's extent, the chrome's frame. */
+  const bounds = viewBounds(view, aspect ?? 1)
   const spanX = boundsWidth(bounds)
   const spanY = boundsHeight(bounds)
+  /** The visible span: grid, labels, scale bar, and chrome scale come from this. */
   const span = Math.max(spanX, spanY)
   const gridStep = gridStepM(span)
   const labelStep = labelStepM(span)
   const barLength = scaleBarLengthM(span)
   /** World size of screen chrome (labels, nodes, arrow): keeps text legible. */
   const ui = span / 55
+  const zoomableIn = canZoomIn(view)
+  const zoomableOut = canZoomOut(view)
+
+  /** Chart-space coordinates of a pointer event, or null without a screen CTM. */
+  function toChart(e: { clientX: number; clientY: number }): ChartPoint | null {
+    const svg = svgRef.current
+    if (svg === null) return null
+    return toChartPoint(svg, e.clientX, e.clientY)
+  }
 
   /** World coordinates of a pointer event, or null without a screen CTM. */
   function toWorld(e: { clientX: number; clientY: number }): { north: number; east: number } | null {
-    const svg = svgRef.current
-    if (svg === null) return null
-    const ctm = svg.getScreenCTM()
-    if (ctm === null) return null
-    const point = svg.createSVGPoint()
-    point.x = e.clientX
-    point.y = e.clientY
-    const local = point.matrixTransform(ctm.inverse())
-    return { north: -local.y, east: local.x }
+    const chart = toChart(e)
+    if (chart === null) return null
+    return { north: -chart.y, east: chart.x }
+  }
+
+  /** Step the zoom by a fixed factor, anchored on the view centre. */
+  function zoomStep(factor: number): void {
+    setView((current) => zoomAt(current, { x: current.centerX, y: current.centerY }, factor))
+  }
+
+  /** Frame the whole mission again: the FIT button's one job. */
+  function fitView(): void {
+    setView(viewFit(chartBounds(config), aspect ?? 1))
+  }
+
+  /** Remember a finished gesture for the click and double-click guards. */
+  function noteGesture(gesture: GestureRecord): void {
+    prevGestureRef.current = lastGestureRef.current
+    lastGestureRef.current = gesture
   }
 
   /** Begin a drag on a node or handle; the item also becomes selected. */
@@ -140,7 +298,7 @@ export function MissionCanvas({ config, selected, onSelect, dispatch }: MissionC
     if (world === null) return
     e.stopPropagation()
     svgRef.current?.setPointerCapture(e.pointerId)
-    dragRef.current = {
+    interactionRef.current = {
       kind,
       target,
       index,
@@ -157,10 +315,33 @@ export function MissionCanvas({ config, selected, onSelect, dispatch }: MissionC
     onSelect({ kind: target, index })
   }
 
-  /** Track the pointer; update the local preview (no history entry yet). */
+  /** Begin a pan on the empty chart background (drag to move the view). */
+  function beginPan(e: ReactPointerEvent<SVGRectElement>): void {
+    if (e.button !== 0 && e.pointerType === 'mouse') return
+    if (interactionRef.current !== null) return
+    const svg = svgRef.current
+    if (svg === null) return
+    svg.setPointerCapture(e.pointerId)
+    interactionRef.current = {
+      kind: 'pan',
+      pointerId: e.pointerId,
+      downX: e.clientX,
+      downY: e.clientY,
+      moved: false,
+      lastX: e.clientX,
+      lastY: e.clientY,
+    }
+  }
+
+  /** Track the pointer: pan the view, or update a drag's local preview. */
   function trackDrag(e: ReactPointerEvent<SVGElement>): void {
-    const drag = dragRef.current
-    if (drag === null || e.pointerId !== drag.pointerId) return
+    const interaction = interactionRef.current
+    if (interaction === null || e.pointerId !== interaction.pointerId) return
+    if (interaction.kind === 'pan') {
+      trackPan(interaction, e)
+      return
+    }
+    const drag = interaction
     const world = toWorld(e)
     if (world === null) return
 
@@ -183,15 +364,47 @@ export function MissionCanvas({ config, selected, onSelect, dispatch }: MissionC
     setPreview({ ...drag })
   }
 
-  /** Commit one command for the whole drag, or drop a bare click. */
+  /**
+   * Pan the view so the chart follows the cursor. The frame moves only once
+   * the pointer clears `DRAG_THRESHOLD_PX`, and the delta is taken from the
+   * previous pointer position, so a pan starts smoothly with no jump.
+   */
+  function trackPan(pan: PanState, e: ReactPointerEvent<SVGElement>): void {
+    const svg = svgRef.current
+    if (svg === null) return
+    const previous = toChartPoint(svg, pan.lastX, pan.lastY)
+    const next = toChartPoint(svg, e.clientX, e.clientY)
+    if (previous === null || next === null) return
+    pan.lastX = e.clientX
+    pan.lastY = e.clientY
+    if (!pan.moved) {
+      const travelled = Math.hypot(e.clientX - pan.downX, e.clientY - pan.downY)
+      if (travelled < DRAG_THRESHOLD_PX) return
+      pan.moved = true
+    }
+    // Content follows the pointer: the centre shifts opposite the world delta.
+    setView((current) => panBy(current, previous.x - next.x, previous.y - next.y))
+  }
+
+  /** Finish one gesture: commit a drag, clear on a bare press, pan or not. */
   function endDrag(e: ReactPointerEvent<SVGElement>): void {
-    const drag = dragRef.current
-    if (drag === null || e.pointerId !== drag.pointerId) return
-    dragRef.current = null
-    setPreview(null)
+    const interaction = interactionRef.current
+    if (interaction === null || e.pointerId !== interaction.pointerId) return
+    interactionRef.current = null
     if (svgRef.current?.hasPointerCapture(e.pointerId) === true) {
       svgRef.current.releasePointerCapture(e.pointerId)
     }
+    noteGesture({
+      kind: interaction.kind === 'pan' ? 'background' : 'node',
+      moved: interaction.moved,
+    })
+    if (interaction.kind === 'pan') {
+      // A clean press on empty space clears the selection; a pan leaves it.
+      if (!interaction.moved) onSelect(null)
+      return
+    }
+    const drag = interaction
+    setPreview(null)
     if (!drag.moved) return
     if (drag.kind === 'move' && drag.target === 'waypoint') {
       dispatch({ type: 'waypoint/move', index: drag.index, north: drag.north, east: drag.east })
@@ -202,16 +415,20 @@ export function MissionCanvas({ config, selected, onSelect, dispatch }: MissionC
     }
   }
 
-  /** Drop a drag without committing (the pointer was cancelled). */
+  /** Drop a gesture without committing (the pointer was cancelled). */
   function cancelDrag(e: ReactPointerEvent<SVGElement>): void {
-    const drag = dragRef.current
-    if (drag === null || e.pointerId !== drag.pointerId) return
-    dragRef.current = null
+    const interaction = interactionRef.current
+    if (interaction === null || e.pointerId !== interaction.pointerId) return
+    interactionRef.current = null
     setPreview(null)
+    noteGesture({
+      kind: interaction.kind === 'pan' ? 'background' : 'node',
+      moved: interaction.moved,
+    })
   }
 
   /** Add a waypoint where the chart was double-clicked, and select it. */
-  function addWaypointAt(e: ReactPointerEvent<SVGRectElement>): void {
+  function addWaypointAt(e: { clientX: number; clientY: number }): void {
     if (config.waypoints.length >= LIMITS.max_waypoints) return // the panel's cap, honored here too
     const world = toWorld(e)
     if (world === null) return
@@ -222,6 +439,21 @@ export function MissionCanvas({ config, selected, onSelect, dispatch }: MissionC
       east: clampCoordinate(world.east),
     })
     onSelect({ kind: 'waypoint', index })
+  }
+
+  /**
+   * Double-click on empty chart adds a waypoint. The gesture guard decides,
+   * not the event target (pointer capture can retarget a click to the svg):
+   * both of the last two gestures must be clean presses on empty background,
+   * so a pan or a node drag never drops a waypoint, and a double-click on a
+   * waypoint or zone stays that item's business.
+   */
+  function onChartDoubleClick(e: ReactMouseEvent<SVGSVGElement>): void {
+    const last = lastGestureRef.current
+    const prev = prevGestureRef.current
+    if (last.kind !== 'background' || prev.kind !== 'background') return
+    if (last.moved || prev.moved) return
+    addWaypointAt(e)
   }
 
   /** Nudge the focused item by one grid step; Shift takes five. */
@@ -300,23 +532,12 @@ export function MissionCanvas({ config, selected, onSelect, dispatch }: MissionC
     return { ...ob, center_ned: [north, east, ob.center_ned[2]] as [number, number, number], radius_m: radius }
   })
 
-  // Grid line positions in chart space (x east, y = -north).
-  const verticals: number[] = []
-  for (let x = Math.ceil(bounds.minX / gridStep) * gridStep; x <= bounds.maxX; x += gridStep) {
-    verticals.push(x)
-  }
-  const horizontals: number[] = []
-  for (let y = Math.ceil(bounds.minY / gridStep) * gridStep; y <= bounds.maxY; y += gridStep) {
-    horizontals.push(y)
-  }
-  const eastLabels: number[] = []
-  for (let x = Math.ceil(bounds.minX / labelStep) * labelStep; x <= bounds.maxX; x += labelStep) {
-    eastLabels.push(x)
-  }
-  const northLabels: number[] = []
-  for (let y = Math.ceil(bounds.minY / labelStep) * labelStep; y <= bounds.maxY; y += labelStep) {
-    northLabels.push(y)
-  }
+  // Grid line positions over the visible rectangle (x east, y = -north):
+  // the frame the viewport is showing, so panning never leaves the grid.
+  const verticals = linesOver(bounds.minX, bounds.maxX, gridStep)
+  const horizontals = linesOver(bounds.minY, bounds.maxY, gridStep)
+  const eastLabels = linesOver(bounds.minX, bounds.maxX, labelStep)
+  const northLabels = linesOver(bounds.minY, bounds.maxY, labelStep)
 
   // The route polyline: home, then every waypoint in order.
   const routePoints = [
@@ -331,7 +552,7 @@ export function MissionCanvas({ config, selected, onSelect, dispatch }: MissionC
   const stroke = { vectorEffect: 'non-scaling-stroke' as const }
 
   return (
-    <div className="relative h-full w-full touch-none">
+    <div ref={frameRef} className="relative h-full w-full touch-none">
       <svg
         ref={svgRef}
         className="block h-full w-full"
@@ -342,16 +563,16 @@ export function MissionCanvas({ config, selected, onSelect, dispatch }: MissionC
         onPointerMove={trackDrag}
         onPointerUp={endDrag}
         onPointerCancel={cancelDrag}
+        onDoubleClick={onChartDoubleClick}
       >
-        {/* Chart ground and the empty-chart click surface. */}
+        {/* Chart ground and the pan surface; a clean press clears the selection. */}
         <rect
           x={bounds.minX}
           y={bounds.minY}
           width={spanX}
           height={spanY}
           className="fill-panel-2"
-          onClick={() => onSelect(null)}
-          onDoubleClick={addWaypointAt}
+          onPointerDown={beginPan}
         />
 
         {/* Round-meter grid, labelled every fifth line. */}
@@ -626,6 +847,42 @@ export function MissionCanvas({ config, selected, onSelect, dispatch }: MissionC
           </g>
         </g>
       </svg>
+
+      {/* Chart chrome: zoom and fit controls. They touch only the local
+          viewport state, so they never enter the undo history, the dirty
+          flag, or localStorage. */}
+      <div
+        role="group"
+        aria-label="Chart zoom controls"
+        className="absolute bottom-2 right-2 flex items-center gap-1"
+      >
+        <button
+          type="button"
+          onClick={() => zoomStep(ZOOM_STEP)}
+          disabled={!zoomableIn}
+          title={zoomableIn ? `Zoom in, ${ZOOM_STEP}x per press` : 'Already at the closest zoom'}
+          className={CHROME_BUTTON}
+        >
+          ZOOM IN
+        </button>
+        <button
+          type="button"
+          onClick={() => zoomStep(1 / ZOOM_STEP)}
+          disabled={!zoomableOut}
+          title={zoomableOut ? `Zoom out, ${ZOOM_STEP}x per press` : 'Already at the widest view'}
+          className={CHROME_BUTTON}
+        >
+          ZOOM OUT
+        </button>
+        <button
+          type="button"
+          onClick={fitView}
+          title="Frame the whole mission"
+          className={CHROME_BUTTON}
+        >
+          FIT
+        </button>
+      </div>
 
       {/* Empty-route prompt, laid over the chart without stealing pointers. */}
       {config.waypoints.length === 0 && (

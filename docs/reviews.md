@@ -2,6 +2,88 @@
 
 Last updated: 2026-11-05
 
+## 2026-11-05 - Phase 8d-C: Security Review
+
+Verdict: PASS
+
+Client-side rendering change (chart viewport: component-local zoom/pan/FIT state, pure
+viewport math, `documentEpoch` counter, `useElementSize`, toolbar buttons). No network,
+no persistence of viewport state, no new input channels beyond pointer/wheel events.
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | src/components/editor/chart.ts:206-209, 225 | `zoomAt`/`panBy` echo a junk input view unchanged instead of repairing it. Harmless: every draw path re-sanitizes via `viewBounds`/`clampSpan`, and the view is never serialized. | None required. Optional: fall back to a clamped view instead of echoing junk. |
+
+Check results:
+1. `documentEpoch` isolation (PASS): store-level field only (useMissionStore.ts:110,161-163),
+   bumped solely on load/import/clear (lines 200, 230, 282). `persist` and `exportFile`
+   serialize `history.present` only (lines 71-79, 250); the counter never reaches
+   localStorage or exports. `EditorHistory` holds only `MissionConfig`
+   (utils/editor.ts:474-477). `loadDraft` normalizes through `toMissionConfig`, which
+   rebuilds a whitelist-shaped object (utils/editor.ts:98-128). Tests pin the behavior
+   (useMissionStore.test.ts:197-227).
+2. Viewport numeric guards (PASS): `clampSpan` floors NaN and clamps infinities
+   (chart.ts:147-150); `viewBounds`, `viewFit`, `zoomAt`, `panBy` all finite-guard inputs
+   and outputs (chart.ts:160-230); `linesOver` rejects junk and caps at 200 lines
+   (chart.ts:273-300). The view is component-local React state (MissionCanvas.tsx:206),
+   so no NaN path reaches storage; `viewBounds` output feeds the viewBox
+   (MissionCanvas.tsx:243, 559).
+3. Listeners (PASS): one manual `wheel` listener on the fixed `svgRef` with a fixed
+   handler and symmetric cleanup (MissionCanvas.tsx:238-239); all other handlers are
+   React props on fixed elements. No computed event names, no user-controlled selectors,
+   no innerHTML. `useElementSize` observes the fixed ref and disconnects on cleanup.
+4. Test file access (PASS): `viewportContract.test.ts:16-17` reads fixed
+   `path.resolve(...)` literals; `chart.test.ts` is pure; `useMissionStore.test.ts` stubs
+   localStorage with an in-memory Storage.
+
+## 2026-11-05 - Phase 8d-C (3 of 4): chart viewport (code review)
+
+Verdict: PASS (APPROVE), with two Low, non-blocking notes. Reviewed the
+working-tree state of chart.ts, MissionCanvas.tsx, useMissionStore.ts,
+MissionView.tsx, useElementSize.ts (new), chart.test.ts,
+useMissionStore.test.ts, and viewportContract.test.ts (new). No shell tool
+was available, so git diff and the test suites could not be run here; the
+static source contracts in viewportContract.test.ts were cross-checked
+against the current files by hand.
+
+### Check results
+
+| Check | Verdict | Details |
+|-------|---------|---------|
+| Zoom steps (1.3x), FIT, wheel zoom at cursor (non-passive, preventDefault), background pan | PASS | MissionCanvas.tsx:141-144, :226-240, :276-278, :319-334, :569-576, :877-884 |
+| No view change on any edit, undo, redo, or during a drag | PASS | setView call sites audited: :206, :216, :236, :272, :277, :386 only (mount, epoch effect, wheel, zoom buttons, FIT, pan) |
+| Fit only on mount, documentEpoch bumps, FIT button | PASS | Three viewFit sites (MissionCanvas.tsx:206, :216, :277); bumps at useMissionStore.ts:200, :230, :282 after successful commit; refusals throw first (useMissionStore.test.ts:221-227) |
+| Zoom/pan outside undo history | PASS | Local useState (MissionCanvas.tsx:206); no store import in the canvas (viewportContract.test.ts:36-40) |
+| Grid/labels/scale bar/chrome from the view span, grid covers the panned rect, density bounded | PASS | MissionCanvas.tsx:243-250, :537-540; chart.ts:253-258, :283-300; chart.test.ts:392-401 |
+| Clamps (10 m, 50 km), disabled at clamp, viewBox never degenerate or NaN | PASS | chart.ts:132, :140, :147-150, :160-173, :233-240; MissionCanvas.tsx:862, :871; chart.test.ts:239-258 |
+| Gestures coexist (1:1 drag via getScreenCTM, dblclick guard, clear-on-press, nudge, touch-action) | PASS | MissionCanvas.tsx:122-130, :308-309, :355-356, :401-404, :451-457, :459-494, :555 |
+| viewBounds/zoomAt/panBy math (anchor fixed, span invariant under pan) | PASS | chart.ts:160-230; worked examples match chart.test.ts:301-323, :335-347 |
+| Aspect-matched viewBox with preserveAspectRatio meet | PASS | MissionCanvas.tsx:559-560; viewBox aspect equals element aspect, so meet never distorts |
+| Gesture record soundness (moved/kind two-gesture dblclick) | PASS | endDrag records before click dispatch; a pan's click carries moved=true and blocks the add (MissionCanvas.tsx:397-400, :454-455); plain double-click never swallowed |
+| Epoch handling (rapid loads, refusal paths) | PASS | Synchronous bump (useMissionStore.ts:161-163); commit and bump batch; refusal paths covered by tests |
+| Phase D fit-trigger reuse for the 3D camera | PASS | documentEpoch is view-agnostic store state (useMissionStore.ts:110); reusable as-is |
+| Conventions (strict TS, naming, no dash punctuation) | PASS | No em dashes or dash equivalents; noUncheckedIndexedAccess safe (chart.ts:257, :310, :345; MissionCanvas.tsx:359, :477, :486) |
+
+### Findings
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | src/components/editor/MissionCanvas.tsx:287-316 | beginDrag lacks the active-interaction guard beginPan has (:321); a second pointer landing on a node mid-pan overwrites the gesture state | Return early when interactionRef.current is not null |
+| Low | src/components/editor/MissionCanvas.tsx:215-217 | Fit keys on aspectKnown, so a measured to zero-size to measured cycle re-fits outside the mount/epoch/FIT list (practically unreachable: views unmount on switch, App.tsx:93) | Latch the first measurement in a ref; keep a last-known aspect |
+| Info | src/App.tsx:93 | Tab switches remount the chart and the mount fit resets zoom/pan; allowed by the contract, confirm product intent for Phase D | Optionally lift ChartView above the view switch |
+| Info | src/components/editor/MissionCanvas.tsx:451-457 | "Not after a pan" blocks pans that are one of the two clicks; a completed pan followed by a clean double-click still adds a waypoint | Confirm intended reading with the acceptance owner |
+
+### Notes for other agents
+
+- The documentEpoch counter in useMissionStore is the shared fit trigger for
+  Phase D: any consumer (the future 3D camera included) can subscribe to it
+  and fit on change; edits never advance it.
+- Recurring pattern to keep: viewport state lives in component state and
+  every view mutation goes through a small pure function in chart.ts, which
+  is what makes the no-auto-zoom contract testable without rendering.
+- The reviewer environment had no shell tool: test execution and git diff
+  verification remain for the tester and git agents.
+
 ## 2026-11-05 - Phase A (1 of 4): wasm module-graph loading (security review)
 
 Scope: the four-file rename `public/wasm-rust/` to `src/wasm-rust/`, the loader
