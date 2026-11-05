@@ -1,8 +1,8 @@
 # Talon Architecture
 
-Last updated: 2026-10-19 (Phase 8c)
+Last updated: 2026-11-05 (Phase 8d)
 
-## Current-state snapshot (FlightLab Phase 9b + hardening + Phase 5c + Phase 8c, complete)
+## Current-state snapshot (FlightLab Phase 9b + hardening + Phase 5c + Phase 8c + Phase 8d, complete)
 
 Talon is a single-vehicle UAV GNC stack whose autopilot is one Rust library,
 `talon-core`, plus a Python analysis harness and a TypeScript flight tool.
@@ -75,6 +75,19 @@ so the browser gate and the core gate agree, and import/export share a mission
 as a JSON document under a 1 MB cap and the slug id contract (the reserved `live`
 id included). Fly hands a validated clone to `useFlightStore.authoredMission`
 and the Run view lists it first.
+
+Phase 8d then sharpened the planner itself (D39 to D42). The wasm kernel
+loads through the source module graph: the committed wasm-bindgen output
+lives in `src/wasm-rust/`, `src/live/engine.ts` statically imports the glue
+and resolves the binary with Vite's `?url` suffix, and the engine surface is
+generated type aliases over the emitted declarations. The chart viewport is
+user state, fitted only on mount, on `documentEpoch` (template load, import,
+clear), and by the FIT button, so an edit never rescales the view. Navigation
+leads with MISSION PLANNER and the planner is the default view. The mission
+page splits into the 2D chart and a read-only 3D course preview
+(`MissionPreview`), 50/50 from xl and stacked at lg beside the inspector,
+composed from the replay's scene layers narrowed to slices and tracking drags
+through the store's `dragPreview` transient.
 
 ### Repository layout
 
@@ -245,8 +258,8 @@ postprocessing pass:
 | Bloom | `FlightScene.tsx` | `@react-three/postprocessing` |
 
 Phase 8d-D reuses `GroundPlane`, `WaypointMarkers`, and `ObstacleField` in the
-mission preview, so those two layers take narrow slices (positions, obstacles,
-the recorded track) plus a visibility prop instead of the whole `FlightData`;
+mission preview, so these layers take narrow slices (positions, obstacles,
+the recorded `DroneTrack`) plus a visibility prop instead of the whole `FlightData`;
 `FlightScene` passes the same data and toggles it always did, and the replay
 tree is unchanged.
 
@@ -257,23 +270,28 @@ minimum). The 2.07 m flight-minimum the legend prints is the same quantity
 the Python CI asserts, so the web readout and the validation report cannot
 drift.
 
-### Web app FlightLab shell (Phase 3)
+### Web app FlightLab shell (Phase 3, reordered Phase 8d-B)
 
-The app is one entry point with four sections, switched by
-`useFlightStore.activeView` and rendered by `ViewTabs` in the header:
+The app is one entry point with six sections, switched by
+`useFlightStore.activeView` and rendered by `ViewTabs` in the header, ordered
+MISSION PLANNER, TELEMETRY, METRICS, VIDEOS, RUN, REPLAY and defaulting to
+the planner:
 
 | Section | File | Backed by |
 |---------|------|-----------|
-| Replay | `src/views/ReplayView.tsx` | R3F scene + HUD + legend |
+| Mission planner | `src/views/MissionView.tsx` | editor store: 2D chart + 3D preview + inspector |
 | Telemetry | `src/views/TelemetryView.tsx` | `deriveTelemetry(data)` time-series |
 | Metrics | `src/views/MetricsView.tsx` | `summarizeRun(data)` + `validation.json` |
 | Videos | `src/views/VideosView.tsx` | `public/videos/*.mp4` (`RECORDINGS`) |
 | Run | `src/views/RunView.tsx` | live GCS: native session + recorder + pacer |
+| Replay | `src/views/ReplayView.tsx` | R3F scene + HUD + legend |
 
-The replay and telemetry sections share the playback clock, so the transport
-bar and phase scrubber stay pinned to the bottom for both; metrics and videos
-drop them. The left rail always carries the scenario list and adds the
-scene-layer toggles only for the time-based sections.
+The mission planner owns its whole body: no scenario rail and no transport,
+since it authors a mission rather than replaying one. The other sections keep
+the left rail with the scenario list, and the replay and telemetry sections
+add the scene-layer toggles and the bottom transport bar and phase scrubber,
+since they share the playback clock; metrics, videos, and run drop the
+transport.
 
 Two data paths feed the screens, both derived rather than hand-maintained:
 
@@ -451,7 +469,7 @@ Test gates at Phase 8c, all from the repository root and all green: `npm test`
 `TALON_REQUIRE_CORE=1 uv run pytest python/tests/ -q` 399 passed,
 `npm run build` clean, `npm run smoke:wasm` all live checks passed.
 
-### Mission authoring (Phase 8c)
+### Mission authoring (Phase 8c + 8d)
 
 The editor edits the document the core runs and hands it to the one run path
 (D38):
@@ -469,11 +487,14 @@ measurement: waypoint drag and reorder, zone add/move/resize, wind, faults, and
 parameters in the inspector panels, with keyboard alternatives for every
 gesture. Chart math is pure (`src/components/editor/chart.ts`) and tested.
 Phase 8d-D puts a read-only 3D course preview beside the chart
-(`src/components/scene/MissionPreview.tsx`, framing in `previewFraming.ts`):
-it draws the same draft and the same drag transient through
-`withDragPreview`, frames on the chart's triggers (mount, document epoch,
-FIT), takes no telemetry, and never edits the mission. The chart stays the
-measuring surface; the preview makes altitude and keep-out volumes legible.
+(`src/components/scene/MissionPreview.tsx`, framing in `previewFraming.ts`),
+the working area split 50/50 from xl and stacked at lg beside the inspector:
+it draws the same draft and the same drag transient (`dragPreview`, through
+`withDragPreview`), frames on the chart's triggers (mount, document epoch,
+its own FIT), takes no telemetry, and never edits the mission. The chart
+stays the measuring surface, its viewport user state fitted only on mount,
+document change, and FIT (D40); the preview makes altitude and keep-out
+volumes legible.
 
 One warning is pre-flight. With avoidance on, a zone standing within
 `radius + margin + buffer` of a planned leg is flagged before the run: a bypass
@@ -497,7 +518,7 @@ the frozen recorded artifacts.
 | 5c | Generated TypeScript type mirrors (ts-rs) | Complete |
 | 6 | GCS shell with live telemetry and teaching captions | Complete |
 | 7 | Altitude legibility in the scene | Complete |
-| 8 | Mission authoring (waypoints, wind, faults, keep-out zones) | In progress (8c mission editor complete) |
+| 8 | Mission authoring (waypoints, wind, faults, keep-out zones) | In progress (8c mission editor, 8d planner iteration complete) |
 | 9a | Reactive avoidance in Rust: geometry, the law, loop wiring, tests | Complete |
 | 9b | One implementation (Python delegates to `_core`) + a browser demo config | Complete |
 | Hardening | Wrap contract, fmt and clippy CI gates, Python versus `_core` parity harness | Complete |

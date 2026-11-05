@@ -1,6 +1,6 @@
 # Talon Decisions
 
-Last updated: 2026-10-19
+Last updated: 2026-11-05
 
 ## FlightLab visual tool (2026-10-16)
 
@@ -1031,3 +1031,136 @@ stricter than Rust's (the safe direction), the history holds cloned configs so
 a maximum-size mission can hold tens of MB (bounded and user-driven), and the
 warning is geometry, so it still stands after a remedy that fixes the outcome
 rather than the geometry (a larger acceptance radius), by design.
+
+## Mission planner iteration (Phase 8d, 2026-11-05)
+
+### D39: The wasm kernel loads through the source module graph
+
+**Context.** The committed wasm-bindgen output lived in `public/wasm-rust/`,
+fetched at runtime from the base URL. Vite dev refuses to resolve imports of
+`public/` files ("... should not be imported from source code ..."), so
+`src/live/engine.ts` could not reach the glue through the module graph, and
+the live run broke in dev, which is exactly where the mission planner is
+authored and flown from.
+
+**Decision.** (Phase 8d-A) The build output moves to `src/wasm-rust/`, still
+committed and still wasm-pack web output, and the engine loads it as source:
+`engine.ts` statically imports the glue (`@/wasm-rust/talon_core.js`),
+resolves the binary with Vite's `?url` suffix
+(`@/wasm-rust/talon_core_bg.wasm?url`), and calls
+`init({ module_or_path: wasmUrl })`. The hand-mirrored engine surface becomes
+generated type aliases over the emitted declarations (`CoreSession` is the
+generated `Session` from `talon_core.d.ts`), and the CI freshness gate diffs
+`src/wasm-rust/talon_core.js`, `talon_core.d.ts`, and
+`talon_core_bg.wasm.d.ts` at the new paths.
+
+**Rationale.** A static import is the loading story Vite dev supports for
+generated code, and dev is where the planner is used. Generated code under
+`src/` is already the convention (D37 put the ts-rs mirror in
+`src/types/generated/`), and the aliases retire one more hand mirror:
+`engine.contract.test.ts` pins the import lines and the aliases against the
+generated `talon_core.d.ts`, so a signature drift fails the typecheck or the
+test instead of the run.
+
+**Trade-offs.** The glue is bundled rather than fetched on demand, so the
+main chunk grows past the 1200 kB warning (`chunkSizeWarningLimit: 1200` in
+`vite.config.ts`), and the binary is an emitted asset rather than a static
+public file. A checkout without the committed build now fails the bundle
+instead of degrading to the D19 "kernel not loaded" state; acceptable,
+because the artifacts are committed and CI freshness-gated. Generated code
+now lives under `src/`, a source-tree change of ownership rather than a
+runtime cost, and already the established convention. Chunk optics were
+traded for dev correctness.
+
+### D40: The chart viewport is user state, fitted only on mount and document change
+
+**Context.** The chart recomputed its viewBox from the mission bounds on
+every render, so any waypoint, zone, or parameter edit re-scaled the view.
+Precise editing was impossible: every commit threw the author back out to
+the whole mission.
+
+**Decision.** (Phase 8d-C) Zoom and pan are component-local `ChartView` state
+in `MissionCanvas` (`{centerX, centerY, spanM}`), driven by pure helpers in
+`src/components/editor/chart.ts`: `viewFit` frames the mission, `viewBounds`
+maps a view to pixel bounds for an aspect, `zoomAt` zooms about a world
+anchor, `panBy` pans in meters, and `clampSpan` holds the span between 10 m
+and 50 km (`SPAN_MIN_M`, `SPAN_MAX_M`). The grid step, label spacing, and
+scale bar derive from the view span (nice steps, about ten lines per axis,
+labels every fifth grid step), so the measuring furniture follows the frame
+the user set. The view is fitted exactly twice: on mount, and when
+`documentEpoch` changes (its only bumps are `loadConfig`, `importFile`, and
+`clearDraft`). A FIT button re-frames on demand; no edit touches the view.
+
+**Rationale.** A frame is attention and content is the document; conflating
+them is what made the chart unusable at any zoom but the full mission. The
+helpers stay pure, so the chart math keeps its node vitest coverage, and
+span-derived furniture keeps a 10 m frame from drawing a grid meant for 2 km.
+`documentEpoch` is the only automatic refit trigger because loading a
+different document is the one content change that makes the old frame
+meaningless.
+
+**Trade-offs.** Large repositioning (a template load, a jump to a far
+region) needs an explicit FIT press, one click bought against never losing a
+frame mid-edit. The view is not persisted: switching tabs remounts the
+section and refits, so a zoom does not survive a round trip through
+Telemetry. Both are acceptable for a working surface rather than a saved
+layout.
+
+### D41: Navigation leads with the mission planner
+
+**Context.** (Phase 8d-B) The shell still opened on Replay with the Phase 3
+tab order, while authoring is the current product front door and Replay is
+being phased out eventually.
+
+**Decision.** The tab order is MISSION PLANNER, TELEMETRY, METRICS, VIDEOS,
+RUN, REPLAY (`ViewTabs`), and `useFlightStore.activeView` defaults to
+`'mission'` (`ViewId` gained `'mission'`). The planner is the page a visitor
+lands on.
+
+**Rationale.** A tool should open where its work happens. Leading with the
+planner states what the product is now; keeping Replay last retires it by
+degrees without breaking the scenario rail or the recorded walkthroughs that
+still need it.
+
+**Trade-offs.** None material. `activeView` is not persisted, so a reload
+returns to the planner regardless of where the user was, which is the
+intended default anyway.
+
+### D42: A read-only 3D course preview sits beside the 2D chart
+
+**Context.** (Phase 8d-D) The user wanted to visualize the course in real
+time while editing: altitude and keep-out volumes are exactly what a top-down
+chart cannot state. `LiveScene` needs a run buffer, so a static composition
+of the existing scene layers was required.
+
+**Decision.** `src/components/scene/MissionPreview.tsx` composes shared scene
+components narrowed to slices: `WaypointMarkers` (the draft's waypoints,
+altitude labels, selection highlight), `ObstacleField` with an optional
+`DroneTrack` slice (the recorded `time_s` and `truth_position` the replay
+passes, preserving its live clearance tint; absent in the preview, where
+zones hold the chart's amber), and `GroundPlane` with the replay-identical
+defaults. It draws the draft only: no telemetry, no run, no drone. Live drag
+sync rides a store-held transient, `useMissionStore.dragPreview`, written
+only by `setDragPreview` and consumed through `withDragPreview`. It sits
+outside the undo history, the dirty flag, `localStorage` persistence, and
+`documentEpoch`, so a pointer move re-renders only the chart and the preview
+that draw it. The camera frames on mount, on `documentEpoch`, and on the
+panel's own FIT, never on a waypoint edit. The mission page splits into the
+chart and the preview 50/50 from xl up and stacked at lg beside the
+unchanged inspector, each surface keeping its own FIT button. Without WebGL
+the panel stops quietly and the chart carries on.
+
+**Rationale.** The preview is a mirror of the draft, not a second editor.
+Composing the replay's layers as slices keeps one scene language and narrows
+the D26 duplication to prop plumbing (`FlightScene` passes the same data and
+toggles it always did). A store transient rather than lifted props because
+the chart and the preview are separate trees, and excluding it from history
+and persistence keeps a half-finished gesture out of undo and out of
+`localStorage`. Reframing on edit would repeat the D40 viewport coupling in
+3D, so the preview takes the chart's triggers and nothing else.
+
+**Trade-offs.** 3D editing is deferred: the preview only orbits and zooms,
+so every edit happens on the chart or in the panels. Label texture churn on
+resize drags is a known and documented cost. Two FIT buttons per page is
+deliberate: the surfaces have independent cameras and neither should steal
+the other's frame.
