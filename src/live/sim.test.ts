@@ -254,6 +254,10 @@ class FakeSession implements CoreSession {
   free(): void {
     this.freeCalls += 1
   }
+  /** Mirrors the generated Session: disposing releases the session. */
+  [Symbol.dispose](): void {
+    this.freeCalls += 1
+  }
 }
 
 function run(overrides?: Partial<FlightData>, summary?: Partial<typeof SUMMARY>) {

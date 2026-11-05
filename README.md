@@ -25,7 +25,7 @@ Deployment requires the repository's Pages source to be set to
 **GitHub Actions** (Settings > Pages > Build and deployment > Source). Left on "Deploy from a branch", GitHub publishes the raw repository through Jekyll and the site serves an untranspiled `index.html`.
 
 The Run section needs the WebAssembly kernel. Build it once with
-`./wasm/build.sh` (needs wasm-pack and the wasm32 target); the built bundle is committed under `public/wasm-rust/`, so a fresh clone can run it without the toolchain. Without a built bundle, every other section still works and Run disables itself with a clear message.
+`./wasm/build.sh` (needs wasm-pack and the wasm32 target); the built bundle is committed under `src/wasm-rust/`, so a fresh clone can run it without the toolchain. The bundle is imported through the module graph, so the dev server and the build need it like any other source file; a kernel that fails to load at runtime still degrades to Run showing a clear message rather than a crash.
 
 ## Sections
 
@@ -115,7 +115,7 @@ uv run pytest python/tests/ -q       # 399 Python tests
 uv run python python/sims/run_all.py # 7 scenarios + plots + videos + reports
 
 # WebAssembly kernel for the in-browser live run
-./wasm/build.sh                      # -> public/wasm-rust/talon_core.js + _bg.wasm
+./wasm/build.sh                      # -> src/wasm-rust/talon_core.js + _bg.wasm
 ```
 
 `.cargo/config.toml` points `PYO3_PYTHON` at `.venv/bin/python`, so `cargo` and
@@ -272,6 +272,7 @@ Talon/
 │   ├── components/charts/   #   SVG time-series chart
 │   ├── components/ui/       #   rail, tabs, HUD, legend, timeline
 │   ├── live/                #   engine loader, recorder, pacer, readout (pure)
+│   ├── wasm-rust/           #   compiled kernel: talon_core.js + _bg.wasm (committed)
 │   ├── utils/editor.ts      #   mission commands, history, estimates (pure)
 │   ├── utils/               #   interpolation, clearance, chart, telemetry, editor (pure)
 │   ├── store/               #   scenario cache, clock, toggles, active section, mission draft
@@ -283,7 +284,6 @@ Talon/
 ├── wasm/                    # wasm-bindgen wrapper (the browser Session)
 ├── bindings/                # PyO3 wrapper (the talon._core extension)
 ├── public/data/             # exported telemetry JSON + live configs (committed)
-├── public/wasm-rust/        # compiled kernel: talon_core.js + _bg.wasm (committed)
 ├── public/videos/           # recorded MP4s (committed)
 ├── scripts/copy_data.sh     # stage JSON + recordings into public/
 ├── python/                  # Python package, simulations, and tests

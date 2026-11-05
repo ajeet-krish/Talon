@@ -115,9 +115,9 @@ jobs:
         # rustc build and would be brittle.
         run: >
           git diff --exit-code --
-          public/wasm-rust/talon_core.js
-          public/wasm-rust/talon_core.d.ts
-          public/wasm-rust/talon_core_bg.wasm.d.ts
+          src/wasm-rust/talon_core.js
+          src/wasm-rust/talon_core.d.ts
+          src/wasm-rust/talon_core_bg.wasm.d.ts
 
       - uses: actions/setup-node@v4
         with:

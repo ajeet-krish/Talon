@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the Talon FlightLab WebAssembly kernel: the Rust GNC core
 # (talon-core) wrapped by wasm-bindgen, emitted as an ES module plus a .wasm
-# into public/wasm-rust/ where the app loads it at runtime.
+# into src/wasm-rust/ where the app imports it through the module graph.
 #
 # Needs wasm-pack and the wasm32-unknown-unknown target. Both are installed on
 # demand below where possible.
@@ -24,18 +24,18 @@ fi
 echo "Building the Rust WASM kernel..."
 
 # The out dir is resolved relative to the crate, so this lands in
-# public/wasm-rust/ at the repository root.
+# src/wasm-rust/ at the repository root.
 wasm-pack build wasm \
     --release \
     --target web \
-    --out-dir ../public/wasm-rust \
+    --out-dir ../src/wasm-rust \
     --out-name talon_core
 
 # wasm-pack writes npm publishing scaffolding alongside the module. The app only
 # ships the module and the binary, and a ".gitignore" containing "*" inside a
 # committed asset directory would hide exactly the files we do want to commit.
-rm -f public/wasm-rust/package.json public/wasm-rust/.gitignore
+rm -f src/wasm-rust/package.json src/wasm-rust/.gitignore
 
 echo ""
 echo "WASM build complete:"
-ls -lh public/wasm-rust
+ls -lh src/wasm-rust

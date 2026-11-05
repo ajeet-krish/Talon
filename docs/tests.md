@@ -193,7 +193,7 @@ has to look at the page.
 | Web unit tests (vitest) | `npm test` | 122 pass (10 files) |
 | Typecheck + production build | `npm run build` | clean, 646 modules |
 | Live wasm smoke test | `npm run smoke:wasm` | all checks pass, 4 of 4 configs |
-| wasm bundle determinism | `./wasm/build.sh`, then `git status public/wasm-rust` | clean (byte-identical rebuild) |
+| wasm bundle determinism | `./wasm/build.sh`, then `git status src/wasm-rust` | clean (byte-identical rebuild) |
 
 ### The parity proof
 
@@ -275,7 +275,7 @@ tests. Vitest therefore fell 135 to 122 and the file count 13 to 10.
 
 ### Live wasm smoke test (`npm run smoke:wasm`)
 
-Flown through the built `public/wasm-rust/` module the way the page drives it,
+Flown through the built `src/wasm-rust/` module the way the page drives it,
 one frame of steps at a time, draining each delta:
 
 | Config | Samples | Last time | Last altitude | Phases | Outcome |
@@ -1833,7 +1833,7 @@ Method: an `entry.ts` outside the repository, bundled with the repository's own
 esbuild (`--bundle --format=esm --platform=node --tsconfig=tsconfig.json`) into
 one ESM bundle exporting `teachingPreset`, `validateScenarioConfig`,
 `validateFlightData`, the editor model, and the mission store. The runner
-imports the committed `public/wasm-rust/talon_core.js` and steps a `Session` in
+imports the committed `src/wasm-rust/talon_core.js` and steps a `Session` in
 200 plant steps per frame, the way the paced run does.
 
 Baseline, `teachingPreset()` as authored: it validates (879 bytes serialized),
@@ -1968,7 +1968,7 @@ no-op.
    recording checks, plus the variant, geometry, and seed sweeps) live outside
    the repository; the committed vitest suite (340 tests) is what CI pins.
 4. The end-to-end evidence comes from the committed wasm build in
-   `public/wasm-rust/`; a core change without `./wasm/build.sh` would leave
+   `src/wasm-rust/`; a core change without `./wasm/build.sh` would leave
    these probes flying an older core.
 
 #### Verification checklist
@@ -2084,3 +2084,137 @@ the leg end) stays open.
 - [x] No em dashes, double hyphens, or dash equivalents in this section; this
   subsection is appended after all prior content, and no source file was
   modified by the gate.
+
+### Phase A test gate (2026-11-05)
+
+Scope: Phase A of 4 of the current plan, the wasm kernel artifacts moved to
+`src/wasm-rust/` and loaded through the Vite module graph (a static import of
+`talon_core.js` plus `?url` for the binary) in `src/live/engine.ts`. Gate run
+by the Tester subagent. Repository changes made by this gate: two new test
+files (`src/live/engine.load.test.ts`, `src/live/engine.isolation.test.ts`),
+eight added declarations in `src/node-shims.d.ts` (the existing ambient shim
+that lets node-only test helpers typecheck without `@types/node`, extended
+with the `node:fs` and `node:path` functions the new import-graph walker
+uses, exactly the purpose its docstring states; no dependency was added), and
+this section. No production file was modified: each mutation probe below was
+reverted and the restored files verified byte-identical to their pre-probe
+backups by sha256.
+
+#### Commands and exact results (from the repository root)
+
+| Command | Result |
+|---------|--------|
+| `npm test` (baseline, before new tests) | PASS: 20 files, 360 tests |
+| `npm run typecheck` (baseline) | PASS: exit 0 |
+| `npm run smoke:wasm` (baseline) | PASS: exit 0, 76 ok checks, 0 FAIL, 5 configs plus the paced loop |
+| `npm test` (after new tests) | PASS: exit 0, 22 files, 373 tests (+13) |
+| `npm run typecheck` | PASS: exit 0 |
+| `npm run build` | PASS: exit 0, 668 modules transformed, chunk-size warning only |
+| `npm run smoke:wasm` | PASS: exit 0, 76 ok checks, 0 FAIL |
+
+#### New tests
+
+`src/live/engine.load.test.ts` (6). The generated glue and the `?url` asset
+are mocked, so nothing here loads a real wasm binary; `tsc` already enforces
+the exported shapes, so only runtime behaviour is asserted:
+
+| Test | Verdict | What it pins |
+|------|---------|--------------|
+| `awaits init with the module URL of the wasm binary` | PASS | `init` is called exactly once with `{ module_or_path: <the ?url value> }` |
+| `resolves to the generated exports the loader binds` | PASS | the four bound members are the generated exports themselves and still call through (`sample_stride()` gives 36) |
+| `hands nothing out before init resolves` | PASS | the module promise stays unsettled while `init` is pending |
+| `shares one attempt across concurrent callers` | PASS | two synchronous callers get the same promise object and `init` runs once |
+| `caches a successful load for the rest of the session` | PASS | a later call returns the same resolved promise without re-running `init` |
+| `rejects every caller of a shared failed attempt, then retries on the next call` | PASS | both callers see the original error, the failure is not cached, and the next call runs `init` again and succeeds |
+
+`src/live/engine.isolation.test.ts` (7). A static import-graph walk (runtime
+imports only, type-only statements erased) plus source-level guards for the
+one wiring a DOM tier cannot reach:
+
+| Test | Verdict | What it pins |
+|------|---------|--------------|
+| `the import parser skips type-only statements and keeps runtime ones` | PASS | `import type ... from './engine'` is not an edge, a value import is, multiline and side-effect imports are collected |
+| `the recorded views cannot reach the kernel loader` | PASS | BFS from Replay, Telemetry, Metrics, and Videos visits 30 files and never reaches `engine.ts`; anchors on the store and `data/validate` keep the walk honest |
+| `RunView is the only file that imports the kernel loader at runtime` | PASS | a whole-`src` scan finds exactly one runtime importer, `views/RunView.tsx` |
+| `the walk from RunView does reach the loader (the parser is sound)` | PASS | the converse sanity check: `RunView` reaches `engine.ts` and `sim.ts`, so the negative assertions above cannot pass vacuously |
+| `turns a loader failure into the unavailable state with the error message` | PASS | `loadEngine().then(...).catch(...)` sets `unavailable` and surfaces `err.message` |
+| `turns a sample-layout mismatch into the unavailable state too` | PASS | the `sample_stride() !== SAMPLE_STRIDE` guard also lands in `unavailable` |
+| `gates RUN on a ready kernel and tells the operator recorded scenarios are unaffected` | PASS | `canRun` requires `wasm === 'ready'`, and the `KERNEL NOT LOADED` banner with the recorded-scenarios sentence is present |
+
+#### Mutation evidence (reverted; backups in the session temp directory)
+
+| Probe | Perturbation | Result |
+|-------|--------------|--------|
+| A, failure cached | in `src/live/engine.ts`, `pending = null` inside the catch replaced with `void 0` | exactly the not-cached test fails, 5 of 6 pass |
+| B, no memoization | `if (pending === null)` replaced with `if (true)` so every call starts an attempt | 3 fail: shared attempt, cached success, and the retry test's call counts |
+| C, recorded view imports the loader | a runtime `import { loadEngine } from '@/live/engine'` appended to `ReplayView.tsx` | both isolation assertions fail: reachability from the recorded views and the sole-importer scan |
+
+After each probe the original file was restored: sha256 of `engine.ts`
+(`469f5fc4...b90bb`) and `ReplayView.tsx` (`93d2a50d...f214c2c2`) match the
+pre-probe backups exactly, and `git status` shows only the two new test files
+plus the shim edit as this gate's footprint.
+
+#### Failure analysis (test authoring, resolved inside the gate)
+
+The first run of the new tests was 4 failed, 8 passed, for three causes, none
+in production code:
+
+1. `freshLoader()` calls `vi.resetModules()` and clears the `init` mock, so
+   test behaviours configured before it were wiped; three tests then saw a
+   silently resolving `init` (the deferred `release` was never assigned, and
+   the failure test got a resolved module instead of a rejection). Fixed by
+   configuring `init` after `freshLoader()` in every test.
+2. The banner sentence is broken across a JSX source line, so
+   `toContain('Recorded scenarios are unaffected')` failed against
+   `Recorded\n scenarios`; fixed with `/Recorded\s+scenarios are unaffected/`.
+3. `npm run typecheck` rejected the new `node:fs` and `node:path` imports
+   because the repository has no `@types/node` and `node-shims.d.ts` declared
+   only `readFileSync`. Fixed by extending the existing shim with the
+   functions used (`existsSync`, `readdirSync`, `statSync`, `resolve`, `join`,
+   `dirname`, `relative`, `sep`), keeping the no-dependency policy.
+
+#### Coverage summary and residual gaps
+
+- Covered now: the four runtime claims of the loader docstring (init argument,
+  bound exports, shared attempt, failure not cached), the structural isolation
+  of the kernel loader from every recorded-scenario view, and the Run view's
+  failure and stride-mismatch wiring down to the `unavailable` state and the
+  RUN gate. The reroled `engine.contract.test.ts` still passes unchanged and
+  keeps its own job: what is on disk and in the import wiring.
+- Not covered: the rendered fallback banner has no DOM-level test. Vitest runs
+  `environment: 'node'` with `include: ['src/**/*.test.ts']`, and RunView
+  mounts a react-three-fiber scene that needs WebGL, so the assertions above
+  are source-level and the visible banner remains a human check (the same
+  residual the full test audit recorded as row 11).
+- Not covered: Vite's actual `?url` resolution of `talon_core_bg.wasm` (hashed
+  asset in the build, served path in dev). Unit tests mock the asset and pin
+  that `init` receives exactly that specifier's value; `npm run build` and
+  `npm run smoke:wasm` cover the real resolution end to end.
+- Finding, not a defect: a failed load shows the banner but offers no
+  in-place retry; recovery is a remount (navigating away and back), which the
+  not-cached promise makes work. Reported rather than changed, since this gate
+  does not modify production code.
+
+#### Verification checklist
+
+- [x] All seven gates pass with exit 0 and the exact counts recorded above
+  (vitest 373 in 22 files, typecheck clean, build 668 modules, smoke 76 ok on
+  5 of 5 configs plus the paced loop).
+- [x] Happy path: `loadEngine` resolves to the bound generated exports, the
+  recorded views load their artifacts with the kernel unreachable, and all 360
+  pre-existing tests still pass beside the 13 new ones.
+- [x] Edge cases: concurrent callers, repeated calls after success, type-only
+  imports, multiline and side-effect imports, and a JSX copy line break.
+- [x] Error conditions: a rejected `init` propagates to every caller, is not
+  cached, and the next call retries; the Run view catch and stride guard both
+  land in `unavailable` with the message surfaced.
+- [x] The new tests are not vacuous: three mutations (two in `engine.ts`, one
+  in `ReplayView.tsx`) each fail exactly the tests that claim to catch them,
+  and every probe was reverted byte-identically.
+- [x] Phase A tests integrate with prior phase tests: the reroled contract
+  test, the 360-test baseline, typecheck, build, and the wasm smoke all pass
+  after the additions.
+- [x] No em dashes, double hyphens, or dash equivalents in this section; this
+  subsection is appended after all prior content, and the only repository
+  writes from this gate are the two new test files, the eight shim
+  declarations, and this section.

@@ -97,10 +97,10 @@ emitted asset URL carries that prefix (D21).
       src/utils/runConfigs.ts  Run config list merge and button captions
       src/data/presets.ts  mission templates for the editor
       src/live/            engine loader, recorder, pacer, display geometry
+      src/wasm-rust/       talon-core via wasm-bindgen, web target (committed)
       src/types/           facades (flight.ts, live/types.ts) over
                            generated/talon_core.ts (ts-rs mirrors)
       public/data/         exported telemetry JSON + live configs (committed)
-      public/wasm-rust/    talon-core via wasm-bindgen, web target (committed)
       public/videos/       recorded MP4s (committed)
       scripts/             copy_data.sh, gen_types.sh, smoke_live_wasm.mjs
     core/                  talon-core Rust GNC library (the autopilot)
@@ -292,7 +292,7 @@ The Run section executes the autopilot in the browser. The core is the Rust
 library compiled to wasm32; the page only steps it:
 
     configs.json (Python-exported)  -> LiveSim (src/live/sim.ts)
-      -> talon_core Session (public/wasm-rust/, wasm-bindgen, D24)
+      -> talon_core Session (src/wasm-rust/, wasm-bindgen, D24)
            sensors: truth-side IMU 200 Hz, GPS 10 Hz
            estimator: 15-state MEKF
            derived flags: convergence / divergence (mirrors mavlink_sil)
@@ -310,11 +310,13 @@ library compiled to wasm32; the page only steps it:
 The module boundary is now the whole core: physics, estimation, guidance,
 mission, FDIR, and the SIL loop itself are native, and the frame loop makes
 about one call per frame instead of a scalar read per control tick (D22, D24).
-`src/live/engine.ts` loads the wasm-pack web output at runtime from the Vite
-base URL and declares the exported surface by hand (`CoreSession`, whose u64
-getters are `bigint`), contract-tested against the generated
-`public/wasm-rust/talon_core.d.ts` by `src/live/engine.contract.test.ts`, so a
-signature drift fails the typecheck or the test instead of the run. `LiveSim`
+`src/live/engine.ts` imports the wasm-pack web output through the module
+graph (`talon_core.js` as a static import, the binary through Vite's `?url`
+suffix) and types the surface as aliases of the generated declarations
+(`CoreSession`, whose u64 getters are `bigint`), contract-tested against the
+generated `src/wasm-rust/talon_core.d.ts` by
+`src/live/engine.contract.test.ts`, so a signature drift fails the typecheck
+or the test instead of the run. `LiveSim`
 is the seam: construct a session from the scenario JSON, step it, drain what it
 recorded, and turn the finished session into the document the scene and charts
 already consume.

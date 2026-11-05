@@ -6,7 +6,8 @@
 # flight behaviour is made once, in the core.
 #
 # Built with `wasm-pack build wasm --target web`, which emits an ES module plus a
-# `.wasm` into `public/wasm-rust/` where the app loads it at runtime.
+# `.wasm` into `src/wasm-rust/` where the app imports them through the module
+# graph.
 
 [package]
 name = "talon-wasm"

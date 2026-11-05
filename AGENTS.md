@@ -9,7 +9,7 @@ Drone autopilot simulator: a Rust GNC core (RK4 dynamics, Dryden wind, cascaded 
 cargo test -p talon-core                           # native GNC tests
 cargo test -p talon-wasm                           # wasm-binding tests, run natively
 cargo test -p talon-py                             # binding-level marshalling tests
-./wasm/build.sh                                    # -> public/wasm-rust/talon_core.js + _bg.wasm
+./wasm/build.sh                                    # -> src/wasm-rust/talon_core.js + _bg.wasm
 
 # Python harness
 uv sync                                            # Python environment (.venv)
@@ -22,7 +22,7 @@ npm install
 npm run dev                                        # vite dev server, base /Talon/ (localhost:5173/Talon/)
 npm run build                                      # typecheck + production build into dist/
 npm test                                           # vitest unit tests
-npm run smoke:wasm                                 # headless live-run check against public/wasm-rust
+npm run smoke:wasm                                 # headless live-run check against src/wasm-rust
 scripts/copy_data.sh                               # refresh public/data + public/videos from the driver output
 
 uv run python python/sims/export_live_configs.py   # -> public/data/live/configs.json
@@ -40,13 +40,13 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 
 - `src/`: web app source. `views/` (Replay, Telemetry, Metrics, Videos, Run), `components/` (scene, live, charts, ui), `live/` (engine loader, sample recorder, pacer, display geometry, thin LiveSim seam), `utils/` (pure), `store/` (Zustand), `data/` (scenario + recording + live-run metadata), `hooks/`.
 - `core/src/`: the Rust autopilot, `talon-core`. `sim.rs` (SIL runner), `scenario.rs` (browser config), `export.rs` (schema 1.1 document), `dynamics.rs`, `wind.rs`, `controller.rs`, `ekf.rs`, `guidance.rs`, `avoidance.rs` (keep-out zones, reactive law), `mission.rs`, `state_machine.rs`, `sensors.rs`, `motors.rs`, `battery.rs`, `rng.rs`, `math.rs`, `types.rs`, `constants.rs`.
-- `wasm/`: wasm-bindgen crate exposing the stepping `Session` to the browser (`src/lib.rs`), built by `build.sh` into `public/wasm-rust/`.
+- `wasm/`: wasm-bindgen crate exposing the stepping `Session` to the browser (`src/lib.rs`), built by `build.sh` into `src/wasm-rust/`.
 - `bindings/`: PyO3 crate `talon-py` publishing the `talon._core` extension module over `talon-core`, built by `build.sh` into `python/talon/`.
 - `python/talon/`: Python package. `guidance.py` (NLGL), `mission.py`, `state_machine.py`, `sensors.py`, `motors.py`, `battery.py`, `avoidance.py`, `mavlink_sil.py`, `plotting.py`, `export_json.py`, `animation.py`.
 - `python/sims/`: seven `scenario_*.py` runs, `monte_carlo.py`, and `run_all.py` validation driver.
 - `python/tests/`: pytest suites, including the Python versus `_core` parity harness (`test_parity_*.py`).
 - `public/data/`, `public/videos/`: committed app assets, staged by `scripts/copy_data.sh`.
-- `public/wasm-rust/`: committed wasm-bindgen output the live run loads.
+- `src/wasm-rust/`: committed wasm-bindgen output the live run loads.
 - `docs/`: `conventions.md` plus `architecture.md`, `decisions.md`, `research.md`, `reviews.md`, `tests.md`, `videos/`, `portfolio/`.
 
 ## Status
@@ -64,6 +64,10 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 | Phase 7 | Altitude legibility in the scene | Complete |
 | Phase 8 | Mission authoring (waypoints, wind, faults, keep-out zones) | In progress |
 | Phase 8c | Mission editor (chart, panels, validation, import/export) and Run handoff | Complete |
+| Phase 8d-A | Wasm kernel via the source module graph (dev load fix) | Complete |
+| Phase 8d-B | Nav reorder: MISSION PLANNER first, REPLAY last | In progress |
+| Phase 8d-C | Chart zoom/pan/FIT with no auto-zoom on edits | Pending |
+| Phase 8d-D | 2D planner + read-only 3D preview side by side | Pending |
 | Phase 9a | Reactive avoidance in Rust: geometry, the law, loop wiring, tests | Complete |
 | Phase 9b | One implementation (Python delegates to `_core`) + a browser demo config | Complete |
 | Hardening | Wrap contract, lint and CI gates, Python versus Rust parity harness | Complete |

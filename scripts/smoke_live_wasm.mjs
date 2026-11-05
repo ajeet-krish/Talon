@@ -4,7 +4,7 @@
  *
  * The browser path can not be driven from CI (no browser), and the rust tests
  * cover the core rather than the boundary. What is left unverified is the seam:
- * the wasm build that ships in `public/wasm-rust/`, the sample layout the page
+ * the wasm build that ships in `src/wasm-rust/`, the sample layout the page
  * decodes, and the schema 1.1 document assembled from a *stepped* session rather
  * than a one-shot run.
  *
@@ -20,7 +20,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const wasmDir = path.join(root, 'public/wasm-rust')
+const wasmDir = path.join(root, 'src/wasm-rust')
 
 /** Sample layout, mirrored from `talon_core::sim::SAMPLE_FIELD`. */
 const FIELD = {

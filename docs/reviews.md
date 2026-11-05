@@ -1,6 +1,103 @@
 # Talon Reviews
 
-Last updated: 2026-10-19
+Last updated: 2026-11-05
+
+## 2026-11-05 - Phase A (1 of 4): wasm module-graph loading (security review)
+
+Scope: the four-file rename `public/wasm-rust/` to `src/wasm-rust/`, the loader
+rewrite in `src/live/engine.ts`, the rerolled `src/live/engine.contract.test.ts`,
+`wasm/build.sh`, `scripts/smoke_live_wasm.mjs`, `.github/workflows/ci.yml`,
+`tsconfig.json`, and `src/live/sim.test.ts`. Language: TypeScript (web app) plus
+shell and CI YAML.
+
+Verdict: PASS. The loading mechanism is a static, same-origin, content-hashed
+module graph with no eval, no blob or CDN URLs, and no user-controllable module
+URLs; removing the `@vite-ignore` dynamic import strictly reduces attack
+surface. One standing supply-chain gap (the `.wasm` binary sits outside the
+freshness gate) is unchanged and re-recorded below.
+
+### Check results
+
+| Check | Verdict | Details |
+|-------|---------|---------|
+| Loading mechanism trust | PASS | src/live/engine.ts:21-27 statically imports `@/wasm-rust/talon_core.js` and `@/wasm-rust/talon_core_bg.wasm?url`; the init call (:46) passes only the Vite-emitted URL. Grep over the generated glue (src/wasm-rust/talon_core.js) finds no eval, no new Function, no blob or remote URLs; the only fetch is `fetch(module_or_path)` (:635) against that same-origin hashed asset, and the `new URL('talon_core_bg.wasm', import.meta.url)` fallback (:629-631) is unreachable because a path is always passed. No user input influences any module URL |
+| Asset URLs under both bases | PASS | `?url` delegates base prefixing to Vite (vite.config.ts:14-18): a hashed `/Talon/assets/talon_core_bg-<hash>.wasm` in build, a served source path in dev, correct under `VITE_BASE=/` too. The manual `import.meta.env.BASE_URL` concatenation left with the dynamic import. The glue falls back from `instantiateStreaming` on MIME errors (talon_core.js:564-575), so a server without `application/wasm` degrades rather than fails |
+| Script injection (smoke + build) | PASS | scripts/smoke_live_wasm.mjs:22-23,59-62: every path derives from the script's own location plus fixed segments; the dynamic import target is fixed, reads are fixed files, and scenario JSON reaches the kernel only as a JSON string parsed by Rust serde in `Session`. wasm/build.sh:8-37: `set -e`, fixed paths, no external input expansion, `rm -f` of fixed filenames, no unpinned downloads beyond the standard rustup target install |
+| @vite-ignore and BASE_URL removal | PASS (surface reduced) | The old loader dynamically imported a concatenated string invisible to the bundler, where any influence over `BASE_URL` would have become arbitrary module loading. The new static graph is auditable, hashed, and pinned by the contract test (src/live/engine.contract.test.ts:74-82 excludes `@vite-ignore` and `public/wasm-rust` by string guard) |
+| CI freshness gate still gates | PASS | .github/workflows/ci.yml:105-120: `./wasm/build.sh` runs first, then `git diff --exit-code --` over the three text artifacts at their new `src/wasm-rust` paths, so a stale or tampered committed glue fails the pipeline. `permissions: contents: read` (:15-16) retained; no secrets referenced; no new network access |
+| Secrets and unsafe fetches | PASS | Secret-pattern grep over src/ and scripts/ is clean. The only new runtime fetch is the generated glue's wasm fetch from the hashed same-origin URL (src/wasm-rust/talon_core.js:635). Pre-existing `${base}data/...` fetches are untouched |
+| src/ vs public/ risk profile | PASS (note) | Runtime execution privilege is unchanged (the old dynamic import executed the public/ copy too). Integrity enforcement improves: the glue is now typechecked against the generated .d.ts, bundled at build time, and freshness-gated byte for byte, so tampering of the text artifacts fails CI and a missing bundle fails the build loudly instead of degrading only Run. See findings for the binary gap |
+
+### Findings
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | .github/workflows/ci.yml:113-120 | `talon_core_bg.wasm`, the payload that actually executes, is deliberately excluded from the freshness gate (rustc build nondeterminism), so a tampered committed binary passes CI. Unchanged by this phase; standing gap first recorded 2026-10-18 | Hash-pin the built .wasm at build time and compare at deploy, or continue to accept with the documented rationale |
+| Low | src/live/engine.contract.test.ts:74-82 | The module-graph wiring guard is string matching over one file's source; a loader split across modules could reintroduce dynamic loading while still satisfying these strings | Acceptable tripwire today; if the loader is ever split, widen the guard to grep the whole live/ directory |
+
+### Residual risk
+
+- RESIDUAL RISK: the committed bundle in `src/wasm-rust/` is trusted input to
+  the bundler and executes in the page at full app privilege. The freshness gate
+  detects text-artifact tampering only; the binary gap above stands. It takes
+  commit access to exploit, so it is a supply-chain depth concern, not an
+  external attack surface.
+- RESIDUAL RISK: `init({ module_or_path: wasmUrl })` accepts a URL string per
+  the generated contract (src/wasm-rust/talon_core.d.ts:184); if a future change
+  ever derives that value from runtime input, the fetch at
+  src/wasm-rust/talon_core.js:635 would follow it. The contract test's wiring
+  guard keeps the current constant import honest.
+
+### Notes for other agents
+
+- Pattern to keep: load generated kernels through the module graph with `?url`,
+  never through `@vite-ignore` dynamic imports or runtime fetches from
+  `public/`.
+- No recurring vulnerability patterns found in this phase.
+
+## 2026-11-05 - Phase A (1 of 4): wasm artifacts move into the module graph (code review)
+
+Scope: `src/live/engine.ts` (loader rewritten), `src/live/engine.contract.test.ts`
+(reroled), `src/live/sim.test.ts` (FakeSession gains `[Symbol.dispose]`),
+`tsconfig.json` (`ESNext.Disposable`), `wasm/build.sh`, `wasm/Cargo.toml`,
+`scripts/smoke_live_wasm.mjs`, `.github/workflows/ci.yml`, `AGENTS.md`,
+`README.md`, `docs/architecture.md`, `docs/tests.md`, and the four-file rename
+`public/wasm-rust/` to `src/wasm-rust/` (100 percent similarity).
+
+Verdict: PASS. The loader keeps its shared-promise and failure-not-cached
+semantics, the hand-mirrored surface is gone in favour of the generated types,
+and the change set is exactly what the phase claims.
+
+### Check results
+
+| Check | Verdict | Details |
+|-------|---------|---------|
+| Loader semantics preserved | PASS | src/live/engine.ts:41-64. Concurrent callers share one `pending` (:56-63) and a failure resets `pending` to null before rethrow (:58-61), so a transient error does not permanently disable Run. The body is unchanged from the previous implementation |
+| RunView fallback intact | PASS | src/views/RunView.tsx:138-162. A rejected `loadEngine()` sets `wasm('unavailable')` and a readable `wasmError`, and the `sample_stride` mismatch check (:143-150) degrades the same way. A missing glue module now fails at dev or build time by design (README.md:28); the runtime fallback covers fetch and instantiate failures |
+| Init call correct | PASS | engine.ts:46 `init({ module_or_path: wasmUrl })` matches the generated non-deprecated signature (src/wasm-rust/talon_core.d.ts:250; the object form is destructured at talon_core.js:622-623) and `wasmUrl` is a valid `InitInput` (talon_core.d.ts:184). `?url` respects the Vite base in build and serves the source path in dev, so the manual `BASE_URL` prefix is correctly dropped. The glue falls back from `instantiateStreaming` on MIME errors (talon_core.js:564-571) |
+| Generated type aliases | PASS | engine.ts:30 `export type CoreSession = Session`; `CoreModule` holds `typeof` bindings (:33-39). FakeSession gains `[Symbol.dispose]` (src/live/sim.test.ts:258) matching the generated class (talon_core.d.ts:9); `ESNext.Disposable` is added at tsconfig.json:4 and inherited by tsconfig.build.json:2. `npx tsc --noEmit` clean |
+| Contract test reroled meaningful | PASS | src/live/engine.contract.test.ts:68-146 keeps the guards tsc cannot do: file presence at the imported path, module-graph wiring with the exact dev-server regression excluded (:74-82), no hand-mirror (:84-90), member-name pinning of the live seam (:92-127), the bigint GPS pins (:129-133), and the module function and init signatures (:135-146). The lost mirror comparison is now done strictly better by tsc |
+| Conventions | PASS | Repo-wide grep finds zero em or en dashes; every double hyphen in the diff is a CLI flag, not punctuation. `strict` and `noUncheckedIndexedAccess` unchanged (tsconfig.json:13,17) |
+| Dev and build performance | PASS (note) | `npm run build` green: the `.wasm` ships as a hashed runtime asset (dist/assets/talon_core_bg-C5KfbcCG.wasm, 277.31 kB) exactly as before. The glue is now bundled: 668 modules (was 646) and the main chunk 1,323.59 kB crosses Vite's 1200 kB warning. Minor and acceptable; see findings |
+| Completeness | PASS | The only `public/wasm-rust` left in code or configs is the intentional negative assertion (engine.contract.test.ts:81). CI drift paths moved (.github/workflows/ci.yml:118-120); build.sh, Cargo.toml, the smoke script, and the four docs are updated. The wasm files move as 100 percent similarity renames |
+| Suite evidence | PASS | vitest 360 of 360 across 20 files (engine.contract 8, sim 18), `npm run build` exit 0, `npm run smoke:wasm` exit 0 against src/wasm-rust, and `git status` shows exactly the 16-file change set |
+
+### Findings
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | src/live/engine.ts:21-27 (build output) | The static import pulls the wasm-bindgen glue into the main chunk; the bundle is now 1,323.59 kB and trips Vite's 1200 kB chunk-size warning, a small regression against the documented clean 646-module build | In a later phase, dynamic-import the engine seam from RunView (`import('@/wasm-rust/talon_core.js')` keeps module-graph semantics and restores a lazy chunk), or raise `chunkSizeWarningLimit` with a comment |
+| Low | docs/tests.md:649 | Backlog row 7 still describes the retired hand-mirror against `public/wasm-rust` (historical snapshot; out of scope for this review) | Update the row's status when next touching docs/tests.md |
+
+### Residual risk
+
+- RESIDUAL RISK: with the glue in the module graph, a tree that loses
+  `src/wasm-rust/` fails the dev server and the build outright instead of
+  degrading only Run. The committed bundle and README.md:28 make this
+  acceptable.
+- RESIDUAL RISK: the contract test's line parser pins the generated layout
+  (4-space members, getters as `readonly name: type;`), so a wasm-bindgen
+  emitter change fails the guard loudly. That is the intended failure mode.
 
 ## One avoidance implementation (Phase 9b, 2026-10-18)
 

@@ -1,22 +1,30 @@
 /**
- * Drift guard between the hand-declared wasm surface and the generated one.
+ * Guard on the generated wasm declaration the loader binds.
  *
- * `public/wasm-rust/talon_core.d.ts` is the source of truth: wasm-pack emits it
- * from `wasm/src/lib.rs`. The app never imports it directly, because the module
- * is loaded at runtime from a static asset, so `CoreSession` in `engine.ts` is
- * a hand-written mirror that tsc checks against. Nothing else ties the two
- * together, which is how the GPS counters drifted to `number` while the core
- * exports them as `bigint`.
+ * `src/wasm-rust/talon_core.d.ts` is the source of truth: wasm-pack emits it
+ * from `wasm/src/lib.rs`, and `engine.ts` now imports the sibling
+ * `talon_core.js` directly, so `CoreSession` and `CoreModule` are aliases of
+ * the generated shapes. Shape drift between the app and the core is therefore
+ * caught by `tsc` itself, and this test no longer compares a hand-written
+ * mirror (that mirror is what let the GPS counters drift to `number` while
+ * the core exports `bigint`).
  *
- * This test reads both files from disk and compares the shapes with a
- * deliberately simple line parser. It is a drift guard, not a TypeScript
- * parser: it only has to hold for the output wasm-pack actually emits.
+ * What `tsc` can not check is what lives on disk and in the wiring: that the
+ * generated file is present where the loader imports it from, that it still
+ * declares the members the live seam pins by name, and that the loader keeps
+ * binding it through the module graph instead of fetching it from `public/`
+ * at runtime (the dev-server failure this replaced).
+ *
+ * The file and member checks use a deliberately simple line parser. It is a
+ * guard, not a TypeScript parser: it only has to hold for the output
+ * wasm-pack actually emits.
  */
 
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const DECL = readFileSync('public/wasm-rust/talon_core.d.ts', 'utf8')
+const DECL_PATH = 'src/wasm-rust/talon_core.d.ts'
+const DECL = readFileSync(DECL_PATH, 'utf8')
 const ENGINE = readFileSync('src/live/engine.ts', 'utf8')
 
 /**
@@ -54,45 +62,31 @@ function classMembers(body: string): Map<string, string> {
   return members
 }
 
-/** Members of the hand-written `CoreSession` interface, mapped to `'method'` or the field type. */
-function coreSessionMembers(source: string): Map<string, string> {
-  const body = blockAfter(source, 'export interface CoreSession {')
-  const method = /^ {2}([a-z_]\w*)\(/
-  const field = /^ {2}readonly (\w+): ([\w.]+)$/
-  const members = new Map<string, string>()
-  for (const line of body.split('\n')) {
-    const m = method.exec(line)
-    if (m?.[1] !== undefined) {
-      members.set(m[1], 'method')
-      continue
-    }
-    const f = field.exec(line)
-    if (f?.[1] !== undefined && f[2] !== undefined) {
-      members.set(f[1], f[2])
-    }
-  }
-  return members
-}
-
 const SESSION = classMembers(blockAfter(DECL, 'export class Session {'))
 
-describe('CoreSession mirrors the generated wasm declaration', () => {
-  it('declares every member the app relies on from the Session class', () => {
-    const appMembers = coreSessionMembers(ENGINE)
-    expect(appMembers.size).toBeGreaterThan(0)
-    for (const [name, appType] of appMembers) {
-      const coreType = SESSION.get(name)
-      expect(coreType, `generated Session is missing ${name}`).toBeDefined()
-      // Field types must match the generated declaration exactly. Methods are
-      // pinned by name here; their signatures change shape less often, and the
-      // bigint drift this guards against lived on the GPS counter fields.
-      if (appType !== 'method' && coreType !== undefined) {
-        expect(
-          coreType,
-          `CoreSession.${name} is declared ${appType}, the generated Session says ${coreType}`,
-        ).toBe(appType)
-      }
-    }
+describe('the generated wasm declaration is what the loader binds', () => {
+  it('ships the generated declaration where engine.ts imports from', () => {
+    // readFileSync throws above if the generated file is missing, so reaching
+    // this assertion means the declaration exists at the imported path.
+    expect(DECL).toContain('export class Session')
+  })
+
+  it('imports the kernel through the module graph, not from public/ at runtime', () => {
+    expect(ENGINE).toMatch(/from '@\/wasm-rust\/talon_core\.js'/)
+    expect(ENGINE).toMatch(/from '@\/wasm-rust\/talon_core_bg\.wasm\?url'/)
+    // The dev server refuses to resolve a module that lives in publicDir, so
+    // a runtime import of the public asset is the exact regression this
+    // wiring exists to prevent.
+    expect(ENGINE).not.toContain('@vite-ignore')
+    expect(ENGINE).not.toContain('public/wasm-rust')
+  })
+
+  it('aliases the generated types instead of hand-mirroring them', () => {
+    expect(ENGINE).toMatch(/export type CoreSession = Session\b/)
+    expect(ENGINE).not.toMatch(/export interface CoreSession/)
+    // CoreModule stays an interface, but its members are typeof bindings of
+    // the generated exports rather than a re-declared surface.
+    expect(ENGINE).toMatch(/Session: typeof Session/)
   })
 
   it('pins the members the live seam depends on by name', () => {
@@ -145,5 +139,9 @@ describe('CoreSession mirrors the generated wasm declaration', () => {
   it('exports the other module-level functions the loader binds', () => {
     expect(DECL).toMatch(/^export function core_version\(\): string;$/m)
     expect(DECL).toMatch(/^export function run_scenario\([^)]*\): string;$/m)
+  })
+
+  it('exports the default init the loader awaits', () => {
+    expect(DECL).toMatch(/export default function __wbg_init/)
   })
 })
