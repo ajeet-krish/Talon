@@ -18,6 +18,12 @@
  * close to a planned leg while avoidance is on). Neither blocks editing: the
  * user can hold an invalid draft, fix it, and only save or run when the
  * errors clear.
+ *
+ * One field is deliberately not draft state: `dragPreview`, the live drag
+ * the chart publishes for the 3D preview to mirror. It is written and
+ * cleared only through `setDragPreview`, never by `commit`, so a gesture in
+ * progress touches no history entry, no dirty flag, no storage write, and
+ * no document epoch.
  */
 
 import { create } from 'zustand'
@@ -31,6 +37,7 @@ import {
   redo as redoHistory,
   toMissionConfig,
   undo as undoHistory,
+  type DragPreview,
   type EditorCommand,
   type EditorHistory,
   type EditorSelection,
@@ -108,6 +115,13 @@ export interface MissionStore {
    * counter itself lives outside the history and the persisted draft.
    */
   documentEpoch: number
+  /**
+   * The live drag the 2D chart is publishing, mirrored by the 3D preview so
+   * both surfaces track the pointer at move rate. Null whenever no gesture
+   * is in flight. Outside the history, the dirty flag, storage, and the
+   * epoch: only `setDragPreview` writes it.
+   */
+  dragPreview: DragPreview | null
 
   /** Apply one edit: new present, undo entry, errors/warnings, draft saved when valid. */
   dispatch: (cmd: EditorCommand) => void
@@ -117,6 +131,12 @@ export interface MissionStore {
   redo: () => void
   /** Point the editor at one waypoint or zone, or clear the selection. */
   select: (sel: EditorSelection) => void
+  /**
+   * Publish the live drag preview (both surfaces draw it) or clear it with
+   * null at the end of the gesture. Never persists, never marks anything
+   * dirty, never advances the document epoch.
+   */
+  setDragPreview: (preview: DragPreview | null) => void
   /** Validate and replace the draft, resetting the history. Throws on invalid. */
   loadConfig: (config: ScenarioConfig) => void
   /** Build a template and load it as the draft. */
@@ -172,6 +192,7 @@ export const useMissionStore = create<MissionStore>((set, get) => {
     dirty: false,
     lastSavedAt: null,
     documentEpoch: 0,
+    dragPreview: null,
 
     dispatch: (cmd) => {
       const history = applyCommand(get().history, cmd)
@@ -192,6 +213,8 @@ export const useMissionStore = create<MissionStore>((set, get) => {
     },
 
     select: (sel) => set({ selected: sel }),
+
+    setDragPreview: (preview) => set({ dragPreview: preview }),
 
     loadConfig: (config) => {
       // Validation throws naming the first bad path; the previous draft stays.

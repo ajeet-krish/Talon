@@ -2816,3 +2816,73 @@ Check results:
 | Scenario fetch path unchanged | PASS | loadScenario remains BASE_URL-prefixed with hardcoded ids and validateFlightData validation (useFlightStore.ts:119-127), untouched |
 
 Recurring notes: none new. The source-assertion test follows the established engine.isolation.test.ts pattern and introduces no unsafe file or code handling.
+
+## 2026-11-05 - Phase 8d-D (4 of 4): 2D planner with 3D preview (security review)
+
+Verdict: PASS
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | src/components/editor/MissionCanvas.tsx:554-573, 446-473 | Keyboard Delete/nudge on a focused node can run mid-drag and shift the item list, so the end-of-drag commit may address a different index (bounds-checked, clamped, undoable; transient never persisted) | Guard node key handling while `interactionRef` is active, or re-resolve the dragged item by identity at commit |
+| Low | src/utils/editor.ts:405-407 | `clampCoordinate` propagates NaN from a degenerate SVG CTM into `dragPreview` and the drawn config (not reachable via import/localStorage, which reject non-finite numbers) | Make `clampCoordinate` NaN-safe |
+| Low | src/components/scene/ObstacleField.tsx:104-111, WaypointMarkers.tsx:86-101 | Resize drag re-keys the whole label texture cache per 0.1 m radius step (up to 512 canvases per pointer move; disposed on regeneration, memory bounded) | Per-item texture caching or debounced radius label; optional |
+
+dragPreview confirmed isolated: `persist` and `exportFile` serialize `history.present` only (useMissionStore.ts:78-86, 261-273), the transient is cleared on pointerup/pointercancel/lostpointercapture/unmount, and out-of-range indices in `withDragPreview` substitute nothing (editor.ts:804-827). WebGL probe is single-shot and context-releasing (src/utils/webgl.ts:16-28). Framing maths stay finite for all validated inputs (coords ≤ 1e6 m, radii ≤ 1e6 m, lists ≤ 512). Label text is canvas-only (`fillText`), obstacle ids pattern-bounded and unique (validate.ts:227), textures disposed on regeneration and unmount. New tests read fixed literal paths only.
+
+## 2026-11-05 - Phase 8d-D (4 of 4): 2D planner with 3D preview (code review)
+
+Verdict: PASS (APPROVE). Reviewed the full uncommitted diff (13 modified
+files, 10 new files; git diff captured via a shell-capable helper and read
+in full) plus every new file. All seven acceptance criteria hold, the five
+flagged deviations are accepted, and only Info-level notes remain. As in
+the 8d-C entry, this reviewer environment has no shell, so npm test, npm
+run typecheck, and npm run build remain for the tester and CI. The source
+contracts (viewportContract, missionSplitContract, missionPreviewContract,
+flightSceneContract) were cross-checked against the current files by hand
+and every asserted string is present.
+
+### Check results
+
+| Check | Verdict | Details |
+|-------|---------|---------|
+| 1 Layout: xl 50/50 chart and preview beside the 23rem inspector; lg stacks the pair beside the inspector; below lg all stacks; validation bar reachable in every state | PASS | MissionView.tsx:305 (body row/scroll), :306 (stages column, xl:flex-row), :307 and :316 (equal min-h-[360px] flex-1 stages), :320 (aside lg:w-[23rem]); the bar at MissionView.tsx:341 is a sibling of the scrolling body, pinned by missionSplitContract.test.ts:62-77 |
+| 2 Preview content and read-only surface | PASS | MissionPreview.tsx:380-388 draws ground grid, home, numbered waypoints with altitude, route polyline, amber keep-out spheres, and the selection highlight via the WaypointMarkers and ObstacleField highlight props; no dispatch, select, or setDragPreview anywhere (missionPreviewContract.test.ts:28-36); zero telemetry (no useFlightStore, no droneTrack) |
+| 3 Real-time sync and the drag transient | PASS | trackDrag publishes at MissionCanvas.tsx:407-414; endDrag commits then clears on one path (:463-472), cancelDrag clears without committing (:476-485), lost capture shares endDrag (:616); the transient is one store slot written only by setDragPreview (useMissionStore.ts:124, :217) and the tests pin history, dirty, storage, and epoch untouched (useMissionStore.test.ts:198-240); the view and panels select history.present references a transient write cannot change (MissionView.tsx:57-72), so a drag re-renders only MissionChart, MissionCanvas, and MissionPreview |
+| 4 Camera policy | PASS | PreviewRig fits only on [documentEpoch, fitSignal, controls] (MissionPreview.tsx:224-238), reading bounds from the trigger's render and never on edits; zoom clamps travel with the pose (previewFraming.ts:151-152) and land on the controls (:234-237); keyboard orbit clamps phi and radius (:279-284) on the wrapper element only; no document or window listener exists anywhere in src (missionPreviewContract.test.ts:111-121); the chart wheel stays element-local and non-passive (MissionCanvas.tsx:275) |
+| 5 Replay regression (FlightScene children) | PASS | Same tree, framing, fog, and clamps (flightSceneContract.test.ts:20-41); toggles hoisted to FlightScene with identical semantics (FlightScene.tsx:42-43, :68-77); the per-frame clearance cue is preserved through the approved DroneTrack slice (ObstacleField.tsx:113-133); GroundPlane defaults reproduce the 200 m / 40 cell grid and the r = 140 disc exactly (GroundPlane.tsx:20-27) |
+| 6 WebGL fallback | PASS | webgl.ts hands the probe context straight back (:23); quiet fallback copy for both the failed probe and the stopped render (MissionPreview.tsx:351-396) behind an error boundary (:107-120); the 2D chart shares nothing with the probe and is unaffected |
+| 7 Phase C Low fixes included | PASS | beginDrag active-interaction guard (MissionCanvas.tsx:336) sits before pointer capture (:340) and selection (:355); the aspect latch (aspectRef and measuredRef, :225-233) feeds fit deps [documentEpoch, aspectKnown] (:256) with no aspect ?? 1 left in the file |
+| Conventions and hygiene | PASS | strict TS and noUncheckedIndexedAccess safe (generated tuples talon_core.ts:9-11, guarded label indexing WaypointMarkers.tsx:86-87); every canvas texture and line geometry disposed on replacement or unmount; no em dashes or double-hyphen dash equivalents in any changed file; docs/architecture.md and AGENTS.md updated |
+
+### Findings
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Info | src/components/scene/ObstacleField.tsx:103-104 | The label key includes radius at 0.1 m precision, so a zone RESIZE drag regenerates each label canvas and texture at pointer-move rate; the previous textures are disposed so nothing leaks, and move drags are cached as intended | Acceptable as written; quantize the label radius later if resize drags ever feel heavy |
+| Info | src/components/scene/FlightScene.tsx:42-43 | Hoisting the toggle subscriptions re-renders the scene tree on a toggle flip instead of a single layer (behavior identical, rare action) | None required; memoize layers only if profiling ever cares |
+| Info | src/components/scene/MissionPreview.tsx:238 | controls is a fit dependency, so a drei controls identity change would re-fit outside the sanctioned list (documented in the comment; in practice it happens once at mount) | None required; gate the first run on a ref if drei ever recreates controls mid-session |
+| Info | src/components/scene/previewFraming.ts:140 | When a buried zone pulls the bounds centre below ground the target clamps to y = 0, so the sphere-fit guarantee shifts to the target and the below-ground sliver of an extreme zone can clip the frame edge | Cosmetic; fit against the unclamped centre if exact framing of buried volumes ever matters |
+| Info | src/store/useMissionStore.ts:219-306 | loadConfig, importFile, and clearDraft do not clear dragPreview; only the end handlers and the MissionChart unmount path do | Practically unreachable (pointer capture ends the drag before any toolbar verb runs); clear it in loadConfig if a programmatic replacement path appears |
+
+### Deviation verdicts
+
+| Deviation | Verdict | Notes |
+|----------|---------|-------|
+| (a) ObstacleField droneTrack slice instead of droneNed | ACCEPT | Implements the approved shape exactly: { time_s, truth_position } keeps the per-frame cue in replay (ObstacleField.tsx:113-133) and the preview stays neutral amber without it (:135-137) |
+| (b) Independent FIT per surface | ACCEPT | Required rather than merely tolerated: the 8d-C chart contract forbids outside view mutation and the preview trigger list is mount, documentEpoch, and its own FIT; cross-fitting would violate one contract or the other |
+| (c) MissionChart store bridge | ACCEPT | Keeps MissionCanvas store-free as the viewport contract requires; the 32-line shell adds only the transient wiring and its unmount cleanup closes the one leak the chart handlers cannot reach (a view switch mid-drag) |
+| (d) GroundPlane optional size and divisions | ACCEPT | Defaults 200 / 40 / origin reproduce the replay grid and disc exactly (200 * 0.7 = 140); the flightSceneContract pins them |
+| (e) previewFraming.ts in components/scene | ACCEPT | Single consumer (MissionPreview), and it imports the chart constants instead of duplicating them; colocation is fine |
+
+### Notes for other agents
+
+- Pattern to keep: the shared drag transient never touches draft state. One
+  store slot, one writer (setDragPreview), one applier (withDragPreview),
+  one end path after the commit dispatch, and tests pinning every forbidden
+  side effect (history, dirty, storage, epoch).
+- Pattern to keep: the label texture caches key on label text rather than
+  array identity (ObstacleField labelKey, WaypointMarkers labelKey), each
+  with a comment naming exactly what the key covers; there is no ESLint
+  gate, so the comment is the contract.
+- The reviewer environment had no shell: test execution and the build
+  gates remain for the tester and CI, as in the 8d-C entry above.

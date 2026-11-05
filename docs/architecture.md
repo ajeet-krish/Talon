@@ -89,8 +89,12 @@ emitted asset URL carries that prefix (D21).
       src/                 views, components, utils, store, data, hooks
       src/components/live/ the live ground-station scene and instrument rail
       src/components/editor/ mission editor: 2D SVG chart (MissionCanvas,
-                            chart.ts) and inspector panels (waypoints, zones,
-                            wind, faults, parameters) + MissionValidation
+                            MissionChart store shell, chart.ts) and inspector
+                            panels (waypoints, zones, wind, faults,
+                            parameters) + MissionValidation
+      src/components/scene/  R3F layers; MissionPreview + previewFraming
+                            (bounds, camera pose, grid) are the read-only 3D
+                            course preview beside the chart
       src/views/MissionView.tsx  the mission editor view (Phase 8c)
       src/store/useMissionStore.ts  editor draft, undo/redo history, persistence
       src/utils/editor.ts  pure command model, estimates, mission warnings
@@ -239,6 +243,12 @@ postprocessing pass:
 | Waypoints | `WaypointMarkers.tsx` | `waypoints_ned` |
 | Keep-out zones | `ObstacleField.tsx` | `obstacles` + live clearance |
 | Bloom | `FlightScene.tsx` | `@react-three/postprocessing` |
+
+Phase 8d-D reuses `GroundPlane`, `WaypointMarkers`, and `ObstacleField` in the
+mission preview, so those two layers take narrow slices (positions, obstacles,
+the recorded track) plus a visibility prop instead of the whole `FlightData`;
+`FlightScene` passes the same data and toggles it always did, and the replay
+tree is unchanged.
 
 Clearance math lives in one pure module, `src/utils/clearance.ts`
 (`surfaceClearance`, `minSurfaceClearance`, `clearanceBand`), shared by
@@ -458,6 +468,12 @@ The surface is a 2D top-down SVG chart, not the r3f scene, because authoring is
 measurement: waypoint drag and reorder, zone add/move/resize, wind, faults, and
 parameters in the inspector panels, with keyboard alternatives for every
 gesture. Chart math is pure (`src/components/editor/chart.ts`) and tested.
+Phase 8d-D puts a read-only 3D course preview beside the chart
+(`src/components/scene/MissionPreview.tsx`, framing in `previewFraming.ts`):
+it draws the same draft and the same drag transient through
+`withDragPreview`, frames on the chart's triggers (mount, document epoch,
+FIT), takes no telemetry, and never edits the mission. The chart stays the
+measuring surface; the preview makes altitude and keep-out volumes legible.
 
 One warning is pre-flight. With avoidance on, a zone standing within
 `radius + margin + buffer` of a planned leg is flagged before the run: a bypass

@@ -2432,3 +2432,153 @@ exactly the tests designed to catch it, then reverted cleanly.
 - [x] No em dashes, double hyphens, or dash equivalents in this section
 - [x] Phase tests integrate with prior phase tests: the 410-test baseline
   passes unchanged beside the 6 new tests
+
+### Phase 8d-D test gate (2026-11-05)
+
+Independent gate run by the tester for Phase 8d-D (2D mission planner plus
+read-only 3D preview side by side, the shared dragPreview transient, and the
+two hardening fixes: the mid-drag node key guard in MissionCanvas and the
+NaN-safe clampCoordinate in utils/editor.ts). The implementer reported 468
+tests then 472 after the fix pass, and the code reviewer and security
+reviewer could not execute the suites, so this run is the authoritative
+gate. The working tree was uncommitted at gate start; no production code was
+changed by this gate.
+
+| Suite | Command | Result |
+|-------|---------|--------|
+| Web unit tests (vitest) | `npm test` | PASS, 476 of 476 in 30 files (472 at gate start, 4 added here) |
+| Typecheck | `npm run typecheck` | PASS, exit 0 (`tsc --noEmit`) |
+| Production build | `npm run build` | PASS, exit 0 (`tsc -p tsconfig.build.json --noEmit` and `vite build`, 2.15 s; the existing chunk size warning over 1200 kB is unchanged) |
+
+#### Tests added by this gate (4 new cases, 1 extended)
+
+| Test | File | Type | What it tests |
+|------|------|------|---------------|
+| draws an out-of-range zone drag as the committed config | src/utils/editor.test.ts | unit | The obstacle branch of withDragPreview with a stale index returns the committed zones by value, keeps the waypoint list identity, and never mutates the input |
+| poses the camera in exactly one place, so no second effect can re-frame | src/components/scene/missionPreviewContract.test.ts | source contract | Exactly one `previewCameraPose(` call and one `camera.position.set(` in the preview, so no second config-driven effect can move the camera while the trigger list stays satisfied |
+| routes every coordinate the chart authors through clampCoordinate | src/components/editor/viewportContract.test.ts | source contract | Exactly 8 `clampCoordinate(` call sites in MissionCanvas (2 per authoring path: move drag, double-click add, waypoint nudge, zone nudge) with the expected argument expressions in each function body |
+| keeps the route panel Add button on the same shared rule | src/components/editor/viewportContract.test.ts | source contract | WaypointPanel's Add builds its north and east locals through clampCoordinate and dispatches those locals, never a raw position |
+| never writes the mission: no dispatch, no selection, no transient (extended) | src/components/scene/missionPreviewContract.test.ts | source contract | Added: exactly 6 `useMissionStore` mentions (the import line plus 4 selector subscriptions) and no `useMissionStore.getState` or `useMissionStore.setState`, closing the write path that none of the original string guards named |
+
+All five are in the PASS column of the final run; the other 472 tests are
+unchanged from the implementer's run.
+
+#### Per-test results (new and extended)
+
+| Test | Verdict | Notes |
+|------|---------|-------|
+| editor: out-of-range zone drag draws the committed config | PASS | zones equal by value, 1 zone, waypoint list identity kept, input untouched |
+| preview contract: exactly one camera pose path | PASS | 1 pose call, 1 camera set |
+| viewport contract: 8 clampCoordinate call sites with per-path arguments | PASS | import present, trackDrag, addWaypointAt, nudge all clamped |
+| viewport contract: panel Add on the shared clamp | PASS | clamped locals, `waypoint/add` dispatch carries them |
+| preview contract: store mentions are import plus selectors only | PASS | 6 mentions, no getState or setState |
+
+#### Acceptance criteria audit
+
+- (a) dragPreview end-to-end lifecycle: publish is pinned in viewportContract
+  ("publishes the transient from the move path, and only the move path")
+  and behaviorally in the store's "publishes the live drag and clears it when
+  the gesture ends"; clear-after-commit ordering (dispatch before
+  `onDragPreview(null)` in endDrag, one end path including lost capture) and
+  cancel-without-commit (clears, no dispatch) are source-pinned, with the
+  store's "stays put across a commit" proving the commit path never clears
+  it; unmount clear is pinned on the MissionChart shell's cleanup effect; the
+  no-history, no-dirty, no-storage, no-epoch claim is behavioral in the
+  store's "touches nothing else".
+- (b) withDragPreview pure applier: null identity, waypoint move (altitude
+  kept, untouched items by identity, input unmutated), obstacle move,
+  resize (centre kept), resize-aimed-at-waypoint ignored, out-of-range
+  waypoint index, and this gate's new out-of-range obstacle index.
+- (c) camera fit triggers: the preview's rig effect lists
+  `[documentEpoch, fitSignal, controls]` and explicitly not bounds; this
+  gate adds the single-pose-path count so a second config-driven effect
+  cannot slip in; the chart's 3 `viewFit(` sites and
+  `[documentEpoch, aspectKnown]` deps are pinned by the 8d-C tests; the
+  store's epoch tests cover never on edit, undo, redo, select, or export and
+  advances on load, import, and clear, with refused loads leaving it.
+- (d) layout breakpoints: missionSplitContract pins the xl 50/50 row, the lg
+  stacked case with the inspector column beside, the below-lg scrolling
+  column, the equal `min-h-[360px]` floors and border rules per width, and
+  the validation bar as a sibling of the scroll region so it stays reachable
+  at every width; the panels and view never mention dragPreview.
+- (e) read-only preview: the preview subscribes to exactly four slices,
+  carries no dispatch, selection write, transient write, or EditorCommand,
+  and this gate adds the import-plus-selectors mention count that catches
+  getState and setState writes; a whole-src walk asserts no document or
+  window level listener anywhere.
+- (f) WebGL fallback: webgl.test covers no document, null context, throwing
+  context, the true path releasing its probe context, and webgl2-only
+  probing; the preview contract pins the quiet fallback strings, the error
+  boundary, and FIT gated behind `webgl &&`.
+- (g) replay FlightScene contract: layers in order with the same camera,
+  fog, and post pass; the narrow waypoint and zone slice props; the toggles
+  lifted to the scene so the mission page cannot inherit replay display
+  state; and the live clearance tint preserved with its no-track fallback.
+- (h) hardening fixes: the mid-drag key guard is pinned by two viewport
+  contract tests (guard present before every key branch and every state
+  change; nudges still work with no gesture active); clampCoordinate's NaN,
+  infinity, and cap behavior is pinned in editor.test, and this gate adds
+  the call-site routing tests that tie the rule to the drag, add, nudge, and
+  panel paths.
+
+#### Mutation probes (each reverted byte-identically)
+
+| Probe | Target file | Mutation | Result | sha256 before = after |
+|-------|-------------|----------|--------|------------------------|
+| a | src/components/scene/MissionPreview.tsx | `useMissionStore.getState().dispatch({ type: 'param/set', key: 'label', value: 'mutated' })` added after the epoch subscription | exactly 1 failed of 476: "never writes the mission: no dispatch, no selection, no transient" | f50431b45a9ee31d86ad6e6807dd1b9caedd692c857f40ee1e6f48f804940534 |
+| b | src/components/editor/MissionCanvas.tsx | the `if (interactionRef.current !== null) return` guard removed from onNodeKeyDown | exactly 1 failed of 476: "ignores node key handling while a gesture is in flight" | 5dca369fe56b4a2cd29d7e064decc0729783ea57d6fc776df9facf6810a5340a |
+| c | src/components/scene/MissionPreview.tsx | PreviewRig effect deps changed from `[documentEpoch, fitSignal, controls]` to `[bounds, fitSignal, controls]`, wiring the fit to config change instead of the epoch | exactly 1 failed of 476: "re-frames only on mount, the document epoch, and its own FIT button" | f50431b45a9ee31d86ad6e6807dd1b9caedd692c857f40ee1e6f48f804940534 |
+| d | src/utils/editor.ts | withDragPreview waypoint index check `i !== drag.index` changed to `i !== drag.index + 1` | exactly 1 failed of 476: "applies a waypoint move, keeping altitude and every untouched item" | c3455ace479e6394d49aa1354f1b59ff399278793a26eb1711937f0ca620d9b4 |
+
+Backups and hashes live in the approved session temp directory, outside the
+repository. After all four probes, `git status --porcelain` shows the same
+intended change set as at gate start (14 modified, 10 untracked, plus this
+tests.md entry), and every mutated file hash matches its pre-probe value.
+
+#### Coverage summary and residual gaps
+
+- Covered now: the full dragPreview lifecycle (publish, commit ordering,
+  cancel, unmount clear, and the five no-write claims), the pure applier on
+  every branch including both out-of-range lists, both surfaces' fit trigger
+  lists plus the single-pose-path count and the epoch semantics, the three
+  layout breakpoints with bar reachability, the read-only preview including
+  getState and setState exclusion, the WebGL probe and both fallback
+  messages, the replay scene contract, and both hardening fixes at the pure
+  and call-site tiers.
+- Not covered: no DOM render test. vitest runs `environment: 'node'` with
+  `src/**/*.test.ts`, so the preview's canvas mount, PreviewBoundary swap,
+  keyboard orbit execution, and the chart's pointer capture are asserted at
+  the source tier, the same residual recorded for Phases 8d-B and 8d-C.
+  `useElementSize` remains a thin ResizeObserver wrapper with no direct
+  test.
+- Finding, not a defect: probe c showed the preview trigger test is what
+  catches a config-driven fit; the new pose-count test guards the second
+  variant (an extra effect added beside the sanctioned one), so both shapes
+  of the mutation are now pinned.
+- Note for future edits: the preview contract's store-mention count (6) is
+  sensitive to import style and comments that name the store; the
+  assertion carries a comment explaining the composition.
+
+#### Failure analysis
+
+One test-authoring failure inside this gate, resolved before the probes: the
+new store-mention count was first written as 4 (the selector
+subscriptions), but the import line contains `useMissionStore` twice (the
+imported name and the module path), so the match count is 6. The assertion
+now reads 6 with a comment; every run after the fix is green.
+
+#### Verification checklist
+
+- [x] All tests pass: 476 of 476 in 30 files, typecheck exit 0, build exit 0
+- [x] Happy path covered: split layout, both surfaces drawing the same
+  committed draft, transient published and cleared, fit on the three
+  sanctioned triggers
+- [x] Edge cases covered: out-of-range indices on both lists, NaN and
+  infinity coordinates, no-WebGL and dead-render states, empty mission
+  framing, refused loads and imports
+- [x] Error conditions covered: context creation failures and throws, the
+  error boundary fallback, the key guard mid-gesture, cancel without commit
+- [x] No em dashes, double hyphens, or dash equivalents in this section
+- [x] Phase tests integrate with prior phase tests: the 472-test baseline
+  passes unchanged beside the 4 new tests, and all 416 Phase 8d-C tests
+  still pass

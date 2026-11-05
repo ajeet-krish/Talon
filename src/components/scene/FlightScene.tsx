@@ -25,9 +25,16 @@ function PlaybackDriver() {
  * only the bright emissive accents (drone nose, waypoint tags, keep-out
  * shells) so the glow reads as energy, not haze. Camera framing is computed
  * per scenario on load.
+ *
+ * The waypoint and zone layers take narrow slices (positions, obstacles, the
+ * recorded track) and the display toggles, because the same two layers also
+ * render the mission preview, which has no telemetry and no toggles of its
+ * own. Everything else is exactly as it was.
  */
 export function FlightScene() {
   const data = useFlightStore((s) => s.scenarios.get(s.activeScenario))
+  const showWaypoints = useFlightStore((s) => s.toggles.waypoints)
+  const showObstacles = useFlightStore((s) => s.toggles.obstacles)
 
   return (
     <Canvas
@@ -58,8 +65,15 @@ export function FlightScene() {
           <DroneMarker data={data} />
           <CovarianceEllipsoid data={data} />
           <WindParticles data={data} />
-          <WaypointMarkers data={data} />
-          <ObstacleField data={data} />
+          <WaypointMarkers
+            waypointsNed={data.waypoints_ned}
+            visible={showWaypoints}
+          />
+          <ObstacleField
+            obstacles={data.obstacles}
+            droneTrack={{ time_s: data.time_s, truth_position: data.truth_position }}
+            visible={showObstacles}
+          />
         </Suspense>
       )}
       <EffectComposer>

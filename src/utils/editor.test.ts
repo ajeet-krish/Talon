@@ -12,11 +12,12 @@
 
 import { describe, expect, it } from 'vitest'
 import type { FaultSpec, Obstacle, ScenarioConfig, Waypoint } from '@/types/generated/talon_core'
-import { SCENARIO_DEFAULTS } from '@/types/generated/talon_core'
+import { LIMITS, SCENARIO_DEFAULTS } from '@/types/generated/talon_core'
 import {
   applyCommand,
   canRedo,
   canUndo,
+  clampCoordinate,
   cloneAsTemplate,
   createHistory,
   emptyMission,
@@ -33,8 +34,10 @@ import {
   undo,
   waypointAltitudeM,
   waypointWarning,
+  withDragPreview,
   withObstacleAltitude,
   withWaypointAltitude,
+  type DragPreview,
   type EditorCommand,
   type EditorHistory,
   type MissionConfig,
@@ -845,5 +848,104 @@ describe('applyCommand: value-equal commands are no-ops', () => {
     const changed = applyCommand(h, { type: 'param/set', key: 'label', value: 'b' })
     expect(changed.future).toEqual([])
     expect(changed.present.label).toBe('b')
+  })
+})
+
+describe('withDragPreview', () => {
+  const config = mission({
+    start_position_ned: [0, 0, 0],
+    waypoints: [wp(10, 20, -30), wp(40, 50, -60)],
+    obstacles: [zone('zone_1', 15, 25, -10, 8)],
+  })
+
+  function drag(partial: Partial<DragPreview>): DragPreview {
+    return { kind: 'move', target: 'waypoint', index: 0, north: 1, east: 2, radius: 3, ...partial }
+  }
+
+  it('returns the config unchanged by identity when no drag is in flight', () => {
+    expect(withDragPreview(config, null)).toBe(config)
+  })
+
+  it('applies a waypoint move, keeping altitude and every untouched item', () => {
+    const moved = withDragPreview(config, drag({ index: 1, north: 44, east: 55 }))
+    expect(moved.waypoints[1]?.position).toEqual([44, 55, -60]) // altitude survives
+    expect(moved.waypoints[0]).toBe(config.waypoints[0]) // untouched by identity
+    expect(moved.obstacles).toBe(config.obstacles) // the other list is not rebuilt
+    expect(config.waypoints[1]?.position).toEqual([40, 50, -60]) // input not mutated
+  })
+
+  it('applies an obstacle move, keeping altitude and radius', () => {
+    const moved = withDragPreview(config, drag({ target: 'obstacle', index: 0, north: 9, east: 7 }))
+    expect(moved.obstacles[0]?.center_ned).toEqual([9, 7, -10])
+    expect(moved.obstacles[0]?.radius_m).toBe(8) // a move never resizes
+    expect(moved.waypoints).toBe(config.waypoints)
+  })
+
+  it('applies an obstacle resize, keeping the centre', () => {
+    const resized = withDragPreview(
+      config,
+      drag({ kind: 'resize', target: 'obstacle', index: 0, radius: 12.5 }),
+    )
+    expect(resized.obstacles[0]?.center_ned).toEqual([15, 25, -10])
+    expect(resized.obstacles[0]?.radius_m).toBe(12.5)
+    expect(resized.waypoints).toBe(config.waypoints)
+  })
+
+  it('ignores a resize aimed at a waypoint', () => {
+    const bad = withDragPreview(
+      config,
+      drag({ kind: 'resize', target: 'waypoint', index: 0, radius: 9 }),
+    )
+    expect(bad).toBe(config) // the chart only starts resizes on zones
+  })
+
+  it('draws an out-of-range drag as the committed config', () => {
+    const missing = withDragPreview(config, drag({ index: 9, north: 100, east: 100 }))
+    expect(missing.waypoints).toEqual(config.waypoints)
+    expect(missing.waypoints).toHaveLength(2)
+    expect(config.waypoints.map((w) => w.position)).toEqual([
+      [10, 20, -30],
+      [40, 50, -60],
+    ])
+  })
+
+  it('draws an out-of-range zone drag as the committed config', () => {
+    // The obstacle branch of the applier is its own map; a stale index left
+    // behind by a mid-gesture list change must draw the committed zones,
+    // not shift them or apply the preview to the wrong one.
+    const missing = withDragPreview(
+      config,
+      drag({ target: 'obstacle', index: 9, north: 100, east: 100 }),
+    )
+    expect(missing.obstacles).toEqual(config.obstacles)
+    expect(missing.obstacles).toHaveLength(1)
+    expect(missing.waypoints).toBe(config.waypoints) // untouched list keeps its identity
+    expect(config.obstacles[0]?.center_ned).toEqual([15, 25, -10]) // input not mutated
+  })
+})
+
+describe('clampCoordinate', () => {
+  it('clamps finite coordinates to the validator cap, leaving in-range values alone', () => {
+    expect(clampCoordinate(0)).toBe(0)
+    expect(clampCoordinate(-12.5)).toBe(-12.5)
+    expect(clampCoordinate(LIMITS.max_coordinate_m)).toBe(LIMITS.max_coordinate_m)
+    expect(clampCoordinate(LIMITS.max_coordinate_m + 1)).toBe(LIMITS.max_coordinate_m)
+    expect(clampCoordinate(-LIMITS.max_coordinate_m - 1)).toBe(-LIMITS.max_coordinate_m)
+  })
+
+  it('hardens non-finite input to the origin rather than propagating NaN', () => {
+    // Hardening for the chart's degenerate-matrix path: Math.min and Math.max
+    // pass NaN through unchanged, which would poison the drag preview and the
+    // drawn config. A non-finite number names no real position, so the
+    // documented fallback is the origin (0 m north, 0 m east): always finite,
+    // always inside the cap. No prior test relied on NaN passing through.
+    expect(clampCoordinate(Number.NaN)).toBe(0)
+    expect(clampCoordinate(Number.POSITIVE_INFINITY)).toBe(0)
+    expect(clampCoordinate(Number.NEGATIVE_INFINITY)).toBe(0)
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const out = clampCoordinate(bad)
+      expect(Number.isFinite(out)).toBe(true)
+      expect(Math.abs(out)).toBeLessThanOrEqual(LIMITS.max_coordinate_m)
+    }
   })
 })

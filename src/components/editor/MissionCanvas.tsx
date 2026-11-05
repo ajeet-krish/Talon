@@ -6,8 +6,9 @@
  * a north arrow, and a scale bar. The frame comes from the component's own
  * viewport (`ChartView`): zoom and pan are user-controlled and live outside
  * the undo history, so editing never re-scales the chart. Fitting the whole
- * mission happens only on mount, when the document identity changes
- * (`documentEpoch`), and on the FIT button. The grid, its labels, the scale
+ * mission happens only on mount (with the first measured frame aspect),
+ * when the document identity changes (`documentEpoch`), and on the FIT
+ * button. The grid, its labels, the scale
  * bar, and the chrome scale are all derived from the visible span and drawn
  * over the visible rectangle, so panning never runs off the grid's edge.
  *
@@ -20,6 +21,13 @@
  * coordinates from `getScreenCTM`, so it tracks the cursor under any zoom
  * and works with touch (`touch-action: none`).
  *
+ * A drag in flight is published through the `onDragPreview` prop into the
+ * store's transient slot, so the 3D course preview beside the chart tracks
+ * the pointer at move rate; both surfaces draw it through `withDragPreview`.
+ * One end path (pointer up, cancel, lost capture) clears it, after the
+ * commit dispatch when there is one. The transient never enters the undo
+ * history, the dirty flag, storage, or the document epoch.
+ *
  * Viewport: ZOOM IN and ZOOM OUT step by a fixed factor about the view
  * centre, FIT frames the mission, the wheel zooms at the cursor, and
  * dragging empty background pans. A pan or drag never reads as a click or a
@@ -31,8 +39,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react'
 import { LIMITS } from '@/types/generated/talon_core'
 import { useElementSize } from '@/hooks/useElementSize'
-import { clampCoordinate } from '@/utils/editor'
-import type { EditorCommand, EditorSelection, MissionConfig } from '@/utils/editor'
+import { CHROME_BUTTON } from '@/components/ui/chrome'
+import { clampCoordinate, withDragPreview } from '@/utils/editor'
+import type { DragPreview, EditorCommand, EditorSelection, MissionConfig } from '@/utils/editor'
 import {
   boundsHeight,
   boundsViewBox,
@@ -67,6 +76,20 @@ export interface MissionCanvasProps {
    * so zoom and pan survive the editing session.
    */
   documentEpoch: number
+  /**
+   * The live drag shared with the 3D course preview, or null when no
+   * gesture is in flight. The chart publishes it through `onDragPreview`
+   * and draws the same value back, so the two surfaces show one transient
+   * at pointer-move rate.
+   */
+  dragPreview: DragPreview | null
+  /**
+   * Publish the shared drag preview, or clear it with null. Backed by the
+   * store's transient slot: it never enters the undo history, the dirty
+   * flag, storage, or the document epoch, and the chart's own viewport
+   * stays local state as before.
+   */
+  onDragPreview: (preview: DragPreview | null) => void
 }
 
 /** A live drag on a waypoint or zone handle: what is being dragged, where it started, and the last point. */
@@ -143,10 +166,6 @@ const ZOOM_STEP = 1.3
 /** Fixed zoom step for one wheel tick at the cursor. */
 const WHEEL_ZOOM_STEP = 1.25
 
-/** Chart chrome button: the toolbar's quiet mono style on a panel backing. */
-const CHROME_BUTTON =
-  'border border-grid bg-panel/85 px-3 py-2 font-mono text-[10px] tracking-[0.15em] text-ink-dim transition-colors hover:bg-panel-3 hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-signal disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-dim'
-
 /** The route and zone story for the chart's screen-reader summary. */
 function chartSummary(config: MissionConfig): string {
   const [startNorth, startEast] = config.start_position_ned
@@ -179,10 +198,11 @@ export function MissionCanvas({
   onSelect,
   dispatch,
   documentEpoch,
+  dragPreview,
+  onDragPreview,
 }: MissionCanvasProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const interactionRef = useRef<Interaction | null>(null)
-  const [preview, setPreview] = useState<DragState | null>(null)
   /**
    * The last two finished gestures. A double-click only counts when both
    * clicks were clean presses on empty background, so a pan or a node drag
@@ -193,10 +213,24 @@ export function MissionCanvas({
 
   /** The chart box, watched for resizes that change the frame's aspect. */
   const [frameRef, frameSize] = useElementSize<HTMLDivElement>()
-  /** Element aspect (width / height), null until the box has been measured. */
-  const aspect =
-    frameSize.width > 0 && frameSize.height > 0 ? frameSize.width / frameSize.height : null
-  const aspectKnown = aspect !== null
+  /**
+   * The last measured box aspect (width / height), latched: 1 until the
+   * first measurement and never sent back afterwards, so a box that
+   * measures, collapses to zero, and measures again (a hidden tab, a
+   * collapsed parent) cannot re-fit outside the sanctioned list. The latch
+   * flips once (`aspectKnown`) and only ever false to true, and the drawn
+   * frame keeps the last known aspect through a zero-size blip instead of
+   * jumping to a square one.
+   */
+  const aspectRef = useRef(1)
+  const measuredRef = useRef(false)
+  if (frameSize.width > 0 && frameSize.height > 0) {
+    aspectRef.current = frameSize.width / frameSize.height
+    measuredRef.current = true
+  }
+  /** The aspect every fit and the drawn frame read, last measurement. */
+  const aspect = aspectRef.current
+  const aspectKnown = measuredRef.current
 
   /**
    * The viewport: the visible centre and span in meters. Component state,
@@ -210,10 +244,13 @@ export function MissionCanvas({
    * document identity changes (`documentEpoch`: template load, import,
    * CLEAR). Edits, undo, and redo leave the epoch alone, so they never
    * re-fit; `config` and `aspect` are read from the render the epoch change
-   * belongs to, and listing them here would re-fit on every edit or resize.
+   * belongs to, and listing them here would re-fit on every edit. A
+   * zero-size blip changes neither dependency: `aspectKnown` only ever goes
+   * false to true, and the latch keeps the last measured aspect for the
+   * unmeasured case.
    */
   useLayoutEffect(() => {
-    setView(viewFit(chartBounds(config), aspect ?? 1))
+    setView(viewFit(chartBounds(config), aspect))
   }, [documentEpoch, aspectKnown])
 
   /**
@@ -240,7 +277,7 @@ export function MissionCanvas({
   }, [])
 
   /** The visible rectangle: the viewBox, the grid's extent, the chrome's frame. */
-  const bounds = viewBounds(view, aspect ?? 1)
+  const bounds = viewBounds(view, aspect)
   const spanX = boundsWidth(bounds)
   const spanY = boundsHeight(bounds)
   /** The visible span: grid, labels, scale bar, and chrome scale come from this. */
@@ -274,7 +311,7 @@ export function MissionCanvas({
 
   /** Frame the whole mission again: the FIT button's one job. */
   function fitView(): void {
-    setView(viewFit(chartBounds(config), aspect ?? 1))
+    setView(viewFit(chartBounds(config), aspect))
   }
 
   /** Remember a finished gesture for the click and double-click guards. */
@@ -294,6 +331,9 @@ export function MissionCanvas({
     radius: number,
   ): void {
     if (e.button !== 0 && e.pointerType === 'mouse') return
+    // One gesture at a time: a second pointer landing mid-drag or mid-pan
+    // must not overwrite the gesture state the first pointer owns.
+    if (interactionRef.current !== null) return
     const world = toWorld(e)
     if (world === null) return
     e.stopPropagation()
@@ -361,7 +401,17 @@ export function MissionCanvas({
         Math.hypot(world.east - zone.center_ned[1], world.north - zone.center_ned[0]),
       )
     }
-    setPreview({ ...drag })
+    // Publish the transient for both surfaces at pointer-move rate. This is
+    // the store's dragPreview slot only: no history entry, no dirty flag,
+    // no storage write, no epoch advance.
+    onDragPreview({
+      kind: drag.kind,
+      target: drag.target,
+      index: drag.index,
+      north: drag.north,
+      east: drag.east,
+      radius: drag.radius,
+    })
   }
 
   /**
@@ -386,7 +436,13 @@ export function MissionCanvas({
     setView((current) => panBy(current, previous.x - next.x, previous.y - next.y))
   }
 
-  /** Finish one gesture: commit a drag, clear on a bare press, pan or not. */
+  /**
+   * Finish one gesture: commit a drag, clear on a bare press, pan or not.
+   * This is also the lost-capture path (the svg wires
+   * `onLostPointerCapture` here), so a gesture whose pointer disappears
+   * still commits what was tracked and still clears the shared transient.
+   * The clear runs after the commit dispatch: one event, one final state.
+   */
   function endDrag(e: ReactPointerEvent<SVGElement>): void {
     const interaction = interactionRef.current
     if (interaction === null || e.pointerId !== interaction.pointerId) return
@@ -404,15 +460,16 @@ export function MissionCanvas({
       return
     }
     const drag = interaction
-    setPreview(null)
-    if (!drag.moved) return
-    if (drag.kind === 'move' && drag.target === 'waypoint') {
-      dispatch({ type: 'waypoint/move', index: drag.index, north: drag.north, east: drag.east })
-    } else if (drag.kind === 'move') {
-      dispatch({ type: 'obstacle/move', index: drag.index, north: drag.north, east: drag.east })
-    } else {
-      dispatch({ type: 'obstacle/resize', index: drag.index, radius_m: drag.radius })
+    if (drag.moved) {
+      if (drag.kind === 'move' && drag.target === 'waypoint') {
+        dispatch({ type: 'waypoint/move', index: drag.index, north: drag.north, east: drag.east })
+      } else if (drag.kind === 'move') {
+        dispatch({ type: 'obstacle/move', index: drag.index, north: drag.north, east: drag.east })
+      } else {
+        dispatch({ type: 'obstacle/resize', index: drag.index, radius_m: drag.radius })
+      }
     }
+    onDragPreview(null)
   }
 
   /** Drop a gesture without committing (the pointer was cancelled). */
@@ -420,7 +477,7 @@ export function MissionCanvas({
     const interaction = interactionRef.current
     if (interaction === null || e.pointerId !== interaction.pointerId) return
     interactionRef.current = null
-    setPreview(null)
+    onDragPreview(null)
     noteGesture({
       kind: interaction.kind === 'pan' ? 'background' : 'node',
       moved: interaction.moved,
@@ -493,12 +550,22 @@ export function MissionCanvas({
     }
   }
 
-  /** Shared keyboard behaviour for a waypoint or zone group. */
+  /**
+   * Shared keyboard behaviour for a waypoint or zone group. A gesture in
+   * flight owns the chart: pointer capture gates pointer events, but keys
+   * still reach the focused node, so a Delete (which shrinks the list) or an
+   * arrow nudge (which dispatches a move) mid-drag would leave the drag's
+   * stored index pointing at a different item when it commits. Every node
+   * key is ignored until the gesture ends, the same guard beginDrag, beginPan
+   * and the wheel listener use; with no gesture active the keys behave as
+   * always: Enter and space select, Delete removes, arrows nudge.
+   */
   function onNodeKeyDown(
     e: React.KeyboardEvent<SVGElement>,
     target: 'waypoint' | 'obstacle',
     index: number,
   ): void {
+    if (interactionRef.current !== null) return
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
       onSelect({ kind: target, index })
@@ -515,22 +582,15 @@ export function MissionCanvas({
     nudge(e, target, index)
   }
 
-  /** The drawn waypoints: the config, with any drag preview applied. */
-  const waypoints = config.waypoints.map((wp, i) => {
-    if (preview?.kind === 'move' && preview.target === 'waypoint' && preview.index === i) {
-      return { ...wp, position: [preview.north, preview.east, wp.position[2]] as [number, number, number] }
-    }
-    return wp
-  })
-
-  /** The drawn zones: the config, with any move or resize preview applied. */
-  const obstacles = config.obstacles.map((ob, i) => {
-    if (preview === null || preview.target !== 'obstacle' || preview.index !== i) return ob
-    const north = preview.kind === 'move' ? preview.north : ob.center_ned[0]
-    const east = preview.kind === 'move' ? preview.east : ob.center_ned[1]
-    const radius = preview.kind === 'resize' ? preview.radius : ob.radius_m
-    return { ...ob, center_ned: [north, east, ob.center_ned[2]] as [number, number, number], radius_m: radius }
-  })
+  /**
+   * The drawn mission: the config with the shared drag preview applied.
+   * Both surfaces draw through `withDragPreview`, so what the chart shows
+   * mid-drag is exactly what the 3D preview shows; with no gesture in
+   * flight it is the config itself, unchanged by identity.
+   */
+  const drawn = withDragPreview(config, dragPreview)
+  const waypoints = drawn.waypoints
+  const obstacles = drawn.obstacles
 
   // Grid line positions over the visible rectangle (x east, y = -north):
   // the frame the viewport is showing, so panning never leaves the grid.
@@ -563,6 +623,7 @@ export function MissionCanvas({
         onPointerMove={trackDrag}
         onPointerUp={endDrag}
         onPointerCancel={cancelDrag}
+        onLostPointerCapture={endDrag}
         onDoubleClick={onChartDoubleClick}
       >
         {/* Chart ground and the pan surface; a clean press clears the selection. */}

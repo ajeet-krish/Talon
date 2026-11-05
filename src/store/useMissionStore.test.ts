@@ -58,6 +58,7 @@ beforeEach(() => {
     dirty: false,
     lastSavedAt: null,
     documentEpoch: 0,
+    dragPreview: null,
   })
 })
 
@@ -191,6 +192,49 @@ describe('select', () => {
     expect(useMissionStore.getState().selected).toEqual({ kind: 'waypoint', index: 2 })
     useMissionStore.getState().select(null)
     expect(useMissionStore.getState().selected).toBeNull()
+  })
+})
+
+describe('dragPreview', () => {
+  const preview = {
+    kind: 'move',
+    target: 'waypoint',
+    index: 1,
+    north: 44,
+    east: 55,
+    radius: 3,
+  } as const
+
+  it('publishes the live drag and clears it when the gesture ends', () => {
+    useMissionStore.getState().setDragPreview(preview)
+    expect(useMissionStore.getState().dragPreview).toEqual(preview)
+    useMissionStore.getState().setDragPreview(null)
+    expect(useMissionStore.getState().dragPreview).toBeNull()
+  })
+
+  it('touches nothing else: no history, dirty, storage, or epoch', () => {
+    const before = useMissionStore.getState()
+    const storedBefore = storage.getItem(DRAFT_STORAGE_KEY)
+    useMissionStore.getState().setDragPreview({ ...preview, kind: 'resize', target: 'obstacle' })
+    const after = useMissionStore.getState()
+    expect(after.history).toBe(before.history) // no undo entry is manufactured
+    expect(after.dirty).toBe(before.dirty)
+    expect(after.errors).toBe(before.errors)
+    expect(after.warnings).toBe(before.warnings)
+    expect(after.lastSavedAt).toBe(before.lastSavedAt)
+    expect(after.documentEpoch).toBe(before.documentEpoch)
+    expect(after.selected).toBe(before.selected)
+    expect(storage.getItem(DRAFT_STORAGE_KEY)).toBe(storedBefore) // nothing written
+  })
+
+  it('stays put across a commit: persistence remains per-commit only', () => {
+    useMissionStore.getState().setDragPreview(preview)
+    useMissionStore.getState().dispatch({ type: 'waypoint/add', north: 1, east: 2 })
+    // The commit path never clears the transient; the chart's one end path
+    // does, after the dispatch, so both surfaces see the final frame.
+    expect(useMissionStore.getState().dragPreview).toEqual(preview)
+    useMissionStore.getState().setDragPreview(null)
+    expect(useMissionStore.getState().dragPreview).toBeNull()
   })
 })
 

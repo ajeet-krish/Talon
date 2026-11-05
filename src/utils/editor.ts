@@ -401,8 +401,19 @@ function uniqueZoneId(obstacles: readonly Obstacle[]): string {
  * from outside the config (the chart's double-click add, drags and nudges,
  * the waypoint panel's Add button) routes through this one rule, so they
  * agree on the bound no matter where the number came from.
+ *
+ * Non-finite input is hardened to 0 instead of being clamped: `Math.min` and
+ * `Math.max` pass NaN through unchanged, and a degenerate SVG matrix can hand
+ * the chart's drag path a NaN that would then poison the drag preview and the
+ * drawn config. A non-finite number names no real position, so the origin
+ * (0 m north, 0 m east) is the documented fallback: always finite and always
+ * inside the cap. Finite input clamps exactly as before; infinities collapse
+ * to 0 with NaN for the same reason, since a signed infinity names no
+ * reachable position either. No caller, test, import path, or stored draft
+ * feeds it a non-finite number today; this is defence in depth.
  */
 export function clampCoordinate(value: number): number {
+  if (!Number.isFinite(value)) return 0
   return Math.min(Math.max(value, -LIMITS.max_coordinate_m), LIMITS.max_coordinate_m)
 }
 
@@ -412,6 +423,28 @@ export function clampCoordinate(value: number): number {
 
 /** What the editor is pointing at: one waypoint or one zone by list index. */
 export type EditorSelection = { kind: 'waypoint' | 'obstacle'; index: number } | null
+
+/**
+ * A live drag on a waypoint or zone handle, as the shared transient the 2D
+ * chart and the 3D preview both draw while the pointer is down. It mirrors
+ * what the next commit will look like without being that commit: the store
+ * holds it outside the undo history, the dirty flag, the persisted draft,
+ * and the document epoch, and it is cleared the moment the gesture ends
+ * (after the commit dispatch on pointer up, without one on cancel).
+ */
+export interface DragPreview {
+  /** A move shifts the item; a resize changes only a zone's radius. */
+  kind: 'move' | 'resize'
+  target: 'waypoint' | 'obstacle'
+  /** Index into the config's waypoint or zone list. */
+  index: number
+  /** Previewed north coordinate (m). */
+  north: number
+  /** Previewed east coordinate (m). */
+  east: number
+  /** Previewed zone radius (m); ignored for waypoints. */
+  radius: number
+}
 
 /** Default leg speed (m/s) for a waypoint the editor adds. */
 const DEFAULT_WAYPOINT_SPEED = 5.0
@@ -767,6 +800,40 @@ export function applyCommand(history: EditorHistory, command: EditorCommand): Ed
     present,
     past: [...history.past, history.present].slice(-HISTORY_CAP),
     future: [],
+  }
+}
+
+/**
+ * The config as a drag would leave it: the previewed position (or radius)
+ * substituted for the dragged item, everything else untouched. With no drag
+ * the input is returned unchanged by identity, so idle consumers memoize on
+ * the config reference; with a drag only the touched list is rebuilt, and
+ * the input config is never mutated. Both the 2D chart and the 3D preview
+ * draw through this one function, so the two surfaces cannot disagree about
+ * what a drag looks like.
+ */
+export function withDragPreview(config: MissionConfig, drag: DragPreview | null): MissionConfig {
+  if (drag === null) return config
+  if (drag.target === 'waypoint') {
+    // A resize never applies to a waypoint; the chart only starts one on a zone.
+    if (drag.kind !== 'move') return config
+    return {
+      ...config,
+      waypoints: config.waypoints.map((wp, i): Waypoint => {
+        if (i !== drag.index) return wp
+        return { ...wp, position: [drag.north, drag.east, wp.position[2]] }
+      }),
+    }
+  }
+  return {
+    ...config,
+    obstacles: config.obstacles.map((ob, i): Obstacle => {
+      if (i !== drag.index) return ob
+      const north = drag.kind === 'move' ? drag.north : ob.center_ned[0]
+      const east = drag.kind === 'move' ? drag.east : ob.center_ned[1]
+      const radius = drag.kind === 'resize' ? drag.radius : ob.radius_m
+      return { ...ob, center_ned: [north, east, ob.center_ned[2]], radius_m: radius }
+    }),
   }
 }
 

@@ -1,15 +1,20 @@
 /**
- * Mission editor (FlightLab Phase 8c): the section where a mission is
- * authored. A toolbar carries the draft's identity and its file verbs, the
- * body is the planning chart beside a scrolling inspector, and a validation
- * bar pins the run gate to the bottom.
+ * Mission editor (FlightLab Phase 8c, split Phase 8d-D): the section where
+ * a mission is authored. A toolbar carries the draft's identity and its file
+ * verbs, the body is the 2D planning chart beside the 3D course preview
+ * (side by side from xl up, stacked at lg) with a scrolling inspector
+ * beside them, and a validation bar pins the run gate to the bottom.
  *
  * The chart is the working surface: a north-up, true-scale plan you can
- * click, drag, and keyboard-edit. The inspector holds the same edits as
- * fields for when precision beats pointing. Nothing here runs the simulator:
- * the Fly button validates the draft, hands it to the flight store's
- * authored-mission slot, and opens the Run section, which owns the run. An
- * optional `onFly` prop overrides that wiring for embedders and tests.
+ * click, drag, and keyboard-edit. The preview is its read-only partner,
+ * framing the same draft from above so altitude and keep-out volumes are
+ * legible at a glance; it follows every committed edit and every live drag,
+ * and never edits anything itself. The inspector holds the same edits as
+ * fields for when precision beats pointing. Nothing here runs the
+ * simulator: the Fly button validates the draft, hands it to the flight
+ * store's authored-mission slot, and opens the Run section, which owns the
+ * run. An optional `onFly` prop overrides that wiring for embedders and
+ * tests.
  */
 
 import { useRef, useState } from 'react'
@@ -19,7 +24,7 @@ import { useFlightStore } from '@/store/useFlightStore'
 import { useMissionStore } from '@/store/useMissionStore'
 import { canRedo, canUndo, toMissionConfig } from '@/utils/editor'
 import type { MissionConfig } from '@/utils/editor'
-import { MissionCanvas } from '@/components/editor/MissionCanvas'
+import { MissionChart } from '@/components/editor/MissionChart'
 import { FaultPanel } from '@/components/editor/FaultPanel'
 import { MissionParametersPanel } from '@/components/editor/MissionParametersPanel'
 import { MissionValidation } from '@/components/editor/MissionValidation'
@@ -27,6 +32,7 @@ import { ObstaclePanel } from '@/components/editor/ObstaclePanel'
 import { PlanSummary } from '@/components/editor/PlanSummary'
 import { WindPanel } from '@/components/editor/WindPanel'
 import { WaypointPanel } from '@/components/editor/WaypointPanel'
+import { MissionPreview } from '@/components/scene/MissionPreview'
 
 export interface MissionViewProps {
   /**
@@ -289,18 +295,27 @@ export function MissionView({ onFly }: MissionViewProps) {
         </div>
       )}
 
-      {/* Body: the chart at working size, the inspector scrolling beside it.
-          On narrow screens the two stack and scroll together, so the
-          validation bar stays reachable at the bottom of the view. */}
+      {/* Body: the 2D chart and the 3D preview share the working area as
+          equal partners, side by side from xl up and stacked at lg (with
+          the inspector still beside them); below lg everything stacks and
+          scrolls together, so the validation bar stays reachable at the
+          bottom of the view. The preview takes no props: it subscribes to
+          the store itself, including the per-pointer-move drag transient,
+          which keeps those writes out of this view and its panels. */}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
-        <div className="min-h-[360px] flex-1 border-b border-grid lg:border-b-0">
-          <MissionCanvas
-            config={config}
-            selected={selected}
-            onSelect={select}
-            dispatch={dispatch}
-            documentEpoch={documentEpoch}
-          />
+        <div className="flex min-h-0 flex-1 flex-col lg:overflow-y-auto xl:flex-row">
+          <div className="min-h-[360px] flex-1 border-b border-grid xl:border-b-0 xl:border-r">
+            <MissionChart
+              config={config}
+              selected={selected}
+              onSelect={select}
+              dispatch={dispatch}
+              documentEpoch={documentEpoch}
+            />
+          </div>
+          <div className="min-h-[360px] flex-1 border-b border-grid lg:border-b-0">
+            <MissionPreview />
+          </div>
         </div>
         <aside className="w-full shrink-0 overflow-y-auto border-grid lg:w-[23rem] lg:border-l">
           <PlanSummary config={config} warnings={warnings.length} />
