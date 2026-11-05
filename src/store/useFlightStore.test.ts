@@ -1,8 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useFlightStore } from './useFlightStore'
+import type { ViewId } from './useFlightStore'
 import type { FlightData, ScenarioId } from '@/types/flight'
 import type { LiveConfig } from '@/live/types'
 import { emptyMission, toMissionConfig } from '@/utils/editor'
+
+/**
+ * The section a first load opens in, read before any test resets the store:
+ * the landing view is a product decision, so it is pinned here.
+ */
+const FIRST_LOAD_VIEW = useFlightStore.getState().activeView
 
 function fakeFlightData(durationS: number): FlightData {
   return {
@@ -95,7 +102,7 @@ beforeEach(() => {
     isPlaying: false,
     playbackSpeed: 1,
     toggles: { trail: true, ellipsoid: true, wind: true, waypoints: true, obstacles: true },
-    activeView: 'replay',
+    activeView: 'mission',
     validation: null,
     validationError: null,
     authoredMission: null,
@@ -152,10 +159,38 @@ describe('tick', () => {
 })
 
 describe('setView', () => {
+  it('opens the mission planner on a first load', () => {
+    expect(FIRST_LOAD_VIEW).toBe('mission')
+  })
+
   it('switches the active section', () => {
-    expect(useFlightStore.getState().activeView).toBe('replay')
+    expect(useFlightStore.getState().activeView).toBe('mission')
     useFlightStore.getState().setView('telemetry')
     expect(useFlightStore.getState().activeView).toBe('telemetry')
+    useFlightStore.getState().setView('replay')
+    expect(useFlightStore.getState().activeView).toBe('replay')
+  })
+
+  it('reaches every ViewId and round-trips back to the landing view', () => {
+    // Exhaustive over the union: a ViewId added to the type but not here
+    // fails typecheck, so setView reachability can never lag the contract.
+    const ALL: Record<ViewId, true> = {
+      mission: true,
+      telemetry: true,
+      metrics: true,
+      videos: true,
+      run: true,
+      replay: true,
+    }
+    for (const view of Object.keys(ALL) as ViewId[]) {
+      useFlightStore.getState().setView(view)
+      expect(useFlightStore.getState().activeView, `setView('${view}')`).toBe(view)
+      useFlightStore.getState().setView('mission')
+      expect(
+        useFlightStore.getState().activeView,
+        `round-trip back to the landing view from '${view}'`,
+      ).toBe('mission')
+    }
   })
 })
 

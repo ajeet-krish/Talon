@@ -11,8 +11,8 @@ export interface DisplayToggles {
   obstacles: boolean
 }
 
-/** Top-level tool sections. */
-export type ViewId = 'replay' | 'telemetry' | 'metrics' | 'videos' | 'run' | 'mission'
+/** Top-level tool sections, listed in header order. */
+export type ViewId = 'mission' | 'telemetry' | 'metrics' | 'videos' | 'run' | 'replay'
 
 /** One row of the validation driver's machine-readable report. */
 export interface ValidationRow {
@@ -103,7 +103,9 @@ export const useFlightStore = create<FlightStore>((set, get) => ({
   isPlaying: false,
   playbackSpeed: 1,
   toggles: { trail: true, ellipsoid: true, wind: true, waypoints: true, obstacles: true },
-  activeView: 'replay',
+  // A first load lands in the planner: authoring is the entry point, and
+  // every other section reads a flight the planner could have produced.
+  activeView: 'mission',
   validation: null,
   validationError: null,
   liveRun: null,

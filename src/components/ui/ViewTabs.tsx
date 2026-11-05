@@ -1,13 +1,18 @@
 import { useFlightStore } from '@/store/useFlightStore'
 import type { ViewId } from '@/store/useFlightStore'
 
+/**
+ * Sections in header order: author a mission first, then inspect a flight
+ * that already happened (telemetry, metrics, videos), fly a fresh one (run),
+ * and finally step through a recording (replay).
+ */
 const VIEWS: { id: ViewId; label: string }[] = [
-  { id: 'replay', label: 'REPLAY' },
+  { id: 'mission', label: 'MISSION PLANNER' },
   { id: 'telemetry', label: 'TELEMETRY' },
   { id: 'metrics', label: 'METRICS' },
   { id: 'videos', label: 'VIDEOS' },
   { id: 'run', label: 'RUN' },
-  { id: 'mission', label: 'MISSION' },
+  { id: 'replay', label: 'REPLAY' },
 ]
 
 /**

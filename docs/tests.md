@@ -2218,3 +2218,98 @@ in production code:
   subsection is appended after all prior content, and the only repository
   writes from this gate are the two new test files, the eight shim
   declarations, and this section.
+
+### Phase 8d-B test gate (2026-11-05)
+
+Scope: nav reorder, MISSION PLANNER first and the default landing view,
+REPLAY last. Changed files under test: src/components/ui/ViewTabs.tsx,
+src/store/useFlightStore.ts, src/App.tsx, src/store/useFlightStore.test.ts,
+src/components/ui/viewTabs.test.ts. This gate changed no production code: one
+new test file (src/components/ui/navContract.test.ts) and additions to two
+existing test files.
+
+#### Tests added
+
+| Test Name | File | Type | What It Tests |
+|-----------|------|------|---------------|
+| setView reaches every ViewId and round-trips back to the landing view | src/store/useFlightStore.test.ts | runtime | setView lands each of the six ids, then a second setView returns to 'mission'; the id list is a Record<ViewId, true> so a new union member fails typecheck first |
+| ViewTabs VIEWS pins EXPECTED_ORDER as the whole ViewId union | src/components/ui/viewTabs.test.ts | source | closes the gap where the expected-order literal and the VIEWS literal could drop an id in step; the Record is exhaustive over ViewId |
+| App view dispatch mounts one section per tab, in header order | src/components/ui/navContract.test.ts | source | App.tsx main block emits {activeView === 'id' && <Component/>} for all six ids, in header order |
+| App view dispatch maps each tab to its own section component | src/components/ui/navContract.test.ts | source | the id to component pairs (mission to MissionView, and so on) |
+| no stale replay-default assertion scans every source and test file under src/ | src/components/ui/navContract.test.ts | source scan | tripwire against a literal activeView: 'replay' or a FIRST_LOAD_VIEW pin flipped back; navigation via setView('replay') call sites is deliberately not matched; a >20 file floor guards against a vacuously empty walk |
+
+#### Suite results (actual output)
+
+| Gate | Before additions | After additions |
+|------|------------------|-----------------|
+| npm test | 377 passed, 23 files, exit 0 | 382 passed, 24 files, exit 0 |
+| npm run typecheck (tsc --noEmit) | exit 0, no output | exit 0, no output |
+| npm run build (tsc build project + vite) | exit 0, 668 modules, 1.90 s | exit 0, 668 modules, 1.87 s |
+
+The build prints the pre-existing chunk size warning (index js 1,323.60 kB
+over the 1,200 kB hint); it is unrelated to this change set. Both runs print a
+node ExperimentalWarning about localStorage that predates this phase.
+
+#### Per-test results (new tests)
+
+| Test | Verdict | Notes |
+|------|---------|-------|
+| setView reaches every ViewId and round-trips back to the landing view | PASS | 6 ids, 12 assertions |
+| ViewTabs VIEWS pins EXPECTED_ORDER as the whole ViewId union | PASS | Object.keys(UNION) vs EXPECTED_ORDER, sorted |
+| App view dispatch mounts one section per tab, in header order | PASS | extracts 6 dispatch entries |
+| App view dispatch maps each tab to its own section component | PASS | 6 id to component pairs |
+| no stale replay-default assertion scans every source and test file under src/ | PASS | scan saw the full src tree |
+
+All 377 pre-existing tests also pass, so no prior phase test regressed.
+
+#### Mutation probes (each reverted byte-identically)
+
+| Probe | Target file | Mutation | Result | sha256 before = after |
+|-------|-------------|----------|--------|------------------------|
+| P1 | src/store/useFlightStore.ts | creation default activeView 'mission' flipped to 'replay' | exactly 1 failed of 15 in useFlightStore.test.ts: setView opens the mission planner on a first load | c1569cd040013030294406989b6c3bdbaadb67ed7e0d32effd25712c5831acc3 |
+| P2 | src/components/ui/ViewTabs.tsx | mission and telemetry entries swapped in VIEWS | exactly 2 failed of 4 in viewTabs.test.ts: renders every section once, in header order, and labels the first tab MISSION PLANNER | ad4705d6e1c213dd7fd93e60033536a3a5ae94ee8c582cc3c5a5e17a7f273717 |
+| P3 | src/App.tsx | mission and telemetry dispatch lines swapped in the main block | exactly 2 failed of 3 in navContract.test.ts: mounts one section per tab, in header order, and maps each tab to its own section component; the stale scan correctly stayed green | a5220eb7b5373a81a498b329b0593afdd5d66958e8cecd40cc17507f313862fe |
+| P4 | src/__probe_stale.ts (throwaway) | planted literal { activeView: 'replay' } | the scan test failed and named the offender file and reason; file removed afterwards | n/a, file created and deleted |
+
+Backups lived in the approved session temp dir, outside the repository. After
+all probes, git status shows only the intended change set plus the new test
+file, and every mutated file hash matches its pre-probe value.
+
+#### Coverage summary and residual gaps
+
+- Covered now: first-load pinning (module-scope FIRST_LOAD_VIEW read before
+  any beforeEach reset, plus the P1 probe proving it fails on a flip), tab
+  order and the MISSION PLANNER label, union exhaustiveness of both order
+  literals, setView reachability for all six ids with a round-trip to the
+  landing view, App dispatch order and tab to component mapping, and a
+  repo-wide tripwire against stale replay-default assertions in src.
+- Not covered: no DOM-level render test of ViewTabs (aria-current, click
+  wiring). vitest.config.ts is environment: 'node' with include
+  src/**/*.test.ts, so the component stays at the established source-assertion
+  tier, the same residual recorded for other header components.
+- Finding, not a defect: the canonical order exists as three separate
+  literals (ViewTabs VIEWS, viewTabs EXPECTED_ORDER, navContract
+  EXPECTED_ORDER). Each is pinned against its production source, so drift in
+  any one fails a test, but they are not shared from a single export.
+- Finding, not a defect: the stale-scan patterns match literal assignments
+  only; a default reintroduced through a computed value would not trip them.
+  All current navigation uses setView(...) call sites, which is the shape the
+  patterns are designed to leave alone.
+
+#### Failure analysis
+
+None. Every gate is green, and each of the four probes failed exactly the
+tests that claim to catch that mutation, then reverted cleanly.
+
+#### Verification checklist
+
+- [x] All tests pass: 382 of 382 in 24 files, typecheck exit 0, build exit 0
+- [x] Happy path covered: default landing view, tab order and labels, every
+  tab dispatching to its section
+- [x] Edge cases covered: all six ViewIds reachable with round-trip, union
+  exhaustiveness on both order literals, scan cannot pass vacuously
+- [x] Error conditions covered: stale replay-default tripwire (P4) and
+  dispatch reordering (P3) both proven to fail
+- [x] No em dashes, double hyphens, or dash equivalents in this section
+- [x] Phase tests integrate with prior phase tests: the 377-test baseline
+  passes unchanged beside the 5 new tests

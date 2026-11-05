@@ -65,8 +65,8 @@ uv run python python/sims/export_live_configs.py   # -> public/data/live/configs
 | Phase 8 | Mission authoring (waypoints, wind, faults, keep-out zones) | In progress |
 | Phase 8c | Mission editor (chart, panels, validation, import/export) and Run handoff | Complete |
 | Phase 8d-A | Wasm kernel via the source module graph (dev load fix) | Complete |
-| Phase 8d-B | Nav reorder: MISSION PLANNER first, REPLAY last | In progress |
-| Phase 8d-C | Chart zoom/pan/FIT with no auto-zoom on edits | Pending |
+| Phase 8d-B | Nav reorder: MISSION PLANNER first, REPLAY last | Complete |
+| Phase 8d-C | Chart zoom/pan/FIT with no auto-zoom on edits | In progress |
 | Phase 8d-D | 2D planner + read-only 3D preview side by side | Pending |
 | Phase 9a | Reactive avoidance in Rust: geometry, the law, loop wiring, tests | Complete |
 | Phase 9b | One implementation (Python delegates to `_core`) + a browser demo config | Complete |

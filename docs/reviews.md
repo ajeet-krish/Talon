@@ -2696,3 +2696,41 @@ Verification checklist:
       the TS gate and the Rust gate is exercised on every Fly and every run,
       and the Phase 8a/8b fault-window and fault-safety findings carry
       unchanged through untouched scheduling code
+
+## 2026-11-05 - Phase 8d-B (2 of 4): nav reorder (code review)
+
+Verdict: PASS (APPROVE)
+
+Nav reorder so the tabs read MISSION PLANNER, TELEMETRY, METRICS, VIDEOS, RUN, REPLAY with MISSION PLANNER the first-load landing view. Change set: src/components/ui/ViewTabs.tsx (VIEWS order + header-order rationale comment, MISSION renamed MISSION PLANNER), src/store/useFlightStore.ts (ViewId union reordered, default activeView 'mission' with why comment), src/App.tsx (dispatch reordered to header tab order, doc comment updated; timeBased and mission gating untouched), src/store/useFlightStore.test.ts (beforeEach fixture updated, FIRST_LOAD_VIEW captured at module import pins the creation default), new src/components/ui/viewTabs.test.ts (source-assertion test over the VIEWS array). Verified: npx vitest run 377/377 green, npx tsc --noEmit clean under strict + noUncheckedIndexedAccess.
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | src/components/ui/viewTabs.test.ts:32 | The entry regex requires `id` before `label`; a key-order refactor would fail the test although behavior is unchanged | Acceptable brittleness for a contract test; loosen to match the pair in either order if it ever fires |
+| Low | src/components/ui/viewTabs.test.ts:48 | "Covers the whole ViewId union" is really "covers EXPECTED_ORDER", a hardcoded copy; ViewId union growth with both VIEWS and EXPECTED_ORDER stale would pass, and VIEWS is not typed to force exhaustiveness | Optional: a compile-time exhaustiveness guard (Record<ViewId, true> or a satisfies check) |
+| Low | docs/architecture.md:253-261 | The section table still lists Replay first and predates the MISSION PLANNER label, so it drifts from the new header order | Refresh with the docs pass for this phase (outside this change set) |
+
+Recurring notes: the source-assertion pattern (readFileSync + regex over the component) follows src/live/engine.isolation.test.ts and is the right tier here since vitest.config.ts is environment: 'node'; the module-scope FIRST_LOAD_VIEW capture is a good pattern for pinning creation-time store defaults that beforeEach would otherwise overwrite.
+
+## 2026-11-05 - Phase 8d-B (2 of 4): nav reorder (security review)
+
+Verdict: PASS
+
+Proportionate review of the nav reorder change set: src/components/ui/ViewTabs.tsx (VIEWS order + MISSION PLANNER label), src/store/useFlightStore.ts (ViewId union reordered, default activeView 'mission'), src/App.tsx (view dispatch reordered to header order, comments updated), src/store/useFlightStore.test.ts (fixture + FIRST_LOAD_VIEW pin), new src/components/ui/viewTabs.test.ts (source-assertion test). Scope confirmed against git diff: no hidden changes beyond this file. No data flow, no input handling, no persistence changes in the diff.
+
+| Severity | File:Line | Issue | Fix |
+|----------|-----------|-------|-----|
+| Low | src/components/ui/viewTabs.test.ts:16 | readFileSync of a fixed relative path resolved against the process CWD (test only, node env, never bundled); no user input so no traversal risk, but the read fails if the vitest CWD is not the repo root | Optional robustness: resolve via fileURLToPath(import.meta.url) instead of CWD |
+
+Check results:
+
+| Check | Verdict | Details |
+|-------|---------|---------|
+| View ordering vs data prerequisites | PASS | App.tsx:32-34 boots the gps_outage prefetch in a mount effect regardless of activeView, so landing on mission does not skip it. MissionView reads only useMissionStore (MissionView.tsx:51-62) and hand-off actions, never the scenarios map, so the new landing view has no data prerequisites. Data-dependent views already handle absence (App.tsx:107-113, AWAITING TELEMETRY) |
+| Auth/permission gating | PASS | No auth, role, token, or gate logic anywhere in src; nothing restricted can be exposed by a static tab reorder |
+| New input paths | PASS | None. ViewTabs.tsx:35 dispatches static ViewId literals from a typed const; setView accepts only ViewId (useFlightStore.ts:172). activeView is not persisted (localStorage exists only in useMissionStore.ts:40-49, untouched) |
+| Test file I/O safety | PASS | viewTabs.test.ts reads one hardcoded repo file with readFileSync + path.resolve (line 16) and parses it with regex (lines 30-34); no eval, new Function, or dynamic import |
+| Injection/XSS surface | PASS | Labels render as React text (ViewTabs.tsx:43); no dangerouslySetInnerHTML or innerHTML in src; dispatch is a static comparison chain (App.tsx:93-98) |
+| Secrets/persistence | PASS | No hardcoded secrets in the diff; no persistence change |
+| Scenario fetch path unchanged | PASS | loadScenario remains BASE_URL-prefixed with hardcoded ids and validateFlightData validation (useFlightStore.ts:119-127), untouched |
+
+Recurring notes: none new. The source-assertion test follows the established engine.isolation.test.ts pattern and introduces no unsafe file or code handling.

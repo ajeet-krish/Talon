@@ -18,9 +18,9 @@ import { MissionView } from '@/views/MissionView'
  * a slim left instrument rail (scenario list, plus display toggles on the
  * time-based sections), the active section filling the body, and the
  * transport and phase scrubber pinned to the bottom for the sections that
- * run on the replay clock. No hero, no landing page; the tool opens straight
- * into the scene. The mission editor owns its whole body: no scenario rail
- * and no transport, since it authors a mission rather than replaying one.
+ * run on the replay clock. No hero, no landing page; a first load opens in
+ * the mission planner, which owns its whole body: no scenario rail and no
+ * transport, since it authors a mission rather than replaying one.
  */
 export function App() {
   const activeId = useFlightStore((s) => s.activeScenario)
@@ -88,14 +88,14 @@ export function App() {
           </aside>
         )}
 
-        {/* Active section */}
+        {/* Active section, in header tab order */}
         <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-          {activeView === 'replay' && <ReplayView />}
+          {activeView === 'mission' && <MissionView />}
           {activeView === 'telemetry' && <TelemetryView />}
           {activeView === 'metrics' && <MetricsView />}
           {activeView === 'videos' && <VideosView />}
           {activeView === 'run' && <RunView />}
-          {activeView === 'mission' && <MissionView />}
+          {activeView === 'replay' && <ReplayView />}
         </main>
       </div>
 
